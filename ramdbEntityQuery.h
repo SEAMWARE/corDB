@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBENTITYQUERY_H_
-#define SWRAMDB_RAMDBENTITYQUERY_H_
+#ifndef CORRAMDB_RAMDBENTITYQUERY_H_
+#define CORRAMDB_RAMDBENTITYQUERY_H_
 
 //
 // FILE            ramdbEntityQuery.h
@@ -21,4 +21,4 @@
 //
 extern int ramdbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, KjNode** arrayPP);
 
-#endif  // SWRAMDB_RAMDBENTITYQUERY_H_
+#endif  // CORRAMDB_RAMDBENTITYQUERY_H_

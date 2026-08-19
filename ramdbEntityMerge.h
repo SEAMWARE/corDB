@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBENTITYMERGE_H_
-#define SWRAMDB_RAMDBENTITYMERGE_H_
+#ifndef CORRAMDB_RAMDBENTITYMERGE_H_
+#define CORRAMDB_RAMDBENTITYMERGE_H_
 
 //
 // FILE            ramdbEntityMerge.h
@@ -9,7 +9,7 @@
 // Copyright 2026 Seamware
 //
 #include "kjson/KjNode.h"                             // KjNode
-#include "swNgsild/ldEntityMerge.h"                   // LdMergeReport
+#include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
 
 #include "db/Tenant.h"                                 // Tenant
 
@@ -35,4 +35,4 @@ extern void ramdbApplyReportToLive(KjNode* live, KjNode* merged, LdMergeReport* 
 extern int ramdbEntityChangesApply(Tenant* tenantP, const char* entityId,
                                    KjNode* mergedEntity, LdMergeReport* reportP);
 
-#endif  // SWRAMDB_RAMDBENTITYMERGE_H_
+#endif  // CORRAMDB_RAMDBENTITYMERGE_H_

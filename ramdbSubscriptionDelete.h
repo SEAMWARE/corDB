@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBSUBSCRIPTIONDELETE_H_
-#define SWRAMDB_RAMDBSUBSCRIPTIONDELETE_H_
+#ifndef CORRAMDB_RAMDBSUBSCRIPTIONDELETE_H_
+#define CORRAMDB_RAMDBSUBSCRIPTIONDELETE_H_
 
 //
 // FILE            ramdbSubscriptionDelete.h
@@ -18,4 +18,4 @@
 //
 extern int ramdbSubscriptionDelete(Tenant* tenantP, const char* subId);
 
-#endif  // SWRAMDB_RAMDBSUBSCRIPTIONDELETE_H_
+#endif  // CORRAMDB_RAMDBSUBSCRIPTIONDELETE_H_

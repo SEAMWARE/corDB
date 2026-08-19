@@ -8,9 +8,9 @@
 #include "ktrace/kTrace.h"                               // KT_I
 
 #include "db/Tenant.h"                                   // tenant0
-#include "currentState/swRamDB/ramdbStore.h"             // ramdbTenantStore
-#include "currentState/swRamDB/ramdbGeoMatch.h"          // ramdbGeoInit
-#include "currentState/swRamDB/ramdbInit.h"              // Own interface
+#include "currentState/corRamDB/ramdbStore.h"             // ramdbTenantStore
+#include "currentState/corRamDB/ramdbGeoMatch.h"          // ramdbGeoInit
+#include "currentState/corRamDB/ramdbInit.h"              // Own interface
 
 
 
@@ -26,6 +26,6 @@ int ramdbInit(void)
   ramdbTenantStore(&tenant0);
   ramdbGeoInit();
 
-  KT_I("swRamDB: in-memory store ready (per-tenant KjNode trees, GEOS enabled)");
+  KT_I("corRamDB: in-memory store ready (per-tenant KjNode trees, GEOS enabled)");
   return 0;
 }

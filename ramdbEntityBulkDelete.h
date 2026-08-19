@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBENTITYBULKDELETE_H_
-#define SWRAMDB_RAMDBENTITYBULKDELETE_H_
+#ifndef CORRAMDB_RAMDBENTITYBULKDELETE_H_
+#define CORRAMDB_RAMDBENTITYBULKDELETE_H_
 
 //
 // FILE            ramdbEntityBulkDelete.h
@@ -15,7 +15,7 @@
 
 // -----------------------------------------------------------------------------
 //
-// ramdbEntityBulkDelete - Batch Delete (§ 5.6.11) for swRamDB.
+// ramdbEntityBulkDelete - Batch Delete (§ 5.6.11) for corRamDB.
 //
 // Walks idV, for each id: finds the stored entity, clones it into the
 // request arena for snapshotsV, removes from the store, sets
@@ -24,4 +24,4 @@
 extern int ramdbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
                                  int* resultsV, KjNode** snapshotsV);
 
-#endif  // SWRAMDB_RAMDBENTITYBULKDELETE_H_
+#endif  // CORRAMDB_RAMDBENTITYBULKDELETE_H_

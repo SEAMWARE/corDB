@@ -14,8 +14,8 @@
 
 #include "kjson/kjFree.h"                             // kjFree
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbSubscriptions
-#include "currentState/swRamDB/ramdbSubscriptionUpdate.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbSubscriptions
+#include "currentState/corRamDB/ramdbSubscriptionUpdate.h"  // Own interface
 
 
 

@@ -13,11 +13,11 @@
 #include "kjson/kjLookup.h"                            // kjLookup
 #include "kjson/kjFree.h"                              // kjFree
 #include "kjson/kjChildReplace.h"                      // kjChildReplace
-#include "swRest/SwRestState.h"                        // swRest
+#include "corRest/CorRestState.h"                        // corRest
 
 #include "db/DbDriver.h"                               // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"           // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityReplace.h"   // Own interface
+#include "currentState/corRamDB/ramdbStore.h"           // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityReplace.h"   // Own interface
 
 
 
@@ -38,7 +38,7 @@ int ramdbEntityReplace(Tenant* tenantP, const char* entityId, KjNode* newEntityP
       KjNode* cloneP = kjClone(NULL, newEntityP);
       if (cloneP == NULL)
       {
-        KT_E("swRamDB: kjClone failed for entity '%s'", entityId);
+        KT_E("corRamDB: kjClone failed for entity '%s'", entityId);
         return DB_ERR;
       }
 
@@ -51,7 +51,7 @@ int ramdbEntityReplace(Tenant* tenantP, const char* entityId, KjNode* newEntityP
       // request end, matching mongoc's oldEntityPP), then free the malloc store
       // node — returning the raw malloc node would leak (no caller frees it).
       if (oldEntityPP != NULL)
-        *oldEntityPP = kjClone(swRest.kjsonP, eP);
+        *oldEntityPP = kjClone(corRest.kjsonP, eP);
       kjFree(eP);
 
       return DB_OK;

@@ -15,8 +15,8 @@
 
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityCreate.h"   // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityCreate.h"   // Own interface
 
 
 
@@ -54,7 +54,7 @@ int ramdbEntityCreate(Tenant* tenantP, const char* entityId, KjNode* entityP)
   KjNode* cloneP = kjClone(NULL, entityP);
   if (cloneP == NULL)
   {
-    KT_E("swRamDB: kjClone failed for entity '%s'", entityId);
+    KT_E("corRamDB: kjClone failed for entity '%s'", entityId);
     return DB_ERR;
   }
 

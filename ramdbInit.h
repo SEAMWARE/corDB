@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBINIT_H_
-#define SWRAMDB_RAMDBINIT_H_
+#ifndef CORRAMDB_RAMDBINIT_H_
+#define CORRAMDB_RAMDBINIT_H_
 
 //
 // FILE            ramdbInit.h
@@ -17,4 +17,4 @@
 //
 extern int ramdbInit(void);
 
-#endif  // SWRAMDB_RAMDBINIT_H_
+#endif  // CORRAMDB_RAMDBINIT_H_

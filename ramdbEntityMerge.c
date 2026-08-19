@@ -5,7 +5,7 @@
 //
 // Copyright 2026 Seamware
 //
-// swRamDB change-set persistence for Merge Entity / Partial Attribute Update.
+// corRamDB change-set persistence for Merge Entity / Partial Attribute Update.
 //
 // The NGSI-LD merge itself is done by the broker against the request-arena tree
 // returned by db.entityRetrieve; this file applies the resulting change report
@@ -27,13 +27,13 @@
 #include "kjson/kjBuilder.h"                          // kjChildRemove, kjChildAdd
 #include "kjson/kjChildReplace.h"                     // kjChildReplace
 
-#include "swNgsild/LdVocab.h"                         // LD_VOCAB_MODIFIED_AT, LD_VOCAB_SCOPE
-#include "swNgsild/ldEntityMerge.h"                   // LdMergeReport
+#include "corNgsild/LdVocab.h"                         // LD_VOCAB_MODIFIED_AT, LD_VOCAB_SCOPE
+#include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityMerge.h"    // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityMerge.h"    // Own interface
 
 
 

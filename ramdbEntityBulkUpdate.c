@@ -5,7 +5,7 @@
 //
 // Copyright 2026 Seamware
 //
-// swRamDB has no native bulk primitive — we walk the input array and
+// corRamDB has no native bulk primitive — we walk the input array and
 // replace each existing entity with its caller-supplied, already-merged
 // final state. Per-entity outcome is written to resultsV so the service
 // routine can assemble the BatchOperationResult.
@@ -21,8 +21,8 @@
 #include "kjson/kjLookup.h"                              // kjLookup
 
 #include "db/DbDriver.h"                                 // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"             // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityBulkUpdate.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"             // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityBulkUpdate.h"  // Own interface
 
 
 
@@ -70,7 +70,7 @@ int ramdbEntityBulkUpdate(Tenant* tenantP, KjNode* entitiesArr, int* resultsV)
     KjNode* cloneP = kjClone(NULL, inP);
     if (cloneP == NULL)
     {
-      KT_E("swRamDB: kjClone failed for entity '%s'", idP->value.s);
+      KT_E("corRamDB: kjClone failed for entity '%s'", idP->value.s);
       resultsV[ix] = DB_ERR;
       continue;
     }

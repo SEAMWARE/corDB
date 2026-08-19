@@ -7,7 +7,7 @@
 //
 #include "kargs/KArg.h"                              // KArg
 
-#include "currentState/swRamDB/ramdbGlobals.h"           // Own interface
+#include "currentState/corRamDB/ramdbGlobals.h"           // Own interface
 
 
 

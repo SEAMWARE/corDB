@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBENTITYCREATE_H_
-#define SWRAMDB_RAMDBENTITYCREATE_H_
+#ifndef CORRAMDB_RAMDBENTITYCREATE_H_
+#define CORRAMDB_RAMDBENTITYCREATE_H_
 
 //
 // FILE            ramdbEntityCreate.h
@@ -20,4 +20,4 @@
 //
 extern int ramdbEntityCreate(Tenant* tenantP, const char* entityId, KjNode* entityP);
 
-#endif  // SWRAMDB_RAMDBENTITYCREATE_H_
+#endif  // CORRAMDB_RAMDBENTITYCREATE_H_

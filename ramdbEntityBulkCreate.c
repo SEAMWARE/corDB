@@ -5,7 +5,7 @@
 //
 // Copyright 2026 Seamware
 //
-// swRamDB is a malloc-backed in-process store — there is no bulk-write
+// corRamDB is a malloc-backed in-process store — there is no bulk-write
 // primitive to exploit. We walk the input array, honour the first-wins
 // invariant against whatever is already in the store, and report a
 // per-entity result so the service routine can assemble the
@@ -21,8 +21,8 @@
 #include "kjson/kjLookup.h"                            // kjLookup
 
 #include "db/DbDriver.h"                               // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"           // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityBulkCreate.h"// Own interface
+#include "currentState/corRamDB/ramdbStore.h"           // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityBulkCreate.h"// Own interface
 
 
 
@@ -70,7 +70,7 @@ int ramdbEntityBulkCreate(Tenant* tenantP, KjNode* entitiesArr, int* resultsV)
     KjNode* cloneP = kjClone(NULL, inP);
     if (cloneP == NULL)
     {
-      KT_E("swRamDB: kjClone failed for entity '%s'", idP->value.s);
+      KT_E("corRamDB: kjClone failed for entity '%s'", idP->value.s);
       resultsV[ix] = DB_ERR;
       continue;
     }

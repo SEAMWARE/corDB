@@ -5,7 +5,7 @@
 //
 // Copyright 2026 Seamware
 //
-// swRamDB Batch Delete: per id, clone the stored entity into the
+// corRamDB Batch Delete: per id, clone the stored entity into the
 // request arena (for the service's delete notification), then remove
 // the entity from the tenant store.
 //
@@ -19,11 +19,11 @@
 #include "kjson/kjFree.h"                                 // kjFree
 #include "kjson/kjLookup.h"                               // kjLookup
 
-#include "swRest/SwRestState.h"                           // swRest (kjsonP arena)
+#include "corRest/CorRestState.h"                           // corRest (kjsonP arena)
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"              // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityBulkDelete.h"   // Own interface
+#include "currentState/corRamDB/ramdbStore.h"              // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityBulkDelete.h"   // Own interface
 
 
 
@@ -58,7 +58,7 @@ int ramdbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
       continue;
     }
 
-    snapshotsV[i] = kjClone(swRest.kjsonP, match);   // arena snapshot for notify
+    snapshotsV[i] = kjClone(corRest.kjsonP, match);   // arena snapshot for notify
     kjChildRemove(entities, match);
     kjFree(match);                                    // free the malloc store node
     resultsV[i] = DB_OK;

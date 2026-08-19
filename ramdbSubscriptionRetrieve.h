@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBSUBSCRIPTIONRETRIEVE_H_
-#define SWRAMDB_RAMDBSUBSCRIPTIONRETRIEVE_H_
+#ifndef CORRAMDB_RAMDBSUBSCRIPTIONRETRIEVE_H_
+#define CORRAMDB_RAMDBSUBSCRIPTIONRETRIEVE_H_
 
 //
 // FILE            ramdbSubscriptionRetrieve.h
@@ -20,4 +20,4 @@
 //
 extern int ramdbSubscriptionRetrieve(Tenant* tenantP, const char* subId, KjNode** subPP);
 
-#endif  // SWRAMDB_RAMDBSUBSCRIPTIONRETRIEVE_H_
+#endif  // CORRAMDB_RAMDBSUBSCRIPTIONRETRIEVE_H_

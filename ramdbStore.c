@@ -13,7 +13,7 @@
 
 #include "db/Tenant.h"                               // Tenant
 
-#include "currentState/swRamDB/ramdbStore.h"         // Own interface
+#include "currentState/corRamDB/ramdbStore.h"         // Own interface
 
 
 

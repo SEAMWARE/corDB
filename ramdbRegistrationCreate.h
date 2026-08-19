@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBREGISTRATIONCREATE_H_
-#define SWRAMDB_RAMDBREGISTRATIONCREATE_H_
+#ifndef CORRAMDB_RAMDBREGISTRATIONCREATE_H_
+#define CORRAMDB_RAMDBREGISTRATIONCREATE_H_
 
 //
 // FILE            ramdbRegistrationCreate.h
@@ -14,4 +14,4 @@
 
 extern int ramdbRegistrationCreate(Tenant* tenantP, const char* regId, KjNode* regP);
 
-#endif  // SWRAMDB_RAMDBREGISTRATIONCREATE_H_
+#endif  // CORRAMDB_RAMDBREGISTRATIONCREATE_H_

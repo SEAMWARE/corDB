@@ -9,8 +9,8 @@
 #include "kjson/kjFree.h"                                // kjFree
 
 #include "db/Tenant.h"                                   // tenant0, tenantList
-#include "currentState/swRamDB/ramdbGeoMatch.h"          // ramdbGeoClose
-#include "currentState/swRamDB/ramdbClose.h"             // Own interface
+#include "currentState/corRamDB/ramdbGeoMatch.h"          // ramdbGeoClose
+#include "currentState/corRamDB/ramdbClose.h"             // Own interface
 
 
 
@@ -41,5 +41,5 @@ void ramdbClose(void)
     ramdbFreeTenantStore(tP);
 
   ramdbGeoClose();
-  KT_I("swRamDB: closed (all tenant stores freed)");
+  KT_I("corRamDB: closed (all tenant stores freed)");
 }

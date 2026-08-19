@@ -11,10 +11,10 @@
 #include "kjson/kjClone.h"                            // kjClone
 #include "kjson/kjLookup.h"                           // kjLookup
 
-#include "swRest/SwRestState.h"                       // swRest
+#include "corRest/CorRestState.h"                       // corRest
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbSubscriptions
-#include "currentState/swRamDB/ramdbSubscriptionRetrieve.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbSubscriptions
+#include "currentState/corRamDB/ramdbSubscriptionRetrieve.h"  // Own interface
 
 
 
@@ -32,7 +32,7 @@ int ramdbSubscriptionRetrieve(Tenant* tenantP, const char* subId, KjNode** subPP
 
     if (idP != NULL && idP->type == KjString && strcmp(idP->value.s, subId) == 0)
     {
-      *subPP = kjClone(swRest.kjsonP, sP);
+      *subPP = kjClone(corRest.kjsonP, sP);
       return DB_OK;
     }
   }

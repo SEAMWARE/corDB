@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBSTORE_H_
-#define SWRAMDB_RAMDBSTORE_H_
+#ifndef CORRAMDB_RAMDBSTORE_H_
+#define CORRAMDB_RAMDBSTORE_H_
 
 //
 // FILE            ramdbStore.h
@@ -49,4 +49,4 @@ extern KjNode* ramdbSubscriptions(Tenant* tenantP);
 //
 extern KjNode* ramdbRegistrations(Tenant* tenantP);
 
-#endif  // SWRAMDB_RAMDBSTORE_H_
+#endif  // CORRAMDB_RAMDBSTORE_H_

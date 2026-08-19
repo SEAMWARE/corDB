@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBREGISTRATIONRETRIEVE_H_
-#define SWRAMDB_RAMDBREGISTRATIONRETRIEVE_H_
+#ifndef CORRAMDB_RAMDBREGISTRATIONRETRIEVE_H_
+#define CORRAMDB_RAMDBREGISTRATIONRETRIEVE_H_
 
 //
 // FILE            ramdbRegistrationRetrieve.h
@@ -14,4 +14,4 @@
 
 extern int ramdbRegistrationRetrieve(Tenant* tenantP, const char* regId, KjNode** regPP);
 
-#endif  // SWRAMDB_RAMDBREGISTRATIONRETRIEVE_H_
+#endif  // CORRAMDB_RAMDBREGISTRATIONRETRIEVE_H_

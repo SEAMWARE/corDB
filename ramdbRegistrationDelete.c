@@ -13,8 +13,8 @@
 
 #include "kjson/kjFree.h"                             // kjFree
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbRegistrations
-#include "currentState/swRamDB/ramdbRegistrationDelete.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbRegistrations
+#include "currentState/corRamDB/ramdbRegistrationDelete.h"  // Own interface
 
 
 

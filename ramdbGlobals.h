@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBGLOBALS_H_
-#define SWRAMDB_RAMDBGLOBALS_H_
+#ifndef CORRAMDB_RAMDBGLOBALS_H_
+#define CORRAMDB_RAMDBGLOBALS_H_
 
 //
 // FILE            ramdbGlobals.h
@@ -18,4 +18,4 @@
 //
 extern KArg* ramdbArgV;
 
-#endif  // SWRAMDB_RAMDBGLOBALS_H_
+#endif  // CORRAMDB_RAMDBGLOBALS_H_

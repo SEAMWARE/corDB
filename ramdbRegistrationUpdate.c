@@ -21,8 +21,8 @@
 #include "kjson/kjFree.h"                             // kjFree
 #include "kjson/kjChildReplace.h"                     // kjChildReplace
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbRegistrations
-#include "currentState/swRamDB/ramdbRegistrationUpdate.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbRegistrations
+#include "currentState/corRamDB/ramdbRegistrationUpdate.h"  // Own interface
 
 
 
@@ -43,7 +43,7 @@ int ramdbRegistrationUpdate(Tenant* tenantP, const char* regId, KjNode* regP)
       KjNode* cloneP = kjClone(NULL, regP);
       if (cloneP == NULL)
       {
-        KT_E("swRamDB: kjClone failed for registration '%s'", regId);
+        KT_E("corRamDB: kjClone failed for registration '%s'", regId);
         return DB_ERR;
       }
 

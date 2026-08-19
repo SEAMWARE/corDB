@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBSUBSCRIPTIONCREATE_H_
-#define SWRAMDB_RAMDBSUBSCRIPTIONCREATE_H_
+#ifndef CORRAMDB_RAMDBSUBSCRIPTIONCREATE_H_
+#define CORRAMDB_RAMDBSUBSCRIPTIONCREATE_H_
 
 //
 // FILE            ramdbSubscriptionCreate.h
@@ -20,4 +20,4 @@
 //
 extern int ramdbSubscriptionCreate(Tenant* tenantP, const char* subId, KjNode* subP);
 
-#endif  // SWRAMDB_RAMDBSUBSCRIPTIONCREATE_H_
+#endif  // CORRAMDB_RAMDBSUBSCRIPTIONCREATE_H_

@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBREGISTRATIONQUERY_H_
-#define SWRAMDB_RAMDBREGISTRATIONQUERY_H_
+#ifndef CORRAMDB_RAMDBREGISTRATIONQUERY_H_
+#define CORRAMDB_RAMDBREGISTRATIONQUERY_H_
 
 //
 // FILE            ramdbRegistrationQuery.h
@@ -14,4 +14,4 @@
 
 extern int ramdbRegistrationQuery(Tenant* tenantP, int limit, int offset, KjNode** arrayPP);
 
-#endif  // SWRAMDB_RAMDBREGISTRATIONQUERY_H_
+#endif  // CORRAMDB_RAMDBREGISTRATIONQUERY_H_

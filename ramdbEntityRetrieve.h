@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBENTITYRETRIEVE_H_
-#define SWRAMDB_RAMDBENTITYRETRIEVE_H_
+#ifndef CORRAMDB_RAMDBENTITYRETRIEVE_H_
+#define CORRAMDB_RAMDBENTITYRETRIEVE_H_
 
 //
 // FILE            ramdbEntityRetrieve.h
@@ -20,4 +20,4 @@
 //
 extern int ramdbEntityRetrieve(Tenant* tenantP, const char* entityId, KjNode** entityPP);
 
-#endif  // SWRAMDB_RAMDBENTITYRETRIEVE_H_
+#endif  // CORRAMDB_RAMDBENTITYRETRIEVE_H_

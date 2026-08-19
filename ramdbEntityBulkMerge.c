@@ -5,7 +5,7 @@
 //
 // Copyright 2026 Seamware
 //
-// swRamDB Batch Merge persistence — the store is in-memory, so the two phases
+// corRamDB Batch Merge persistence — the store is in-memory, so the two phases
 // the broker brackets the merge with are plain loops:
 //
 //   ramdbEntityBulkRetrieve     clone each current stored entity into the
@@ -23,14 +23,14 @@
 #include "kjson/kjClone.h"                                // kjClone
 #include "kjson/kjLookup.h"                               // kjLookup
 
-#include "swRest/SwRestState.h"                           // swRest (kjsonP for arena clones)
+#include "corRest/CorRestState.h"                           // corRest (kjsonP for arena clones)
 
-#include "swNgsild/ldEntityMerge.h"                       // LdMergeReport
+#include "corNgsild/ldEntityMerge.h"                       // LdMergeReport
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"              // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityMerge.h"        // ramdbApplyReportToLive
-#include "currentState/swRamDB/ramdbEntityBulkMerge.h"    // Own interface
+#include "currentState/corRamDB/ramdbStore.h"              // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityMerge.h"        // ramdbApplyReportToLive
+#include "currentState/corRamDB/ramdbEntityBulkMerge.h"    // Own interface
 
 
 
@@ -94,7 +94,7 @@ int ramdbEntityBulkRetrieve(Tenant* tenantP, KjNode* fragmentsArr, KjNode** targ
     if (live == NULL)
       continue;  // slot stays NULL -> DB_NOT_FOUND in the broker
 
-    KjNode* shared = kjClone(swRest.kjsonP, live);
+    KjNode* shared = kjClone(corRest.kjsonP, live);
 
     int j = 0;
     for (KjNode* f2 = fragmentsArr->value.firstChildP; f2 != NULL; f2 = f2->next, j++)

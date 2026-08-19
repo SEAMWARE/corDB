@@ -16,17 +16,17 @@
 #include "kjson/KjNode.h"                               // KjNode
 #include "kjson/kjBuilder.h"                            // kjArray, kjObject, kjString, kjInteger, kjChildAdd
 #include "kjson/kjLookup.h"                             // kjLookup
-#include "swRest/SwRestState.h"                         // swRest
+#include "corRest/CorRestState.h"                         // corRest
 
-#include "swNgsild/ldIsEntityKeyword.h"                 // ldIsEntityKeyword
-#include "swNgsild/LdAttrType.h"                        // LdAttrType
-#include "swNgsild/ldAttrTypeDetect.h"                  // ldAttrTypeDetect
-#include "swNgsild/ldTypes.h"                           // ldAttrTypeToString
+#include "corNgsild/ldIsEntityKeyword.h"                 // ldIsEntityKeyword
+#include "corNgsild/LdAttrType.h"                        // LdAttrType
+#include "corNgsild/ldAttrTypeDetect.h"                  // ldAttrTypeDetect
+#include "corNgsild/ldTypes.h"                           // ldAttrTypeToString
 
 #include "db/DbDriver.h"                                // DB_OK
 #include "db/Tenant.h"                                  // Tenant
-#include "currentState/swRamDB/ramdbStore.h"            // ramdbEntities
-#include "currentState/swRamDB/ramdbTypeList.h"         // Own interface
+#include "currentState/corRamDB/ramdbStore.h"            // ramdbEntities
+#include "currentState/corRamDB/ramdbTypeList.h"         // Own interface
 
 
 
@@ -43,18 +43,18 @@ static KjNode* typeEntryLookup(KjNode* result, const char* typeIri, bool details
       return entry;
   }
 
-  KjNode* entry = kjObject(swRest.kjsonP, NULL);
-  kjChildAdd(entry, kjString(swRest.kjsonP, "typeIri", typeIri));
+  KjNode* entry = kjObject(corRest.kjsonP, NULL);
+  kjChildAdd(entry, kjString(corRest.kjsonP, "typeIri", typeIri));
 
   if (details)
   {
-    kjChildAdd(entry, kjArray(swRest.kjsonP,  "attrs"));
-    kjChildAdd(entry, kjObject(swRest.kjsonP, "attrTypes"));
-    kjChildAdd(entry, kjInteger(swRest.kjsonP, "entityCount", 0));
+    kjChildAdd(entry, kjArray(corRest.kjsonP,  "attrs"));
+    kjChildAdd(entry, kjObject(corRest.kjsonP, "attrTypes"));
+    kjChildAdd(entry, kjInteger(corRest.kjsonP, "entityCount", 0));
   }
   else
   {
-    kjChildAdd(entry, kjArray(swRest.kjsonP, "attrs"));
+    kjChildAdd(entry, kjArray(corRest.kjsonP, "attrs"));
   }
 
   kjChildAdd(result, entry);
@@ -72,7 +72,7 @@ static void stringArrayAddUnique(KjNode* arr, const char* s)
   for (KjNode* p = arr->value.firstChildP; p != NULL; p = p->next)
     if (p->type == KjString && strcmp(p->value.s, s) == 0)
       return;
-  kjChildAdd(arr, kjString(swRest.kjsonP, NULL, s));
+  kjChildAdd(arr, kjString(corRest.kjsonP, NULL, s));
 }
 
 
@@ -119,7 +119,7 @@ static void recordAttr(KjNode* typeEntry, const char* attrName, KjNode* attrWrap
   KjNode* attrTypeArr = kjLookup(attrTypesObj, attrName);
   if (attrTypeArr == NULL)
   {
-    attrTypeArr = kjArray(swRest.kjsonP, attrName);
+    attrTypeArr = kjArray(corRest.kjsonP, attrName);
     kjChildAdd(attrTypesObj, attrTypeArr);
   }
   stringArrayAddUnique(attrTypeArr, atStr);
@@ -133,7 +133,7 @@ static void recordAttr(KjNode* typeEntry, const char* attrName, KjNode* attrWrap
 //
 int ramdbTypeList(Tenant* tenantP, bool details, KjNode** arrayPP)
 {
-  KjNode* result = kjArray(swRest.kjsonP, NULL);
+  KjNode* result = kjArray(corRest.kjsonP, NULL);
   *arrayPP = result;
 
   KjNode* entities = ramdbEntities(tenantP);

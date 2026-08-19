@@ -9,40 +9,40 @@
 
 #include <string.h>                                    // memset
 
-#include "swNgsild/LdSubCache.h"                       // LdSubCacheItem
+#include "corNgsild/LdSubCache.h"                       // LdSubCacheItem
 #include "db/DbDriver.h"                               // DbDriver
 #include "db/DbQueryFilter.h"                          // DbQueryFilter
 #include "shared/geoMatch.h"                           // csrGeoMatchOverlap
 
-#include "currentState/swRamDB/ramdbGlobals.h"        // ramdbArgV
-#include "currentState/swRamDB/ramdbInit.h"           // ramdbInit
-#include "currentState/swRamDB/ramdbClose.h"          // ramdbClose
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbTenantStore
-#include "currentState/swRamDB/ramdbEntityCreate.h"   // ramdbEntityCreate
-#include "currentState/swRamDB/ramdbEntityBulkCreate.h" // ramdbEntityBulkCreate
-#include "currentState/swRamDB/ramdbEntityBulkUpdate.h" // ramdbEntityBulkUpdate
-#include "currentState/swRamDB/ramdbEntityBulkMerge.h"  // ramdbEntityBulkMerge
-#include "currentState/swRamDB/ramdbEntityBulkDelete.h" // ramdbEntityBulkDelete
-#include "currentState/swRamDB/ramdbEntityRetrieve.h" // ramdbEntityRetrieve
-#include "currentState/swRamDB/ramdbEntityQuery.h"    // ramdbEntityQuery
-#include "currentState/swRamDB/ramdbEntityDelete.h"   // ramdbEntityDelete
-#include "currentState/swRamDB/ramdbEntityMerge.h"    // ramdbEntityMerge
-#include "currentState/swRamDB/ramdbEntityReplace.h"  // ramdbEntityReplace
-#include "currentState/swRamDB/ramdbEntityAttrsSet.h" // ramdbEntityAttrsSet
-#include "currentState/swRamDB/ramdbTypeList.h"       // ramdbTypeList
-#include "currentState/swRamDB/ramdbAttrList.h"       // ramdbAttrList
-#include "currentState/swRamDB/ramdbSubscriptionCreate.h"    // ramdbSubscriptionCreate
-#include "currentState/swRamDB/ramdbSubscriptionRetrieve.h"  // ramdbSubscriptionRetrieve
-#include "currentState/swRamDB/ramdbSubscriptionQuery.h"     // ramdbSubscriptionQuery
-#include "currentState/swRamDB/ramdbSubscriptionUpdate.h"    // ramdbSubscriptionUpdate
-#include "currentState/swRamDB/ramdbSubscriptionReplace.h"   // ramdbSubscriptionReplace
-#include "currentState/swRamDB/ramdbSubscriptionDelete.h"    // ramdbSubscriptionDelete
-#include "currentState/swRamDB/ramdbRegistrationCreate.h"    // ramdbRegistrationCreate
-#include "currentState/swRamDB/ramdbRegistrationRetrieve.h"  // ramdbRegistrationRetrieve
-#include "currentState/swRamDB/ramdbRegistrationQuery.h"     // ramdbRegistrationQuery
-#include "currentState/swRamDB/ramdbRegistrationUpdate.h"    // ramdbRegistrationUpdate
-#include "currentState/swRamDB/ramdbRegistrationDelete.h"    // ramdbRegistrationDelete
-#include "currentState/swRamDB/ramdbGeoMatch.h"             // ramdbGeoMatch
+#include "currentState/corRamDB/ramdbGlobals.h"        // ramdbArgV
+#include "currentState/corRamDB/ramdbInit.h"           // ramdbInit
+#include "currentState/corRamDB/ramdbClose.h"          // ramdbClose
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbTenantStore
+#include "currentState/corRamDB/ramdbEntityCreate.h"   // ramdbEntityCreate
+#include "currentState/corRamDB/ramdbEntityBulkCreate.h" // ramdbEntityBulkCreate
+#include "currentState/corRamDB/ramdbEntityBulkUpdate.h" // ramdbEntityBulkUpdate
+#include "currentState/corRamDB/ramdbEntityBulkMerge.h"  // ramdbEntityBulkMerge
+#include "currentState/corRamDB/ramdbEntityBulkDelete.h" // ramdbEntityBulkDelete
+#include "currentState/corRamDB/ramdbEntityRetrieve.h" // ramdbEntityRetrieve
+#include "currentState/corRamDB/ramdbEntityQuery.h"    // ramdbEntityQuery
+#include "currentState/corRamDB/ramdbEntityDelete.h"   // ramdbEntityDelete
+#include "currentState/corRamDB/ramdbEntityMerge.h"    // ramdbEntityMerge
+#include "currentState/corRamDB/ramdbEntityReplace.h"  // ramdbEntityReplace
+#include "currentState/corRamDB/ramdbEntityAttrsSet.h" // ramdbEntityAttrsSet
+#include "currentState/corRamDB/ramdbTypeList.h"       // ramdbTypeList
+#include "currentState/corRamDB/ramdbAttrList.h"       // ramdbAttrList
+#include "currentState/corRamDB/ramdbSubscriptionCreate.h"    // ramdbSubscriptionCreate
+#include "currentState/corRamDB/ramdbSubscriptionRetrieve.h"  // ramdbSubscriptionRetrieve
+#include "currentState/corRamDB/ramdbSubscriptionQuery.h"     // ramdbSubscriptionQuery
+#include "currentState/corRamDB/ramdbSubscriptionUpdate.h"    // ramdbSubscriptionUpdate
+#include "currentState/corRamDB/ramdbSubscriptionReplace.h"   // ramdbSubscriptionReplace
+#include "currentState/corRamDB/ramdbSubscriptionDelete.h"    // ramdbSubscriptionDelete
+#include "currentState/corRamDB/ramdbRegistrationCreate.h"    // ramdbRegistrationCreate
+#include "currentState/corRamDB/ramdbRegistrationRetrieve.h"  // ramdbRegistrationRetrieve
+#include "currentState/corRamDB/ramdbRegistrationQuery.h"     // ramdbRegistrationQuery
+#include "currentState/corRamDB/ramdbRegistrationUpdate.h"    // ramdbRegistrationUpdate
+#include "currentState/corRamDB/ramdbRegistrationDelete.h"    // ramdbRegistrationDelete
+#include "currentState/corRamDB/ramdbGeoMatch.h"             // ramdbGeoMatch
 
 
 
@@ -95,7 +95,7 @@ static int ramdbTenantSetup(Tenant* tenantP)
 //
 void dbRegister(DbDriver* driverP)
 {
-  driverP->alias           = "swRamDB";
+  driverP->alias           = "corRamDB";
   driverP->version         = PLUGIN_VERSION;
   driverP->args            = ramdbArgV;
   driverP->init            = ramdbInit;

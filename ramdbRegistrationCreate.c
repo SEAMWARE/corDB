@@ -14,8 +14,8 @@
 #include "kjson/kjLookup.h"                           // kjLookup
 
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbRegistrations
-#include "currentState/swRamDB/ramdbRegistrationCreate.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbRegistrations
+#include "currentState/corRamDB/ramdbRegistrationCreate.h"  // Own interface
 
 
 
@@ -38,7 +38,7 @@ int ramdbRegistrationCreate(Tenant* tenantP, const char* regId, KjNode* regP)
   KjNode* cloneP = kjClone(NULL, regP);
   if (cloneP == NULL)
   {
-    KT_E("swRamDB: kjClone failed for registration '%s'", regId);
+    KT_E("corRamDB: kjClone failed for registration '%s'", regId);
     return DB_ERR;
   }
 

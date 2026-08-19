@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBCLOSE_H_
-#define SWRAMDB_RAMDBCLOSE_H_
+#ifndef CORRAMDB_RAMDBCLOSE_H_
+#define CORRAMDB_RAMDBCLOSE_H_
 
 //
 // FILE            ramdbClose.h
@@ -17,4 +17,4 @@
 //
 extern void ramdbClose(void);
 
-#endif  // SWRAMDB_RAMDBCLOSE_H_
+#endif  // CORRAMDB_RAMDBCLOSE_H_

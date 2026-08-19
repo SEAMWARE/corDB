@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBREGISTRATIONDELETE_H_
-#define SWRAMDB_RAMDBREGISTRATIONDELETE_H_
+#ifndef CORRAMDB_RAMDBREGISTRATIONDELETE_H_
+#define CORRAMDB_RAMDBREGISTRATIONDELETE_H_
 
 //
 // FILE            ramdbRegistrationDelete.h
@@ -12,4 +12,4 @@
 
 extern int ramdbRegistrationDelete(Tenant* tenantP, const char* regId);
 
-#endif  // SWRAMDB_RAMDBREGISTRATIONDELETE_H_
+#endif  // CORRAMDB_RAMDBREGISTRATIONDELETE_H_

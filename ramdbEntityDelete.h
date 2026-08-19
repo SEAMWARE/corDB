@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBENTITYDELETE_H_
-#define SWRAMDB_RAMDBENTITYDELETE_H_
+#ifndef CORRAMDB_RAMDBENTITYDELETE_H_
+#define CORRAMDB_RAMDBENTITYDELETE_H_
 
 //
 // FILE            ramdbEntityDelete.h
@@ -18,4 +18,4 @@
 //
 extern int ramdbEntityDelete(Tenant* tenantP, const char* entityId);
 
-#endif  // SWRAMDB_RAMDBENTITYDELETE_H_
+#endif  // CORRAMDB_RAMDBENTITYDELETE_H_

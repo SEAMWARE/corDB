@@ -10,11 +10,11 @@
 #include "kjson/KjNode.h"                             // KjNode
 #include "kjson/kjClone.h"                            // kjClone
 #include "kjson/kjBuilder.h"                          // kjArray, kjChildAdd
-#include "swRest/SwRestState.h"                       // swRest
+#include "corRest/CorRestState.h"                       // corRest
 
 #include "db/DbDriver.h"                              // DB_OK, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbRegistrations
-#include "currentState/swRamDB/ramdbRegistrationQuery.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbRegistrations
+#include "currentState/corRamDB/ramdbRegistrationQuery.h"  // Own interface
 
 
 
@@ -27,7 +27,7 @@ int ramdbRegistrationQuery(Tenant* tenantP, int limit, int offset, KjNode** arra
   KjNode* registrations = ramdbRegistrations(tenantP);
   // Request-arena array (freed after use), matching mongoc — a NULL (malloc)
   // array would leak its container on every cache-load.
-  KjNode* resultArray   = kjArray(swRest.kjsonP, NULL);
+  KjNode* resultArray   = kjArray(corRest.kjsonP, NULL);
 
   int ix    = 0;
   int added = 0;
@@ -43,7 +43,7 @@ int ramdbRegistrationQuery(Tenant* tenantP, int limit, int offset, KjNode** arra
     if (limit > 0 && added >= limit)
       break;
 
-    KjNode* cloneP = kjClone(swRest.kjsonP, rP);
+    KjNode* cloneP = kjClone(corRest.kjsonP, rP);
     kjChildAdd(resultArray, cloneP);
     added++;
     ix++;

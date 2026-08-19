@@ -1,5 +1,5 @@
-#ifndef SWBROKER_RAMDB_TYPE_LIST_H_
-#define SWBROKER_RAMDB_TYPE_LIST_H_
+#ifndef CORAINE_RAMDB_TYPE_LIST_H_
+#define CORAINE_RAMDB_TYPE_LIST_H_
 //
 // FILE            ramdbTypeList.h
 //

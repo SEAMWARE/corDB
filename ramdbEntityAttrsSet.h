@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDB_ENTITY_ATTRS_SET_H_
-#define SWRAMDB_RAMDB_ENTITY_ATTRS_SET_H_
+#ifndef CORRAMDB_RAMDB_ENTITY_ATTRS_SET_H_
+#define CORRAMDB_RAMDB_ENTITY_ATTRS_SET_H_
 
 //
 // FILE            ramdbEntityAttrsSet.h
@@ -8,7 +8,7 @@
 //
 // Copyright 2026 Seamware
 //
-// Thin ramdb wrapper around swNgsild's ldEntityAttrsSet — locates the
+// Thin ramdb wrapper around corNgsild's ldEntityAttrsSet — locates the
 // live entity in the tenant store and applies the fragment in place.
 //
 
@@ -16,7 +16,7 @@
 #include <stdint.h>                                   // uint64_t
 
 #include "kjson/KjNode.h"                             // KjNode
-#include "swNgsild/ldEntityMerge.h"                   // LdMergeReport
+#include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
 
 #include "db/Tenant.h"                                 // Tenant
 
@@ -26,4 +26,4 @@ extern int ramdbEntityAttrsSet(Tenant* tenantP, const char* entityId,
                                KjNode* fragmentDb, bool overwriteScope,
                                uint64_t ts, LdMergeReport* reportP);
 
-#endif  // SWRAMDB_RAMDB_ENTITY_ATTRS_SET_H_
+#endif  // CORRAMDB_RAMDB_ENTITY_ATTRS_SET_H_

@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBSUBSCRIPTIONQUERY_H_
-#define SWRAMDB_RAMDBSUBSCRIPTIONQUERY_H_
+#ifndef CORRAMDB_RAMDBSUBSCRIPTIONQUERY_H_
+#define CORRAMDB_RAMDBSUBSCRIPTIONQUERY_H_
 
 //
 // FILE            ramdbSubscriptionQuery.h
@@ -20,4 +20,4 @@
 //
 extern int ramdbSubscriptionQuery(Tenant* tenantP, int limit, int offset, KjNode** arrayPP);
 
-#endif  // SWRAMDB_RAMDBSUBSCRIPTIONQUERY_H_
+#endif  // CORRAMDB_RAMDBSUBSCRIPTIONQUERY_H_

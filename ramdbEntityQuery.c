@@ -14,17 +14,17 @@
 #include "kjson/kjBuilder.h"                          // kjArray, kjClone, kjFloat, kjChildAdd
 #include "kjson/kjClone.h"                            // kjClone
 #include "kjson/kjLookup.h"                           // kjLookup
-#include "swRest/SwRestState.h"                       // swRest
-#include "swNgsild/LdQ.h"                              // LdQNode
-#include "swNgsild/LdVocab.h"                         // LD_VOCAB_SCOPE
-#include "swNgsild/LdScopeExpr.h"                     // LdScopeExpr
-#include "swNgsild/LdGeoRel.h"                         // LdGeoRel, LdGeoNear
-#include "swNgsild/ldEntityMatch.h"                    // ldEntityMatchType, ldEntityMatchScope, ldEntityMatchQ
+#include "corRest/CorRestState.h"                       // corRest
+#include "corNgsild/LdQ.h"                              // LdQNode
+#include "corNgsild/LdVocab.h"                         // LD_VOCAB_SCOPE
+#include "corNgsild/LdScopeExpr.h"                     // LdScopeExpr
+#include "corNgsild/LdGeoRel.h"                         // LdGeoRel, LdGeoNear
+#include "corNgsild/ldEntityMatch.h"                    // ldEntityMatchType, ldEntityMatchScope, ldEntityMatchQ
 
 #include "db/DbDriver.h"                              // DB_OK, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbEntities
-#include "currentState/swRamDB/ramdbGeoMatch.h"       // ramdbGeoMatch
-#include "currentState/swRamDB/ramdbEntityQuery.h"    // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbEntities
+#include "currentState/corRamDB/ramdbGeoMatch.h"       // ramdbGeoMatch
+#include "currentState/corRamDB/ramdbEntityQuery.h"    // Own interface
 
 
 
@@ -103,7 +103,7 @@ static int distCandCmp(const void* a, const void* b)
 int ramdbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, KjNode** arrayPP)
 {
   KjNode* entities = ramdbEntities(tenantP);
-  KjNode* arrayP   = kjArray(swRest.kjsonP, NULL);
+  KjNode* arrayP   = kjArray(corRest.kjsonP, NULL);
   int     limit    = (filterP != NULL) ? filterP->limit  : 0;
   int     offset   = (filterP != NULL) ? filterP->offset : 0;
 
@@ -113,7 +113,7 @@ int ramdbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, KjNode** arrayPP)
   int total = 0;
   for (KjNode* eP = entities->value.firstChildP; eP != NULL; eP = eP->next) total++;
 
-  GeoCand* cands = (GeoCand*) kaAlloc(&swRest.kalloc, sizeof(GeoCand) * (total > 0 ? total : 1));
+  GeoCand* cands = (GeoCand*) kaAlloc(&corRest.kalloc, sizeof(GeoCand) * (total > 0 ? total : 1));
   int      nCand = 0;
 
   // § 7.6.2.2 sort-by-distance — a synthetic near filter reused per entity to
@@ -263,10 +263,10 @@ int ramdbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, KjNode** arrayPP)
   {
     for (int i = offset; i < nCand && (i - offset) < limit; i++)
     {
-      KjNode* cloneP = kjClone(swRest.kjsonP, cands[i].eP);
+      KjNode* cloneP = kjClone(corRest.kjsonP, cands[i].eP);
 
       if (cands[i].dist >= 0)
-        kjChildAdd(cloneP, kjFloat(swRest.kjsonP, "geoDistance", cands[i].dist));
+        kjChildAdd(cloneP, kjFloat(corRest.kjsonP, "geoDistance", cands[i].dist));
 
       kjChildAdd(arrayP, cloneP);
     }

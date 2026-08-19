@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBGEOMATCH_H_
-#define SWRAMDB_RAMDBGEOMATCH_H_
+#ifndef CORRAMDB_RAMDBGEOMATCH_H_
+#define CORRAMDB_RAMDBGEOMATCH_H_
 
 //
 // FILE            ramdbGeoMatch.h
@@ -40,4 +40,4 @@ extern void ramdbGeoClose(void);
 //
 extern bool ramdbGeoMatch(KjNode* entityP, DbQueryFilter* filterP, double* distanceP);
 
-#endif  // SWRAMDB_RAMDBGEOMATCH_H_
+#endif  // CORRAMDB_RAMDBGEOMATCH_H_

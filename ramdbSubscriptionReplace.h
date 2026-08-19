@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBSUBSCRIPTIONREPLACE_H_
-#define SWRAMDB_RAMDBSUBSCRIPTIONREPLACE_H_
+#ifndef CORRAMDB_RAMDBSUBSCRIPTIONREPLACE_H_
+#define CORRAMDB_RAMDBSUBSCRIPTIONREPLACE_H_
 
 //
 // FILE            ramdbSubscriptionReplace.h
@@ -14,4 +14,4 @@
 
 extern int ramdbSubscriptionReplace(Tenant* tenantP, const char* subId, KjNode* subP);
 
-#endif  // SWRAMDB_RAMDBSUBSCRIPTIONREPLACE_H_
+#endif  // CORRAMDB_RAMDBSUBSCRIPTIONREPLACE_H_

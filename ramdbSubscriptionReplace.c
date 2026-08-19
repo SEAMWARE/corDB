@@ -21,8 +21,8 @@
 #include "kjson/kjFree.h"                             // kjFree
 #include "kjson/kjChildReplace.h"                     // kjChildReplace
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbSubscriptions
-#include "currentState/swRamDB/ramdbSubscriptionReplace.h"  // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbSubscriptions
+#include "currentState/corRamDB/ramdbSubscriptionReplace.h"  // Own interface
 
 
 
@@ -43,7 +43,7 @@ int ramdbSubscriptionReplace(Tenant* tenantP, const char* subId, KjNode* subP)
       KjNode* cloneP = kjClone(NULL, subP);
       if (cloneP == NULL)
       {
-        KT_E("swRamDB: kjClone failed for subscription '%s'", subId);
+        KT_E("corRamDB: kjClone failed for subscription '%s'", subId);
         return DB_ERR;
       }
 

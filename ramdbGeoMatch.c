@@ -8,7 +8,7 @@
 // Thin wrappers around the shared geoMatch implementation.
 //
 #include "shared/geoMatch.h"
-#include "currentState/swRamDB/ramdbGeoMatch.h"
+#include "currentState/corRamDB/ramdbGeoMatch.h"
 
 void ramdbGeoInit(void)                                              { geoMatchInit(); }
 void ramdbGeoClose(void)                                             { geoMatchClose(); }

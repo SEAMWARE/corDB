@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBSUBSCRIPTIONUPDATE_H_
-#define SWRAMDB_RAMDBSUBSCRIPTIONUPDATE_H_
+#ifndef CORRAMDB_RAMDBSUBSCRIPTIONUPDATE_H_
+#define CORRAMDB_RAMDBSUBSCRIPTIONUPDATE_H_
 
 //
 // FILE            ramdbSubscriptionUpdate.h
@@ -20,4 +20,4 @@
 //
 extern int ramdbSubscriptionUpdate(Tenant* tenantP, const char* subId, KjNode* fragmentP);
 
-#endif  // SWRAMDB_RAMDBSUBSCRIPTIONUPDATE_H_
+#endif  // CORRAMDB_RAMDBSUBSCRIPTIONUPDATE_H_

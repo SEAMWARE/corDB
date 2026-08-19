@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBREGISTRATIONUPDATE_H_
-#define SWRAMDB_RAMDBREGISTRATIONUPDATE_H_
+#ifndef CORRAMDB_RAMDBREGISTRATIONUPDATE_H_
+#define CORRAMDB_RAMDBREGISTRATIONUPDATE_H_
 
 //
 // FILE            ramdbRegistrationUpdate.h
@@ -14,4 +14,4 @@
 
 extern int ramdbRegistrationUpdate(Tenant* tenantP, const char* regId, KjNode* fragmentP);
 
-#endif  // SWRAMDB_RAMDBREGISTRATIONUPDATE_H_
+#endif  // CORRAMDB_RAMDBREGISTRATIONUPDATE_H_

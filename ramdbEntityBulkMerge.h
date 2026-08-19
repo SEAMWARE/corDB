@@ -1,5 +1,5 @@
-#ifndef SWRAMDB_RAMDBENTITYBULKMERGE_H_
-#define SWRAMDB_RAMDBENTITYBULKMERGE_H_
+#ifndef CORRAMDB_RAMDBENTITYBULKMERGE_H_
+#define CORRAMDB_RAMDBENTITYBULKMERGE_H_
 
 //
 // FILE            ramdbEntityBulkMerge.h
@@ -9,7 +9,7 @@
 // Copyright 2026 Seamware
 //
 #include "kjson/KjNode.h"                               // KjNode
-#include "swNgsild/ldEntityMerge.h"                     // LdMergeReport
+#include "corNgsild/ldEntityMerge.h"                     // LdMergeReport
 
 #include "db/Tenant.h"                                  // Tenant
 
@@ -35,4 +35,4 @@ extern int ramdbEntityBulkChangesApply(Tenant* tenantP, KjNode* fragmentsArr,
                                        KjNode** mergedTargetsV, LdMergeReport* reportsV,
                                        int* resultsV);
 
-#endif  // SWRAMDB_RAMDBENTITYBULKMERGE_H_
+#endif  // CORRAMDB_RAMDBENTITYBULKMERGE_H_

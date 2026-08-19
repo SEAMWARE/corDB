@@ -13,8 +13,8 @@
 #include "kjson/kjLookup.h"                           // kjLookup
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityDelete.h"   // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityDelete.h"   // Own interface
 
 
 

@@ -11,11 +11,11 @@
 #include "kjson/KjNode.h"                             // KjNode
 #include "kjson/kjLookup.h"                           // kjLookup
 
-#include "swNgsild/ldEntityAttrsSet.h"                // ldEntityAttrsSet
+#include "corNgsild/ldEntityAttrsSet.h"                // ldEntityAttrsSet
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
-#include "currentState/swRamDB/ramdbStore.h"          // ramdbEntities
-#include "currentState/swRamDB/ramdbEntityAttrsSet.h" // Own interface
+#include "currentState/corRamDB/ramdbStore.h"          // ramdbEntities
+#include "currentState/corRamDB/ramdbEntityAttrsSet.h" // Own interface
 
 
 
