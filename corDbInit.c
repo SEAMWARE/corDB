@@ -35,6 +35,10 @@ int corDbInit(void)
   corDbPersistTenants();                             // and every other tenant --dbDir knows
   corDbGeoInit();
 
+#if COR_DB_RAM_ONLY
+  COR_I("ramDB: in-memory store ready, in RAM only - a restart starts empty (per-tenant CorNode trees, GEOS enabled)");
+#else
   COR_I("corDB: in-memory store ready (per-tenant CorNode trees, GEOS enabled)");
+#endif
   return 0;
 }

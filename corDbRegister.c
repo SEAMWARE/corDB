@@ -89,7 +89,11 @@ static int corDbTenantSetup(Tenant* tenantP)
 //
 void dbRegister(DbDriver* driverP)
 {
+#if COR_DB_RAM_ONLY
+  driverP->alias           = "ramDB";
+#else
   driverP->alias           = "corDB";
+#endif
   driverP->version         = PLUGIN_VERSION;
   driverP->args            = corDbArgV;
   driverP->init            = corDbInit;

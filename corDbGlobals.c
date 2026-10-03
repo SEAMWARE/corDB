@@ -27,6 +27,16 @@ int   corDbSnapshotEvery = 64;
 //
 // corDbArgV - the plugin's options: persistence (doc/persistence.md § 8)
 //
+#if COR_DB_RAM_ONLY
+//
+// ramDB: corDB in RAM only - no disk, so no options for one: --dbDir is refused as the unknown option
+// it is, not ignored
+//
+CorArg corDbArgV[] =
+{
+  CORARGS_END
+};
+#else
 CorArg corDbArgV[] =
 {
   { "--dbDir",          "-dbDir",          CorArgString, _vp &corDbDir,          CorArgOpt, NULL,           NULL,  NULL,       "persistent store directory (none: in RAM only)" },
@@ -35,3 +45,4 @@ CorArg corDbArgV[] =
   { "--dbSnapshotEvery", "-dbSnapshotEvery", CorArgInt,  _vp &corDbSnapshotEvery, CorArgOpt, _vp 64,         _vp 1, _vp 65536,  "MiB of log after which a tenant is snapshotted" },
   CORARGS_END
 };
+#endif
