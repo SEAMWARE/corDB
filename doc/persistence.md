@@ -1,5 +1,7 @@
 # corDB persistence - design
 
+How it got here - what measuring found, and what changed: [the history](history/persistence.md).
+
 *Draft, 2026-10-02 (moved here from coraine#219 with corDB). The concrete form of coraine's [`ToDo.md`](https://github.com/SEAMWARE/coraine/blob/main/ToDo.md) § 15 steps 1-2 - the record format, and log +
 snapshot + recovery. History (the selector, retention, the temporal index) builds on it later and is
 only constrained here, not designed.*
@@ -131,20 +133,30 @@ writes since the last sync (§ 5).
 
 ## 6. Snapshots and recovery
 
-**Snapshot** (after `--dbSnapshotEvery` MiB of log and at least as much log as the last snapshot was
-big - so the snapshots of a growing store cost in proportion to what is written, not to the square of
-the store - and at a clean shutdown): under the tenant's
-**write lock**, what is buffered is written to the current `log-M.cor`, the log switches to
-`log-N.cor` (N = M + 1), and the store is encoded - every entity, subscription and registration as a
-PUT record, so a snapshot replays with the same loop as a log, into buffers of 64 MiB (no single
-buffer for a store of gigabytes). After the lock: written to `snap-N.tmp`, `fdatasync`, `rename` to
-`snap-N.cor`, `fsync` the directory.
+**Snapshot** - on a thread of its own (`corDbSnapshot`), after `--dbSnapshotEvery` MiB of log and at
+least as much log as the last snapshot was big (so the snapshots of a growing store cost in proportion
+to what is written), and at a clean shutdown:
+
+1. **the start**, under the tenant's write lock and touching no disk: the buffered records swapped out,
+   the sequence taken, a cursor set on the first entity. After the lock, the swapped-out records are
+   written and synced into the current `log-M.cor`, and the log switches to `log-N.cor` (N = M + 1)
+2. **the store**, in slices of 1000 entities, each under the **read lock** - readers run beside it,
+   writers between the slices (a writer that takes or swaps the cursor's entity moves it). Every
+   entity, subscription and registration as a PUT record, so a snapshot replays with the same loop as
+   a log, into buffers of 64 MiB
+3. **the file**: `snap-N.tmp`, `fdatasync`, `rename` to `snap-N.cor`, `fsync` the directory; then the
+   files before N are deleted
+
+The snapshot is not the store at one instant, and does not need to be: the records are effects (an
+entity put, an id deleted), and recovery replays `log-N` - every write since the start - on top of it.
+A write a slice saw replays to the same state, one it missed to its state, an entity deleted after a
+slice took it is deleted again; the creation order holds, because a slice walks the list in its order.
+The longest a writer waits on a snapshot: ~8 ms (measured).
 
 **A log segment rolls at 1 GiB** on its own, without a snapshot: no file reaches the 2 GiB the reader's
-offsets allow, whatever the snapshots do. Recovery replays every segment from the snapshot's on. At ~350 MiB per 100 000 entities
-that holds the writers for well under a second, and it is obviously correct, which a copy-on-write
-scheme is not. Older snapshots and logs are deleted once the new snapshot is durable (history, later,
-keeps them: § 7).
+offsets allow, whatever the snapshots do. Recovery replays every segment from the snapshot's on.
+Older snapshots and logs are deleted once the new snapshot is durable (history, later, keeps them:
+§ 7). Sizes, measured: 100 000 entities of four attributes are 38 MB, as a log or as a snapshot.
 
 **Recovery**, at start, per tenant directory:
 
