@@ -41,4 +41,4 @@ Through the broker: coraine's functional suite run with `-db corDB` (`corTest`),
 ## Next
 
 Persistence - a log and snapshots, so the store survives a restart - and corsh, the maintenance
-tool: coraine's `doc/cordb-persistence.md`, [Ideas](https://github.com/SEAMWARE/coraine/blob/main/doc/ideas.md).
+tool: [the design](doc/persistence.md). Further ideas: coraine's [Ideas](https://github.com/SEAMWARE/coraine/blob/main/doc/ideas.md).
