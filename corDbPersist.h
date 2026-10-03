@@ -27,12 +27,17 @@
 
 
 
+struct CorDbStore;
+
+
+
 // -----------------------------------------------------------------------------
 //
 // CorDbPersist - one tenant's log: what is buffered, and the file it goes to
 //
-// Lock order: the tenant's write lock, then 'mutex'. The flusher takes only 'mutex', and only to
-// swap the buffer out - the write and the fdatasync run with no lock held.
+// Lock order: the tenant's write lock, then 'ioMutex', then 'mutex'. A write takes the tenant's lock
+// and 'mutex'; the flusher 'ioMutex' for a flush and 'mutex' only to swap the buffer out, so a write
+// never waits for the disk; a snapshot all three.
 //
 typedef struct CorDbPersist
 {
@@ -42,8 +47,17 @@ typedef struct CorDbPersist
   uint64_t              seq;                           // the last sequence number given out
   uint64_t              syncedSeq;                     // the last one on the disk (atomic)
   bool                  failed;                        // a write or a sync failed: what is buffered is not on the disk
-  int                   fd;                            // the open log file
-  char                  path[512];                     // ... and its path, for the errors
+
+  pthread_mutex_t       ioMutex;                       // the file: a flush's write + sync, a snapshot's switch of segment
+  int                   fd;                            // the open log segment, log-<segment>.cor
+  unsigned int          segment;
+  unsigned long long    segBytes;                      // written to it - a snapshot is due at --dbSnapshotEvery MiB
+  bool                  snapshotDue;
+  char                  path[600];                     // the segment's path, for the errors
+  char                  dir[512];                      // the tenant's directory
+  char                  tenant[64];                    // the tenant's name, for the log lines
+  struct CorDbStore*    storeP;                        // the store the snapshots are taken of
+
   struct CorDbPersist*  next;                          // every tenant's, for the flusher
 } CorDbPersist;
 
@@ -67,7 +81,6 @@ extern bool corDbPersistInit(void);
 // store's construction. A log that exists and cannot be read ends the broker - serving the store
 // without it would answer, and then overwrite, a past that is not the real one.
 //
-struct CorDbStore;
 extern CorDbPersist* corDbPersistOpen(Tenant* tenantP, struct CorDbStore* storeP);
 
 
@@ -106,9 +119,10 @@ extern void corDbPersistSyncWait(void);
 
 // -----------------------------------------------------------------------------
 //
-// corDbPersistClose - the flusher stopped, every buffer written and synced, the files closed
+// corDbPersistClose - the flusher stopped, every buffer written and synced, a snapshot per tenant
 //
-// After the last request: what is acknowledged is on the disk when this returns (§ 5a).
+// After the last request, with the stores still there: what is acknowledged is on the disk when
+// this returns, and the next start loads the snapshots with no log to replay (§ 5a).
 //
 extern void corDbPersistClose(void);
 

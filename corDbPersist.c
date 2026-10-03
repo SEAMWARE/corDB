@@ -6,14 +6,21 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-// The write side of persistence - doc/persistence.md § 2, § 5, § 5a.
+// Persistence - doc/persistence.md § 2, § 5, § 5a, § 6.
 //
-//   <--dbDir>/<tenant>/log-000000.cor
+//   <--dbDir>/<tenant>/snap-000041.cor   the store as of a sequence number: every entity, subscription
+//                                       and registration, as PUT records - recovery is one replay loop
+//   <--dbDir>/<tenant>/log-000041.cor    every write after that snapshot
+//
+// A snapshot is taken under the tenant's write lock, at a segment switch: the records up to it go to
+// log-N, the snapshot is snap-N+1, the writes after it go to log-N+1. Written as .tmp, synced,
+// renamed: a snapshot is complete or not there. Only then are snap-N and log-N deleted.
 //
 // A tenant's directory is its name with every byte outside [A-Za-z0-9-] written %XX - a tenant name is
 // whatever the NGSILD-Tenant header said, '/' and '..' included - and the default tenant's is '_',
 // which no escaped name can be.
 //
+#define _GNU_SOURCE                                    // pthread_setname_np
 #include <errno.h>                                     // errno
 #include <fcntl.h>                                     // open, O_*
 #include <pthread.h>                                   // pthread_*
@@ -33,6 +40,7 @@
 #include "corAlloc/corAllocBufferReset.h"              // corAllocBufferReset
 #include "corBase/corCoLoop.h"                         // corCoBlocking
 #include "corTree/CorNode.h"                           // CorNode
+#include "corTree/corTreeLookup.h"                     // corTreeLookup
 #include "corRest/CorRestState.h"                      // corRestP
 
 #include "db/Tenant.h"                                 // Tenant, tenantGetOrCreate
@@ -159,9 +167,20 @@ static bool writeAll(int fd, const char* buf, int n)
 
 // -----------------------------------------------------------------------------
 //
-// flushOne - one tenant's buffer: swapped out under its mutex, written and synced with no lock held
+// filePath - <dir>/<kind>-<n>.<suffix>
 //
-static void flushOne(CorDbPersist* pP)
+static void filePath(CorDbPersist* pP, const char* kind, unsigned int n, const char* suffix, char* out, int outSize)
+{
+  snprintf(out, outSize, "%s/%s-%06u.%s", pP->dir, kind, n, suffix);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// flushLocked - the buffer swapped out under 'mutex', written and synced with only 'ioMutex' held
+//
+static void flushLocked(CorDbPersist* pP)
 {
   pthread_mutex_lock(&pP->mutex);
 
@@ -186,10 +205,15 @@ static void flushOne(CorDbPersist* pP)
       COR_E("corDB: fdatasync of the log '%s': %s - what was buffered may NOT be on the disk", pP->path, strerror(errno));
       ok = false;
     }
+
+    pP->segBytes += (unsigned long long) out.len;
+
+    if (pP->segBytes >= (unsigned long long) corDbSnapshotEvery * 1024 * 1024)
+      pP->snapshotDue = true;
   }
 
   out.len   = 0;
-  pP->spare = out;                                     // only the flusher (or the close, after it) touches spare
+  pP->spare = out;                                     // only under ioMutex: one flush at a time
 
   if (ok)
     __atomic_store_n(&pP->syncedSeq, last, __ATOMIC_RELEASE);
@@ -201,7 +225,217 @@ static void flushOne(CorDbPersist* pP)
 
 // -----------------------------------------------------------------------------
 //
-// flushAll - every tenant's buffer, then the waiters of --dbSync request woken
+// flushOne - one tenant's buffer, written and synced
+//
+static void flushOne(CorDbPersist* pP)
+{
+  pthread_mutex_lock(&pP->ioMutex);
+  flushLocked(pP);
+  pthread_mutex_unlock(&pP->ioMutex);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// syncDir - a rename made durable
+//
+static void syncDir(const char* dir)
+{
+  int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+
+  if (fd >= 0)
+  {
+    fsync(fd);
+    close(fd);
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// nameNumber - the n of "<kind>-<n>.<suffix>"; false if the name is not one
+//
+static bool nameNumber(const char* name, const char* kind, const char* suffix, unsigned int* nP)
+{
+  int kindLen = strlen(kind);
+
+  if ((strncmp(name, kind, kindLen) != 0) || (name[kindLen] != '-'))
+    return false;
+
+  char*         endP;
+  unsigned long n = strtoul(&name[kindLen + 1], &endP, 10);
+
+  if ((endP == &name[kindLen + 1]) || (*endP != '.') || (strcmp(&endP[1], suffix) != 0))
+    return false;
+
+  *nP = (unsigned int) n;
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// dropBefore - the snapshots and log segments older than segment n deleted: n's snapshot holds them
+//
+static void dropBefore(CorDbPersist* pP, unsigned int n)
+{
+  DIR* dirP = opendir(pP->dir);
+
+  if (dirP == NULL)
+    return;
+
+  struct dirent* entryP;
+
+  while ((entryP = readdir(dirP)) != NULL)
+  {
+    unsigned int k;
+
+    if ((nameNumber(entryP->d_name, "snap", "cor", &k) || nameNumber(entryP->d_name, "log", "cor", &k)) && (k < n))
+    {
+      char path[1024];
+
+      snprintf(path, sizeof(path), "%s/%s", pP->dir, entryP->d_name);
+      if (unlink(path) != 0)
+        COR_W("corDB: deleting '%s': %s", path, strerror(errno));
+    }
+  }
+
+  closedir(dirP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// snapshotEncode - every entity, subscription and registration of the store as PUT records
+//
+static bool snapshotEncode(CorDbStore* storeP, CorBinBuffer* outP, uint64_t seq)
+{
+  uint64_t t = nowNs();
+
+  for (CorNode* eP = storeP->entities->value.head; eP != NULL; eP = eP->next)
+  {
+    if (corDbLogEncode(outP, CorDbLogEntityPut, seq, t, eP) == false)
+      return false;
+  }
+
+  CorNode* subsP = corTreeLookup(storeP->tree, "subscriptions");
+  CorNode* regsP = corTreeLookup(storeP->tree, "registrations");
+
+  for (CorNode* sP = subsP->value.head; sP != NULL; sP = sP->next)
+  {
+    if (corDbLogEncode(outP, CorDbLogSubPut, seq, t, sP) == false)
+      return false;
+  }
+
+  for (CorNode* rP = regsP->value.head; rP != NULL; rP = rP->next)
+  {
+    if (corDbLogEncode(outP, CorDbLogRegPut, seq, t, rP) == false)
+      return false;
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// snapshot - the tenant's store as snap-N+1, the log continued in log-N+1, the older files deleted
+//
+// Under the write lock: what is buffered goes to log-N, the segment switches, the store is encoded.
+// The encoding is a copy, so the file is written after the lock goes. A snapshot that fails leaves
+// snap-N and every log after it - recovery replays the longer way, nothing is lost.
+//
+static void snapshot(CorDbPersist* pP)
+{
+  CorDbStore*     storeP = pP->storeP;
+  CorBinBuffer    snap   = { NULL, 0, 0 };
+  bool            ok     = false;
+  unsigned int    n;
+  struct timespec t0;
+  struct timespec t1;
+
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+
+  pthread_rwlock_wrlock(&storeP->lock);
+  pthread_mutex_lock(&pP->ioMutex);
+
+  flushLocked(pP);
+  pP->snapshotDue = false;
+  n               = pP->segment + 1;
+
+  char logPath[600];
+  filePath(pP, "log", n, "cor", logPath, sizeof(logPath));
+
+  int fd = open(logPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+
+  if (fd < 0)
+    COR_E("corDB: snapshot of '%s': the log '%s': %s - no snapshot", pP->tenant, logPath, strerror(errno));
+  else
+  {
+    close(pP->fd);
+    pP->fd       = fd;
+    pP->segment  = n;
+    pP->segBytes = 0;
+    strcpy(pP->path, logPath);
+
+    ok = snapshotEncode(storeP, &snap, pP->seq);
+    if (ok == false)
+      COR_E("corDB: snapshot of '%s': out of memory - no snapshot", pP->tenant);
+  }
+
+  pthread_mutex_unlock(&pP->ioMutex);
+  pthread_rwlock_unlock(&storeP->lock);
+
+  pthread_mutex_lock(&flushMutex);                     // its flush may have synced what a --dbSync request writer waits for
+  pthread_cond_broadcast(&syncedCond);
+  pthread_mutex_unlock(&flushMutex);
+
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  long lockedMs = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+
+  if (ok == false)
+  {
+    free(snap.buf);
+    return;
+  }
+
+  char tmpPath[600];
+  char snapPath[600];
+
+  filePath(pP, "snap", n, "tmp", tmpPath, sizeof(tmpPath));
+  filePath(pP, "snap", n, "cor", snapPath, sizeof(snapPath));
+
+  fd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  ok = (fd >= 0) && writeAll(fd, snap.buf, snap.len) && (fdatasync(fd) == 0);
+
+  if (fd >= 0)
+    close(fd);
+
+  if (ok && (rename(tmpPath, snapPath) == 0))
+  {
+    syncDir(pP->dir);
+    dropBefore(pP, n);
+    COR_I("corDB: snapshot of '%s': %d bytes as '%s' (writers held %ld ms)", pP->tenant, snap.len, snapPath, lockedMs);
+  }
+  else
+  {
+    COR_E("corDB: snapshot of '%s' to '%s': %s - the log since the last snapshot is kept", pP->tenant, tmpPath, strerror(errno));
+    unlink(tmpPath);
+  }
+
+  free(snap.buf);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// flushAll - every tenant's buffer, the waiters of --dbSync request woken, then the snapshots due
 //
 static void flushAll(void)
 {
@@ -215,6 +449,12 @@ static void flushAll(void)
   pthread_mutex_lock(&flushMutex);
   pthread_cond_broadcast(&syncedCond);
   pthread_mutex_unlock(&flushMutex);
+
+  for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
+  {
+    if (pP->snapshotDue)
+      snapshot(pP);
+  }
 }
 
 
@@ -331,6 +571,7 @@ bool corDbPersistInit(void)
     return false;
   }
 
+  pthread_setname_np(flusherTid, "corDbFlusher");     // not one of the broker's own threads, to whoever looks (top, gdb, /proc)
   flusherUp = true;
   COR_I("corDB: persistent in '%s' (--dbSync %s, every %d ms)", corDbDir, corDbSync, corDbSyncInterval);
   return true;
@@ -340,25 +581,23 @@ bool corDbPersistInit(void)
 
 // -----------------------------------------------------------------------------
 //
-// load - the tenant's log replayed into its store (§ 6); a torn tail cut off; false if unreadable
+// loadFile - one snapshot or log segment replayed into the store (§ 6); false if it cannot be trusted
 //
 // Record by record until the end or the first record that is short or fails its CRC - what a death
-// in mid-write leaves. The file is truncated there, so the records appended after the restart follow
-// the last good one and a later replay reaches them.
+// in mid-write leaves. In the LAST log segment that is a torn tail: the file is truncated there, so
+// the records appended after the restart follow the last good one and a later replay reaches them.
+// Anywhere else - a snapshot, an older segment - it is damage, and the broker does not start on it.
 //
 // Each record decodes into a scratch arena and is cloned into the store, as a request's tree is.
-// The arena is emptied every 1000 records: memory stays bounded whatever the log's length.
+// The arena is emptied every 1000 records: memory stays bounded whatever the file's length.
 //
-static bool load(CorDbPersist* pP, CorDbStore* storeP, const char* tenantName)
+static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, bool tornIsTail, int* recordsP)
 {
-  int fd = open(pP->path, O_RDONLY | O_CLOEXEC);
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
 
   if (fd < 0)
   {
-    if (errno == ENOENT)
-      return true;                                     // a new tenant
-
-    COR_E("corDB: log '%s': %s", pP->path, strerror(errno));
+    COR_E("corDB: '%s': %s", path, strerror(errno));
     return false;
   }
 
@@ -366,7 +605,7 @@ static bool load(CorDbPersist* pP, CorDbStore* storeP, const char* tenantName)
 
   if (fstat(fd, &st) != 0)
   {
-    COR_E("corDB: log '%s': %s", pP->path, strerror(errno));
+    COR_E("corDB: '%s': %s", path, strerror(errno));
     close(fd);
     return false;
   }
@@ -377,9 +616,9 @@ static bool load(CorDbPersist* pP, CorDbStore* storeP, const char* tenantName)
     return true;
   }
 
-  if (st.st_size > 0x7FFFFFFF)                         // the reader's offsets are ints - rollover (§ 6) keeps a log far below
+  if (st.st_size > 0x7FFFFFFF)                         // the reader's offsets are ints
   {
-    COR_E("corDB: log '%s' is %lld bytes - more than one log file can be", pP->path, (long long) st.st_size);
+    COR_E("corDB: '%s' is %lld bytes - more than one file can be", path, (long long) st.st_size);
     close(fd);
     return false;
   }
@@ -403,22 +642,16 @@ static bool load(CorDbPersist* pP, CorDbStore* storeP, const char* tenantName)
 
   if ((buf == NULL) || (got < len))
   {
-    COR_E("corDB: reading the log '%s': %s", pP->path, (buf == NULL) ? "out of memory" : strerror(errno));
+    COR_E("corDB: reading '%s': %s", path, (buf == NULL) ? "out of memory" : strerror(errno));
     free(buf);
     return false;
   }
-
-  struct timespec t0;
-  struct timespec t1;
-  clock_gettime(CLOCK_MONOTONIC, &t0);
 
   enum { ARENA_INIT = 64 * 1024 };
   char*          arenaBuf = (char*) malloc(ARENA_INIT);
   CorAlloc       arena;
   int            off      = 0;
-  int            records  = 0;
   int            failed   = 0;
-  uint64_t       lastSeq  = 0;
   CorDbLogStatus status   = CorDbLogEnd;
   CorDbLogRecord rec;
 
@@ -435,9 +668,9 @@ static bool load(CorDbPersist* pP, CorDbStore* storeP, const char* tenantName)
     if (corDbReplay(storeP, &rec) == false)
       ++failed;                                        // said why; the next records still apply
 
-    lastSeq = rec.seq;
+    pP->seq = rec.seq;
 
-    if ((++records % 1000) == 0)
+    if ((++*recordsP % 1000) == 0)
       corAllocBufferReset(&arena, true);
   }
 
@@ -445,24 +678,149 @@ static bool load(CorDbPersist* pP, CorDbStore* storeP, const char* tenantName)
   free(arenaBuf);
   free(buf);
 
-  if (status == CorDbLogTorn)
-  {
-    COR_W("corDB: log '%s': a torn record at byte %d of %d - the %d bytes after the last good record are cut", pP->path, off, len, len - off);
+  if (failed != 0)
+    COR_W("corDB: '%s': %d records did not apply - see above", path, failed);
 
-    if (truncate(pP->path, off) != 0)
+  if (status != CorDbLogTorn)
+    return true;
+
+  if (tornIsTail == false)
+  {
+    COR_E("corDB: '%s': a damaged record at byte %d of %d", path, off, len);
+    return false;
+  }
+
+  COR_W("corDB: '%s': a torn record at byte %d of %d - the %d bytes after the last good record are cut", path, off, len, len - off);
+
+  if (truncate(path, off) != 0)
+  {
+    COR_E("corDB: cutting the torn tail of '%s': %s", path, strerror(errno));
+    return false;
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// uintCompare - for qsort
+//
+static int uintCompare(const void* aP, const void* bP)
+{
+  unsigned int a = *(const unsigned int*) aP;
+  unsigned int b = *(const unsigned int*) bP;
+
+  return (a < b) ? -1 : (a > b);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// recover - the newest snapshot, then every log segment from it on, in order (§ 6)
+//
+// Also what a death between two steps of a snapshot leaves: a .tmp (never renamed - deleted), and
+// files older than the newest snapshot (its rename made them redundant - deleted). The log continues
+// in the newest segment.
+//
+static bool recover(CorDbPersist* pP, CorDbStore* storeP)
+{
+  DIR* dirP = opendir(pP->dir);
+
+  if (dirP == NULL)
+  {
+    COR_E("corDB: '%s': %s", pP->dir, strerror(errno));
+    return false;
+  }
+
+  unsigned int   snapN    = 0;
+  bool           haveSnap = false;
+  unsigned int*  logV     = NULL;
+  int            logs     = 0;
+  int            logSize  = 0;
+  struct dirent* entryP;
+
+  while ((entryP = readdir(dirP)) != NULL)
+  {
+    unsigned int k;
+
+    if (nameNumber(entryP->d_name, "snap", "tmp", &k))
     {
-      COR_E("corDB: cutting the torn tail of '%s': %s", pP->path, strerror(errno));
-      return false;
+      char path[1024];
+
+      snprintf(path, sizeof(path), "%s/%s", pP->dir, entryP->d_name);
+      unlink(path);                                    // an interrupted snapshot
+    }
+    else if (nameNumber(entryP->d_name, "snap", "cor", &k))
+    {
+      if ((haveSnap == false) || (k > snapN))
+        snapN = k;
+      haveSnap = true;
+    }
+    else if (nameNumber(entryP->d_name, "log", "cor", &k))
+    {
+      if (logs == logSize)
+      {
+        logSize = (logSize == 0) ? 16 : logSize * 2;
+        logV    = (unsigned int*) realloc(logV, logSize * sizeof(unsigned int));
+        if (logV == NULL)
+        {
+          closedir(dirP);
+          return false;
+        }
+      }
+
+      logV[logs++] = k;
     }
   }
 
-  pP->seq       = lastSeq;
-  pP->syncedSeq = lastSeq;
+  closedir(dirP);
+  qsort(logV, logs, sizeof(unsigned int), uintCompare);
+
+  struct timespec t0;
+  struct timespec t1;
+  int             records = 0;
+  bool            ok      = true;
+  char            path[600];
+
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+
+  pP->segment = haveSnap ? snapN : 0;
+
+  if (haveSnap)
+  {
+    filePath(pP, "snap", snapN, "cor", path, sizeof(path));
+    ok = loadFile(pP, storeP, path, false, &records);
+  }
+
+  for (int i = 0; (ok == true) && (i < logs); i++)
+  {
+    if (haveSnap && (logV[i] < snapN))
+      continue;
+
+    filePath(pP, "log", logV[i], "cor", path, sizeof(path));
+    ok          = loadFile(pP, storeP, path, (i == logs - 1), &records);
+    pP->segment = logV[i];
+  }
+
+  free(logV);
+
+  if (ok == false)
+    return false;
+
+  if (haveSnap)
+    dropBefore(pP, snapN);
+
+  pP->syncedSeq = pP->seq;
 
   clock_gettime(CLOCK_MONOTONIC, &t1);
   long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
 
-  COR_I("corDB: tenant '%s': %d records replayed in %ld ms (last sequence %llu)%s", tenantName, records, ms, (unsigned long long) lastSeq, (failed != 0) ? " - some did not apply, see above" : "");
+  if (records > 0)
+    COR_I("corDB: tenant '%s': %d records replayed in %ld ms (sequence %llu)", pP->tenant, records, ms, (unsigned long long) pP->seq);
+
   return true;
 }
 
@@ -477,38 +835,38 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
   if (flusherUp == false)
     return NULL;
 
-  char dir[256];
-  char dirPath[512];
-
-  tenantDir(tenantP->name, dir, sizeof(dir));
-  if (snprintf(dirPath, sizeof(dirPath), "%s/%s", corDbDir, dir) >= (int) sizeof(dirPath) - 16)
-  {
-    COR_E("corDB: --dbDir '%s' too long - the tenant '%s' is NOT persistent", corDbDir, tenantP->name);
-    return NULL;
-  }
-
-  if ((mkdir(dirPath, 0700) != 0) && (errno != EEXIST))
-  {
-    COR_E("corDB: tenant directory '%s': %s - the tenant is NOT persistent", dirPath, strerror(errno));
-    return NULL;
-  }
-
   CorDbPersist* pP = (CorDbPersist*) calloc(1, sizeof(CorDbPersist));
 
   if (pP == NULL)
     return NULL;
 
-  if (snprintf(pP->path, sizeof(pP->path), "%s/log-000000.cor", dirPath) >= (int) sizeof(pP->path))
+  char dir[256];
+
+  tenantDir(tenantP->name, dir, sizeof(dir));
+  if (snprintf(pP->dir, sizeof(pP->dir), "%s/%s", corDbDir, dir) >= (int) sizeof(pP->dir))
   {
-    free(pP);                                          // cannot be: dirPath left room above
+    COR_E("corDB: --dbDir '%s' too long - the tenant '%s' is NOT persistent", corDbDir, tenantP->name);
+    free(pP);
     return NULL;
   }
 
-  if (load(pP, storeP, tenantP->name) == false)
+  if ((mkdir(pP->dir, 0700) != 0) && (errno != EEXIST))
   {
-    COR_E("corDB: tenant '%s': its log could not be read - the broker does not start on a store it cannot trust", tenantP->name);
+    COR_E("corDB: tenant directory '%s': %s - the tenant is NOT persistent", pP->dir, strerror(errno));
+    free(pP);
+    return NULL;
+  }
+
+  snprintf(pP->tenant, sizeof(pP->tenant), "%s", tenantP->name);
+  pP->storeP = storeP;
+
+  if (recover(pP, storeP) == false)
+  {
+    COR_E("corDB: tenant '%s': its files in '%s' could not be read - the broker does not start on a store it cannot trust", tenantP->name, pP->dir);
     exit(1);
   }
+
+  filePath(pP, "log", pP->segment, "cor", pP->path, sizeof(pP->path));
 
   pP->fd = open(pP->path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
   if (pP->fd < 0)
@@ -518,7 +876,12 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
     return NULL;
   }
 
+  struct stat st;
+  if (fstat(pP->fd, &st) == 0)
+    pP->segBytes = (unsigned long long) st.st_size;
+
   pthread_mutex_init(&pP->mutex, NULL);
+  pthread_mutex_init(&pP->ioMutex, NULL);
 
   pthread_mutex_lock(&flushMutex);
   pP->next    = persistList;
@@ -744,9 +1107,17 @@ void corDbPersistClose(void)
   flusherUp = false;
 
   //
-  // The last round: no request runs any more, so what is in a buffer now is all there will be
+  // The last round: no request runs any more, so what is in a buffer now is all there will be.
+  // Then a snapshot per tenant (§ 5a step 3) - the next start loads it and has no log to replay. A
+  // stop killed during the snapshots has lost nothing: the logs are written and synced already.
   //
   flushAll();
+
+  for (CorDbPersist* pP = persistList; pP != NULL; pP = pP->next)
+  {
+    if (pP->segBytes != 0)                             // written since the last snapshot
+      snapshot(pP);
+  }
 
   CorDbPersist* nextP;
 
@@ -764,6 +1135,7 @@ void corDbPersistClose(void)
     free(pP->buf.buf);
     free(pP->spare.buf);
     pthread_mutex_destroy(&pP->mutex);
+    pthread_mutex_destroy(&pP->ioMutex);
     free(pP);
   }
 

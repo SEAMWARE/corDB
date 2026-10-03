@@ -129,18 +129,22 @@ writes since the last sync (§ 5).
 
 ## 6. Snapshots and recovery
 
-**Snapshot** (every `--dbSnapshotEvery` records or bytes of log, and at a clean shutdown): under the
-tenant's **write lock** - the store as one cor tree, written to `snap-N.tmp`, `fdatasync`, `rename`
-to `snap-N.cor`, `fsync` the directory; a new `log-N.cor` begins. At ~350 MiB per 100 000 entities
+**Snapshot** (every `--dbSnapshotEvery` MiB of log, and at a clean shutdown): under the tenant's
+**write lock**, what is buffered is written to the current `log-M.cor`, the log switches to
+`log-N.cor` (N = M + 1), and the store is encoded - every entity, subscription and registration as a
+PUT record, so a snapshot replays with the same loop as a log. After the lock: written to
+`snap-N.tmp`, `fdatasync`, `rename` to `snap-N.cor`, `fsync` the directory. At ~350 MiB per 100 000 entities
 that holds the writers for well under a second, and it is obviously correct, which a copy-on-write
 scheme is not. Older snapshots and logs are deleted once the new snapshot is durable (history, later,
 keeps them: § 7).
 
 **Recovery**, at start, per tenant directory:
 
-1. the newest `snap-N.cor` that decodes in full (a `.tmp` is an interrupted snapshot: deleted)
+1. the newest `snap-N.cor` (a `.tmp` is an interrupted snapshot: deleted). A snapshot that does not
+   decode in full stops the broker: the files before it are gone
 2. `log-N.cor`, `log-N+1.cor` ... in order, record by record, until a record that is short or fails
-   its CRC: **the torn tail** - the file is truncated there (`ftruncate`) and writing continues after it
+   its CRC: **the torn tail** - the file is truncated there (`truncate`) and writing continues after
+   it. Only the newest segment can have one; a bad record anywhere else stops the broker
 3. the indexes (`corDbIndex`) are rebuilt from the tree, as at any load
 
 Measured target: recovery at memory-bandwidth speed - decoding cor binary, no JSON parse.
