@@ -32,6 +32,13 @@ BUILD        ?= debug
 OBJDIR       ?= obj/$(BUILD)
 OUT          ?= $(OBJDIR)
 
+#
+# The broker's plugin interface is what corDB is built against. Without the coraine checkout beside it
+# (the corLibs umbrella builds the stack before coraine exists in a Docker build), corDB skips itself
+# with the reason - coraine's own `make di` / `make i` build it. COR_DB_REQUIRED=1 makes that an error.
+#
+HAVE_CORAINE  = $(wildcard $(CORAINE)/src/lib/db/DbDriver.h)
+
 COR_FEATURE_SUBSCRIPTIONS ?= 1
 COR_FEATURE_REGISTRATIONS ?= 1
 
@@ -82,6 +89,17 @@ DEPS          = $(OBJECTS:.o=.d) $(TROE_OBJECTS:.o=.d)
 PLUGIN        = $(OUT)/corDB.so
 TROE_PLUGIN   = $(OUT)/troe/corDB.so
 
+ifeq ($(HAVE_CORAINE),)
+ifeq ($(COR_DB_REQUIRED),1)
+$(error corDB: $(CORAINE)/src/lib/db/DbDriver.h not found - the coraine checkout must be beside corDB)
+endif
+all install i di ci cdi debug:
+	@echo "corDB: skipped - no coraine checkout at $(CORAINE) (the broker's plugin interface); coraine's make di builds it"
+clean:
+	rm -rf obj *~
+.PHONY: all install i di ci cdi debug clean
+else
+
 all: $(PLUGIN) $(TROE_PLUGIN)
 
 $(PLUGIN): $(OBJECTS)
@@ -116,13 +134,17 @@ install: all
 	cp -p $(PLUGIN)      $(PLUGIN_DIR)/db/currentState/corDB.so
 	cp -p $(TROE_PLUGIN) $(PLUGIN_DIR)/troe/temporal/corDB.so
 
-i:   install
-di:  install
-ci:  clean install
+i:     install
+di:    install
+ci:    clean install
+cdi:   clean install
+debug: all
 
 clean:
 	rm -rf obj *~
 
 -include $(DEPS)
 
-.PHONY: all install i di ci clean FORCE
+.PHONY: all install i di ci cdi debug clean FORCE
+
+endif
