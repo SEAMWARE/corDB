@@ -203,6 +203,13 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
       if (instP == NULL)
         continue;
 
+      //
+      // The store keys an instance by its datasetId rather than carrying it as a member: the answer
+      // carries it
+      //
+      if ((aP->instanceV[i].datasetId != NULL) && (corTreeLookup(instP, "datasetId") == NULL))
+        corTreeChildAdd(instP, corTreeString(kaP, "datasetId", aP->instanceV[i].datasetId));
+
       toApi(instP, kaP);
       corTreeChildAdd(arrayP, instP);
     }

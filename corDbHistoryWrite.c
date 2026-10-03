@@ -140,7 +140,7 @@ static void entityEvent(CorDbStore* storeP, CorDbHistEntity* eP, const char* ent
 static void instanceAppend(CorDbStore* storeP, CorDbHistEntity* eP, const char* attrName, const char* datasetId,
                            CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP)
 {
-  CorDbInstance* iP = corDbHistoryInstanceAdd(eP, attrName, datasetId, instanceP, deletedAtNs, kaP);
+  CorDbInstance* iP = corDbHistoryInstanceAdd(storeP->historyP, eP, attrName, datasetId, instanceP, deletedAtNs, kaP);
 
   if (iP == NULL)
   {
@@ -351,7 +351,7 @@ void corDbHistoryPreFree(CorDbHistPre* preP)
 //
 static void recordAppend(CorDbStore* storeP, CorDbHistEntity* eP, CorDbHistRecord* recP)
 {
-  CorDbInstance* iP = corDbHistoryRecordAdd(eP, recP);
+  CorDbInstance* iP = corDbHistoryRecordAdd(storeP->historyP, eP, recP);
 
   if (iP == NULL)
   {

@@ -39,8 +39,7 @@ typedef struct CorDbInstance
   uint64_t   createdAtNs;
   uint64_t   modifiedAtNs;
   uint64_t   deletedAtNs;                              // != 0: the attribute was deleted - the instance is its tombstone
-  char*      instanceId;
-  char*      datasetId;                                // NULL: the default instance
+  char*      datasetId;                                // NULL: the default instance (malloc only for a named one)
   char*      body;                                     // the history RECORD, cor binary: { id, type, attr, datasetId?, deletedAt?, instanceId, instance }
   int        bodyLen;                                  //   - the same bytes as the history log's record body
 } CorDbInstance;
@@ -53,23 +52,28 @@ typedef struct CorDbInstance
 //
 typedef struct CorDbHistAttr
 {
-  char*                  name;                         // expanded
-  CorDbInstance*         instanceV;                    // in the order written
+  const char*            name;                         // expanded - interned (CorDbHistory.names): not this attribute's to free
+  CorDbInstance*         instanceV;                    // in the order written - inlineV until it outgrows it
   int                    instances;
   int                    size;
   struct CorDbHistAttr*  next;
+  CorDbInstance          inlineV[2];                   // the first two instances: no array to allocate for most attributes
 } CorDbHistAttr;
 
 typedef struct CorDbHistEntity
 {
   char*                    id;
-  char*                    type;                       // expanded; the newest type the entity was written with
+  const char*              type;                       // expanded, interned; the newest type the entity was written with
   uint64_t                 createdAtNs;
   uint64_t                 deletedAtNs;                // != 0: deleted from current state (its history stays)
   CorDbHistAttr*           attrs;
   CorDbHistAttr*           lastAttr;
   struct CorDbHistEntity*  next;                       // creation order
 } CorDbHistEntity;
+
+
+
+struct CorDbHistory;
 
 
 
@@ -84,6 +88,15 @@ typedef struct CorDbHistory
   int                   count;
   CorDbHistEntity*      first;                         // creation order
   CorDbHistEntity*      last;
+
+  //
+  // Attribute names and entity types, interned: the same few strings, repeated for every entity -
+  // a strdup each was a malloc per attribute per entity (measured: malloc a quarter of a batch create)
+  //
+  struct CorHashTable*  names;
+  char**                nameV;                         // every interned string, to free them
+  int                   namesN;
+  int                   namesSize;
 } CorDbHistory;
 
 
@@ -113,7 +126,7 @@ extern CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityI
 //
 typedef struct CorDbHistRecord
 {
-  char*        body;                                 // malloc - taken over by corDbHistoryRecordAdd
+  char*        body;                                 // malloc, exactly its size - taken over by corDbHistoryRecordAdd
   int          bodyLen;
   const char*  attrName;                             // these four point into the caller's data / arena
   const char*  instanceId;
@@ -144,7 +157,7 @@ extern bool corDbHistoryRecordEncode(const char* entityId, const char* entityTyp
 // corDbHistoryRecordAdd - an encoded record into the entity's history (its body taken over); under
 // the write lock. NULL out of memory (the body then still the caller's).
 //
-extern CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord* recP);
+extern CorDbInstance* corDbHistoryRecordAdd(CorDbHistory* hP, CorDbHistEntity* eP, CorDbHistRecord* recP);
 
 
 
@@ -157,7 +170,7 @@ extern CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord
 // instanceId in it: the one it carries, or one generated. kaP is scratch for that (a request's arena);
 // nothing in it is kept. Returns the instance, or NULL out of memory.
 //
-extern CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* attrName, const char* datasetId,
+extern CorDbInstance* corDbHistoryInstanceAdd(CorDbHistory* hP, CorDbHistEntity* eP, const char* attrName, const char* datasetId,
                                               CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP);
 
 

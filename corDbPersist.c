@@ -982,7 +982,7 @@ static bool histReplay(CorDbStore* storeP, CorDbLogRecord* recP, CorAlloc* kaP)
     corTreeChildAdd(instP, instanceIdP);
   }
 
-  return corDbHistoryInstanceAdd(eP, attrP->value.s, ((dsP != NULL) && (dsP->type == CorString)) ? dsP->value.s : NULL,
+  return corDbHistoryInstanceAdd(storeP->historyP, eP, attrP->value.s, ((dsP != NULL) && (dsP->type == CorString)) ? dsP->value.s : NULL,
                                  instP, deletedAtNs, kaP) != NULL;
 }
 

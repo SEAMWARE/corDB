@@ -60,6 +60,57 @@ static int idCompare(const char* name, void* itemP)
 
 // -----------------------------------------------------------------------------
 //
+// nameCompare / intern - one copy of each attribute name and entity type per tenant
+//
+static int nameCompare(const char* name, void* itemP)
+{
+  return strcmp(name, (const char*) itemP);
+}
+
+static const char* intern(CorDbHistory* hP, const char* name)
+{
+  if (name == NULL)
+    return NULL;
+
+  if (hP->names == NULL)
+  {
+    hP->names = corHashTableCreate(NULL, idHash, nameCompare, 4096);  // a tenant's names are few: no growth
+    if (hP->names == NULL)
+      return NULL;
+  }
+
+  const char* p = (const char*) corHashItemLookup(hP->names, name);
+
+  if (p != NULL)
+    return p;
+
+  if (hP->namesN == hP->namesSize)
+  {
+    int    size = (hP->namesSize == 0) ? 64 : hP->namesSize * 2;
+    char** v    = (char**) realloc(hP->nameV, size * sizeof(char*));
+
+    if (v == NULL)
+      return NULL;
+
+    hP->nameV     = v;
+    hP->namesSize = size;
+  }
+
+  char* copyP = strdup(name);
+
+  if (copyP == NULL)
+    return NULL;
+
+  hP->nameV[hP->namesN++] = copyP;
+  corHashItemAdd(hP->names, copyP, copyP);
+
+  return copyP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // tableGrow - a table twice the size, with every entity in it (corHash does not rehash)
 //
 static bool tableGrow(CorDbHistory* hP)
@@ -94,15 +145,7 @@ CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityId, cons
   if (eP != NULL)
   {
     if ((entityType != NULL) && ((eP->type == NULL) || (strcmp(eP->type, entityType) != 0)))
-    {
-      char* typeP = strdup(entityType);                // the newest type the entity was written with
-
-      if (typeP != NULL)
-      {
-        free(eP->type);
-        eP->type = typeP;
-      }
-    }
+      eP->type = intern(hP, entityType);               // the newest type the entity was written with
 
     return eP;
   }
@@ -118,12 +161,11 @@ CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityId, cons
     return NULL;
 
   eP->id   = strdup(entityId);
-  eP->type = (entityType != NULL) ? strdup(entityType) : NULL;
+  eP->type = intern(hP, entityType);
 
   if ((eP->id == NULL) || ((entityType != NULL) && (eP->type == NULL)))
   {
     free(eP->id);
-    free(eP->type);
     free(eP);
     return NULL;
   }
@@ -146,7 +188,7 @@ CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityId, cons
 //
 // attrOf - the entity's history of one attribute, created on its first instance
 //
-static CorDbHistAttr* attrOf(CorDbHistEntity* eP, const char* attrName)
+static CorDbHistAttr* attrOf(CorDbHistory* hP, CorDbHistEntity* eP, const char* attrName)
 {
   for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = aP->next)
   {
@@ -159,12 +201,15 @@ static CorDbHistAttr* attrOf(CorDbHistEntity* eP, const char* attrName)
   if (aP == NULL)
     return NULL;
 
-  aP->name = strdup(attrName);
+  aP->name = intern(hP, attrName);
   if (aP->name == NULL)
   {
     free(aP);
     return NULL;
   }
+
+  aP->instanceV = aP->inlineV;
+  aP->size      = sizeof(aP->inlineV) / sizeof(aP->inlineV[0]);
 
   if (eP->lastAttr != NULL)
     eP->lastAttr->next = aP;
@@ -198,6 +243,35 @@ static uint64_t timeOf(CorNode* instanceP, const char* name)
   }
 
   return 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// encodeExact - a tree encoded into this thread's reusable buffer, then copied to one malloc of exactly
+// its size: a record encoded into a fresh buffer grew it by realloc after realloc and shrank it with
+// one more - a quarter of a batch create was malloc
+//
+static __thread CorBinBuffer scratch = { NULL, 0, 0 };
+
+static bool encodeExact(CorNode* treeP, char** bodyPP, int* lenP)
+{
+  scratch.len = 0;
+
+  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, &scratch) == false)
+    return false;
+
+  char* bodyP = (char*) malloc(scratch.len);
+
+  if (bodyP == NULL)
+    return false;
+
+  memcpy(bodyP, scratch.buf, scratch.len);
+  *bodyPP = bodyP;
+  *lenP   = scratch.len;
+
+  return true;
 }
 
 
@@ -253,16 +327,9 @@ bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, cons
   corTreeChildAdd(treeP, corTreeString(kaP, "instanceId", instanceId));
   corTreeChildAdd(treeP, wrapP);
 
-  CorBinBuffer out = { NULL, 0, 0 };
-
-  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, &out) == false)
-  {
-    free(out.buf);
+  if (encodeExact(treeP, &recP->body, &recP->bodyLen) == false)
     return false;
-  }
 
-  recP->body         = out.buf;
-  recP->bodyLen      = out.len;
   recP->attrName     = attrName;
   recP->instanceId   = instanceId;
   recP->datasetId    = namedDataset ? datasetId : NULL;
@@ -281,17 +348,26 @@ bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, cons
 //
 // corDbHistoryRecordAdd -
 //
-CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord* recP)
+CorDbInstance* corDbHistoryRecordAdd(CorDbHistory* hP, CorDbHistEntity* eP, CorDbHistRecord* recP)
 {
-  CorDbHistAttr* aP = attrOf(eP, recP->attrName);
+  CorDbHistAttr* aP = attrOf(hP, eP, recP->attrName);
 
   if (aP == NULL)
     return NULL;
 
   if (aP->instances == aP->size)
   {
-    int            size = (aP->size == 0) ? 4 : aP->size * 2;
-    CorDbInstance* v    = (CorDbInstance*) realloc(aP->instanceV, size * sizeof(CorDbInstance));
+    int            size = aP->size * 2;
+    CorDbInstance* v;
+
+    if (aP->instanceV == aP->inlineV)                // out of the inline ones: the first array
+    {
+      v = (CorDbInstance*) malloc(size * sizeof(CorDbInstance));
+      if (v != NULL)
+        memcpy(v, aP->inlineV, aP->instances * sizeof(CorDbInstance));
+    }
+    else
+      v = (CorDbInstance*) realloc(aP->instanceV, size * sizeof(CorDbInstance));
 
     if (v == NULL)
       return NULL;
@@ -302,8 +378,10 @@ CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord* recP)
 
   CorDbInstance* iP = &aP->instanceV[aP->instances];
 
+  //
+  // The instanceId is in the record - a reader finds it there; no copy of it per instance
+  //
   memset(iP, 0, sizeof(*iP));
-  iP->instanceId   = strdup(recP->instanceId);
   iP->datasetId    = (recP->datasetId != NULL) ? strdup(recP->datasetId) : NULL;
   iP->body         = recP->body;                     // taken over
   iP->bodyLen      = recP->bodyLen;
@@ -312,12 +390,8 @@ CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord* recP)
   iP->modifiedAtNs = recP->modifiedAtNs;
   iP->deletedAtNs  = recP->deletedAtNs;
 
-  if ((iP->instanceId == NULL) || ((recP->datasetId != NULL) && (iP->datasetId == NULL)))
-  {
-    free(iP->instanceId);
-    free(iP->datasetId);
+  if ((recP->datasetId != NULL) && (iP->datasetId == NULL))
     return NULL;                                     // the body is still the caller's
-  }
 
   recP->body = NULL;
   ++aP->instances;
@@ -330,7 +404,7 @@ CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord* recP)
 //
 // corDbHistoryInstanceAdd -
 //
-CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* attrName, const char* datasetId,
+CorDbInstance* corDbHistoryInstanceAdd(CorDbHistory* hP, CorDbHistEntity* eP, const char* attrName, const char* datasetId,
                                        CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP)
 {
   CorDbHistRecord rec;
@@ -338,7 +412,7 @@ CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* attrName
   if (corDbHistoryRecordEncode(eP->id, eP->type, attrName, datasetId, instanceP, deletedAtNs, kaP, &rec) == false)
     return NULL;
 
-  CorDbInstance* iP = corDbHistoryRecordAdd(eP, &rec);
+  CorDbInstance* iP = corDbHistoryRecordAdd(hP, eP, &rec);
 
   free(rec.body);                                    // NULL when taken over
   return iP;
@@ -381,7 +455,11 @@ bool corDbHistoryEntityEventEncode(const char* entityId, const char* entityType,
   corTreeChildAdd(recP, corTreeString(kaP, "entityOp", entityOp));
   corTreeChildAdd(recP, corTreeInteger(kaP, "at", (long long) atNs));
 
-  return corTreeBinEncode(recP, &ldBinCodec, NULL, outP);
+  if (encodeExact(recP, &outP->buf, &outP->len) == false)
+    return false;
+
+  outP->size = outP->len;
+  return true;
 }
 
 
@@ -406,7 +484,7 @@ CorNode* corDbHistoryInstanceDecode(CorDbInstance* iP, CorAlloc* kaP)
 
   if (instP == NULL)
   {
-    COR_E("corDB: history instance '%s' does not decode: %s", iP->instanceId, (error != NULL) ? error : "no instance member");
+    COR_E("corDB: a history instance does not decode: %s", (error != NULL) ? error : "no instance member");
     return NULL;
   }
 
@@ -450,23 +528,28 @@ void corDbHistoryFree(CorDbHistory* hP)
 
       for (int i = 0; i < aP->instances; i++)
       {
-        free(aP->instanceV[i].instanceId);
         free(aP->instanceV[i].datasetId);
         free(aP->instanceV[i].body);
       }
 
-      free(aP->instanceV);
-      free(aP->name);
-      free(aP);
+      if (aP->instanceV != aP->inlineV)
+        free(aP->instanceV);
+      free(aP);                                      // its name is interned: freed below
     }
 
     free(eP->id);
-    free(eP->type);
     free(eP);
   }
 
   if (hP->byId != NULL)
     corHashRelease(hP->byId);
+
+  if (hP->names != NULL)
+    corHashRelease(hP->names);
+
+  for (int i = 0; i < hP->namesN; i++)
+    free(hP->nameV[i]);
+  free(hP->nameV);
 
   memset(hP, 0, sizeof(*hP));
 }
