@@ -25,6 +25,7 @@
 #include "db/DbDriver.h"                                 // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistory.h"                      // corDbHistoryOn
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
 #include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"             // corDbEntities
@@ -78,6 +79,10 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
     for (int i = 0; i < count; i++)
       corDbPersistPreAdd(&pre, cloneV[i]);
   }
+
+  COR_DB_HIST_PREV(hist);                            // their history records too (--troe corDB)
+  if (corDbHistoryOn)
+    corDbHistoryPrepareV(&hist, cloneV, count, "replaced", corRest.kallocP);
 
   {
     COR_DB_WRITE(tenantP);
@@ -141,7 +146,10 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
       //
       corDbIndexReplace(idxStoreP, existing, cloneP);
       corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, ix, cloneP);
-      corDbHistoryReplaced(corDbLockedStore, cloneP, existing, corRest.kallocP);
+      if (ix < hist.n)
+        corDbHistoryReplacedPre(corDbLockedStore, &hist.v[ix], cloneP, existing, corRest.kallocP);
+      else
+        corDbHistoryReplaced(corDbLockedStore, cloneP, existing, corRest.kallocP);
       cloneV[ix]   = existing;   // stored clone out, replaced entity in - freed below, unlocked
       resultsV[ix] = DB_OK;
       anyOk        = true;

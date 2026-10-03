@@ -25,6 +25,7 @@
 #include "db/DbDriver.h"                                  // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink, corDbEntityId
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistory.h"                      // corDbHistoryOn
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
 #include "corDB/corDbStore.h"              // corDbEntities
 #include "corDB/corDbEntityBulkDelete.h"   // Own interface
@@ -50,6 +51,14 @@ int corDbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
 
   if (goneV == NULL)
     return DB_ERR;
+
+  //
+  // Their history records (--troe corDB), encoded before the lock
+  //
+  CorDbHistDel* histV = corDbHistoryOn ? (CorDbHistDel*) calloc((N > 0) ? N : 1, sizeof(CorDbHistDel)) : NULL;
+
+  for (int i = 0; (histV != NULL) && (i < N); i++)
+    corDbHistoryDeletePrepare(&histV[i], idV[i], corRest.kallocP);
 
   {
     COR_DB_WRITE(tenantP);
@@ -86,7 +95,8 @@ int corDbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
 
       corDbIndexUnlink(storeP, match);
       corDbPersistAppendId(corDbLockedStore->persistP, CorDbLogEntityDelete, idV[i]);
-      corDbHistoryDeleted(corDbLockedStore, match, corRest.kallocP);
+      if (histV != NULL)
+        corDbHistoryDeletedPre(corDbLockedStore, &histV[i], idV[i]);
       goneV[i]    = match;
       resultsV[i] = DB_OK;
       anyOk       = true;
@@ -105,6 +115,10 @@ int corDbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
   }
 
   free(goneV);
+
+  for (int i = 0; (histV != NULL) && (i < N); i++)
+    free(histV[i].event.buf);
+  free(histV);
 
   return anyOk ? DB_OK : DB_ERR;
 }

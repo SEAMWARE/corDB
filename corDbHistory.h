@@ -41,7 +41,7 @@ typedef struct CorDbInstance
   uint64_t   deletedAtNs;                              // != 0: the attribute was deleted - the instance is its tombstone
   char*      instanceId;
   char*      datasetId;                                // NULL: the default instance
-  char*      body;                                     // the history RECORD, cor binary: { id, type, attr, datasetId?, deletedAt?, instance }
+  char*      body;                                     // the history RECORD, cor binary: { id, type, attr, datasetId?, deletedAt?, instanceId, instance }
   int        bodyLen;                                  //   - the same bytes as the history log's record body
 } CorDbInstance;
 
@@ -106,6 +106,50 @@ extern CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityI
 
 // -----------------------------------------------------------------------------
 //
+// CorDbHistRecord - one history record, encoded and not yet in the index
+//
+// What a write prepares BEFORE the write lock where it can (corDbHistoryWrite.c): the encoding is the
+// expensive half; adding it to the index, under the lock, is a few stores.
+//
+typedef struct CorDbHistRecord
+{
+  char*        body;                                 // malloc - taken over by corDbHistoryRecordAdd
+  int          bodyLen;
+  const char*  attrName;                             // these four point into the caller's data / arena
+  const char*  instanceId;
+  const char*  datasetId;
+  CorNode*     instanceP;
+  uint64_t     observedAtNs;
+  uint64_t     createdAtNs;
+  uint64_t     modifiedAtNs;
+  uint64_t     deletedAtNs;
+} CorDbHistRecord;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryRecordEncode - an instance's record, encoded; no lock, nothing shared touched
+//
+// instanceP is read, never changed. kaP: scratch (a generated instanceId lives there). False: out of
+// memory.
+//
+extern bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, const char* attrName, const char* datasetId,
+                                     CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP, CorDbHistRecord* recP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryRecordAdd - an encoded record into the entity's history (its body taken over); under
+// the write lock. NULL out of memory (the body then still the caller's).
+//
+extern CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord* recP);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbHistoryInstanceAdd - one instance appended to an attribute's history
 //
 // instanceP is the instance as the store has it (an object: type, value, observedAt, sub-attributes
@@ -126,6 +170,12 @@ extern CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* a
 // entityOp: "created", "replaced", "deleted". Returns false out of memory.
 //
 extern bool corDbHistoryEntityEvent(CorDbHistEntity* eP, const char* entityOp, uint64_t atNs, CorAlloc* kaP, CorBinBuffer* outP);
+
+//
+// ... in its two halves: the record encoded (no lock - before it), the index updated (under it)
+//
+extern bool corDbHistoryEntityEventEncode(const char* entityId, const char* entityType, const char* entityOp, uint64_t atNs, CorAlloc* kaP, CorBinBuffer* outP);
+extern void corDbHistoryEntityEventApply(CorDbHistEntity* eP, const char* entityOp, uint64_t atNs);
 
 
 

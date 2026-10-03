@@ -22,7 +22,66 @@
 #include "corTree/CorNode.h"                           // CorNode
 #include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
 
+#include "corDB/corDbHistory.h"                        // CorDbHistRecord
 #include "corDB/corDbStore.h"                          // CorDbStore
+
+
+
+// -----------------------------------------------------------------------------
+//
+// CorDbHistPre - an entity's history records, encoded BEFORE the write lock
+//
+// Create and replace have their entity (the clone) before the lock: its records are encoded then, and
+// under the lock only added (corDbHistoryCreatedPre, corDbHistoryReplacedPre). Encoded under the lock,
+// history cost a create at 50 connections 45 % of its throughput.
+//
+typedef struct CorDbHistPre
+{
+  CorDbHistRecord*  recV;
+  int               recs;
+  int               size;
+  CorBinBuffer      event;                           // the entity-level record (created / replaced), encoded
+  const char*       entityOp;
+  uint64_t          atNs;
+} CorDbHistPre;
+
+#define COR_DB_HIST_PRE(name)  CorDbHistPre name __attribute__((cleanup(corDbHistoryPreFree))) = { NULL, 0, 0, { NULL, 0, 0 }, NULL, 0 }
+
+extern void corDbHistoryPrepare(CorDbHistPre* preP, CorNode* entityP, const char* entityOp, CorAlloc* kaP);
+extern void corDbHistoryPreFree(CorDbHistPre* preP);
+extern void corDbHistoryCreatedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* entityP, CorAlloc* kaP);
+extern void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* newEntityP, CorNode* oldEntityP, CorAlloc* kaP);
+
+//
+// CorDbHistPreV - a batch's: one CorDbHistPre per entity, freed (with what no index took) when the scope
+// ends - after the write lock, declared before it
+//
+typedef struct CorDbHistPreV
+{
+  CorDbHistPre*  v;
+  int            n;
+} CorDbHistPreV;
+
+#define COR_DB_HIST_PREV(name)  CorDbHistPreV name __attribute__((cleanup(corDbHistoryPreVFree))) = { NULL, 0 }
+
+extern void corDbHistoryPrepareV(CorDbHistPreV* preVP, CorNode** entityV, int n, const char* entityOp, CorAlloc* kaP);
+extern void corDbHistoryPreVFree(CorDbHistPreV* preVP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryDeletePrepare / corDbHistoryDeletedPre - an entity delete's record, encoded before the lock
+// (the id and the time are all it holds - the type is in the entity's earlier records)
+//
+typedef struct CorDbHistDel
+{
+  CorBinBuffer  event;
+  uint64_t      atNs;
+} CorDbHistDel;
+
+extern void corDbHistoryDeletePrepare(CorDbHistDel* delP, const char* entityId, CorAlloc* kaP);
+extern void corDbHistoryDeletedPre(CorDbStore* storeP, CorDbHistDel* delP, const char* entityId);
 
 
 

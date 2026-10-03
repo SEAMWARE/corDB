@@ -41,6 +41,7 @@
 #include "corBase/corCrc32c.h"                         // corCrc32c
 #include "corBase/corCoLoop.h"                         // corCoBlocking
 #include "corTree/CorNode.h"                           // CorNode
+#include "corTree/corTreeBuilder.h"                    // corTreeChildRemove, corTreeChildAdd
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 #include "corRest/CorRestState.h"                      // corRestP
 
@@ -968,6 +969,18 @@ static bool histReplay(CorDbStore* storeP, CorDbLogRecord* recP, CorAlloc* kaP)
     return false;
 
   uint64_t deletedAtNs = ((delP != NULL) && (delP->type == CorInt)) ? (uint64_t) delP->value.i : 0;
+
+  //
+  // The record keeps the instanceId beside the instance: handed back to it, so the replay keeps the id
+  // the instance was given, not a new one
+  //
+  CorNode* instanceIdP = corTreeLookup(recP->bodyP, "instanceId");
+
+  if ((instanceIdP != NULL) && (corTreeLookup(instP, "instanceId") == NULL))
+  {
+    corTreeChildRemove(recP->bodyP, instanceIdP);
+    corTreeChildAdd(instP, instanceIdP);
+  }
 
   return corDbHistoryInstanceAdd(eP, attrP->value.s, ((dsP != NULL) && (dsP->type == CorString)) ? dsP->value.s : NULL,
                                  instP, deletedAtNs, kaP) != NULL;

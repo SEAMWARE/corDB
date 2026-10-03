@@ -204,17 +204,91 @@ static uint64_t timeOf(CorNode* instanceP, const char* name)
 
 // -----------------------------------------------------------------------------
 //
-// corDbHistoryInstanceAdd -
+// corDbHistoryRecordEncode -
 //
-CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* attrName, const char* datasetId,
-                                       CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP)
+bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, const char* attrName, const char* datasetId,
+                              CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP, CorDbHistRecord* recP)
 {
-  CorDbHistAttr* aP = attrOf(eP, attrName);
+  memset(recP, 0, sizeof(*recP));
+
+  //
+  // The instanceId: the one the instance carries (the temporal API's own writes), or one generated.
+  // It goes into the RECORD, beside the instance - not into the instance, which may be the live store's
+  // and would have to be cloned to carry it (a whole copy of every instance on every write, measured)
+  //
+  CorNode*    instanceIdP = corTreeLookup(instanceP, "instanceId");
+  const char* instanceId  = ((instanceIdP != NULL) && (instanceIdP->type == CorString)) ? instanceIdP->value.s : NULL;
+
+  if (instanceId == NULL)
+  {
+    instanceId = ldIdGenerate(kaP, "Instance");
+    if (instanceId == NULL)
+      return false;
+  }
+
+  //
+  // { id, type?, attr, datasetId?, deletedAt?, instanceId, instance } - "instance" a SHALLOW copy of the
+  // instance's node: its members are the instance's own, only read by the encoder
+  //
+  CorNode* treeP = corTreeObject(kaP, NULL);
+  CorNode* wrapP = (CorNode*) corAlloc(kaP, sizeof(CorNode));
+
+  if ((treeP == NULL) || (wrapP == NULL))
+    return false;
+
+  *wrapP      = *instanceP;
+  wrapP->name = (char*) "instance";
+  wrapP->next = NULL;
+
+  bool namedDataset = (datasetId != NULL) && (datasetId[0] != 0) && (strcmp(datasetId, "@none") != 0);
+
+  corTreeChildAdd(treeP, corTreeString(kaP, "id", entityId));
+  if (entityType != NULL)
+    corTreeChildAdd(treeP, corTreeString(kaP, "type", entityType));
+  corTreeChildAdd(treeP, corTreeString(kaP, "attr", attrName));
+  if (namedDataset)
+    corTreeChildAdd(treeP, corTreeString(kaP, "datasetId", datasetId));
+  if (deletedAtNs != 0)
+    corTreeChildAdd(treeP, corTreeInteger(kaP, "deletedAt", (long long) deletedAtNs));
+  corTreeChildAdd(treeP, corTreeString(kaP, "instanceId", instanceId));
+  corTreeChildAdd(treeP, wrapP);
+
+  CorBinBuffer out = { NULL, 0, 0 };
+
+  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, &out) == false)
+  {
+    free(out.buf);
+    return false;
+  }
+
+  recP->body         = out.buf;
+  recP->bodyLen      = out.len;
+  recP->attrName     = attrName;
+  recP->instanceId   = instanceId;
+  recP->datasetId    = namedDataset ? datasetId : NULL;
+  recP->instanceP    = instanceP;
+  recP->observedAtNs = timeOf(instanceP, "observedAt");
+  recP->createdAtNs  = timeOf(instanceP, "createdAt");
+  recP->modifiedAtNs = timeOf(instanceP, "modifiedAt");
+  recP->deletedAtNs  = (deletedAtNs != 0) ? deletedAtNs : timeOf(instanceP, "deletedAt");
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryRecordAdd -
+//
+CorDbInstance* corDbHistoryRecordAdd(CorDbHistEntity* eP, CorDbHistRecord* recP)
+{
+  CorDbHistAttr* aP = attrOf(eP, recP->attrName);
 
   if (aP == NULL)
     return NULL;
 
-  if ((aP->instances == aP->size))
+  if (aP->instances == aP->size)
   {
     int            size = (aP->size == 0) ? 4 : aP->size * 2;
     CorDbInstance* v    = (CorDbInstance*) realloc(aP->instanceV, size * sizeof(CorDbInstance));
@@ -226,82 +300,47 @@ CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* attrName
     aP->size      = size;
   }
 
-  //
-  // The RECORD is what is encoded, once: { id, type, attr, datasetId?, deletedAt?, instance } - the
-  // same bytes go to the index and to the history log (corDbPersist.c), and a record decodes on its
-  // own at recovery. The instanceId goes into the instance, so a decoded one has it - and the instance
-  // handed in may be the live store's, so a clone carries a generated one, in the caller's arena.
-  //
-  CorNode*    instP        = instanceP;
-  CorNode*    instanceIdP  = corTreeLookup(instanceP, "instanceId");
-  const char* instanceId   = ((instanceIdP != NULL) && (instanceIdP->type == CorString)) ? instanceIdP->value.s : NULL;
-
-  if (instanceId == NULL)
-  {
-    instanceId = ldIdGenerate(kaP, "Instance");
-    instP      = corTreeClone(kaP, instanceP);
-
-    if ((instanceId == NULL) || (instP == NULL))
-      return NULL;
-
-    corTreeChildAdd(instP, corTreeString(kaP, "instanceId", instanceId));
-  }
-
-  //
-  // The record. "instance" is a SHALLOW copy of the instance's node - its members are the instance's
-  // own, only read by the encoder, so nothing is cloned for it and nothing of the store is touched
-  //
-  CorNode* recP  = corTreeObject(kaP, NULL);
-  CorNode* wrapP = (CorNode*) corAlloc(kaP, sizeof(CorNode));
-
-  if ((recP == NULL) || (wrapP == NULL))
-    return NULL;
-
-  *wrapP      = *instP;
-  wrapP->name = (char*) "instance";
-  wrapP->next = NULL;
-
-  corTreeChildAdd(recP, corTreeString(kaP, "id", eP->id));
-  if (eP->type != NULL)
-    corTreeChildAdd(recP, corTreeString(kaP, "type", eP->type));
-  corTreeChildAdd(recP, corTreeString(kaP, "attr", attrName));
-  if ((datasetId != NULL) && (datasetId[0] != 0) && (strcmp(datasetId, "@none") != 0))
-    corTreeChildAdd(recP, corTreeString(kaP, "datasetId", datasetId));
-  if (deletedAtNs != 0)
-    corTreeChildAdd(recP, corTreeInteger(kaP, "deletedAt", (long long) deletedAtNs));
-  corTreeChildAdd(recP, wrapP);
-
-  CorBinBuffer out = { NULL, 0, 0 };
-
-  if (corTreeBinEncode(recP, &ldBinCodec, NULL, &out) == false)
-  {
-    free(out.buf);
-    return NULL;
-  }
-
   CorDbInstance* iP = &aP->instanceV[aP->instances];
 
   memset(iP, 0, sizeof(*iP));
-  iP->instanceId   = strdup(instanceId);
-  iP->datasetId    = ((datasetId != NULL) && (datasetId[0] != 0) && (strcmp(datasetId, "@none") != 0)) ? strdup(datasetId) : NULL;
-  iP->body         = (char*) realloc(out.buf, out.len);      // exactly its size
-  iP->bodyLen      = out.len;
-  iP->observedAtNs = timeOf(instanceP, "observedAt");
-  iP->createdAtNs  = timeOf(instanceP, "createdAt");
-  iP->modifiedAtNs = timeOf(instanceP, "modifiedAt");
-  iP->deletedAtNs  = (deletedAtNs != 0) ? deletedAtNs : timeOf(instanceP, "deletedAt");
+  iP->instanceId   = strdup(recP->instanceId);
+  iP->datasetId    = (recP->datasetId != NULL) ? strdup(recP->datasetId) : NULL;
+  iP->body         = recP->body;                     // taken over
+  iP->bodyLen      = recP->bodyLen;
+  iP->observedAtNs = recP->observedAtNs;
+  iP->createdAtNs  = recP->createdAtNs;
+  iP->modifiedAtNs = recP->modifiedAtNs;
+  iP->deletedAtNs  = recP->deletedAtNs;
 
-  if (iP->body == NULL)
-    iP->body = out.buf;
-
-  if (iP->instanceId == NULL)
+  if ((iP->instanceId == NULL) || ((recP->datasetId != NULL) && (iP->datasetId == NULL)))
   {
-    free(iP->body);
+    free(iP->instanceId);
     free(iP->datasetId);
-    return NULL;
+    return NULL;                                     // the body is still the caller's
   }
 
+  recP->body = NULL;
   ++aP->instances;
+  return iP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryInstanceAdd -
+//
+CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* attrName, const char* datasetId,
+                                       CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP)
+{
+  CorDbHistRecord rec;
+
+  if (corDbHistoryRecordEncode(eP->id, eP->type, attrName, datasetId, instanceP, deletedAtNs, kaP, &rec) == false)
+    return NULL;
+
+  CorDbInstance* iP = corDbHistoryRecordAdd(eP, &rec);
+
+  free(rec.body);                                    // NULL when taken over
   return iP;
 }
 
@@ -311,7 +350,7 @@ CorDbInstance* corDbHistoryInstanceAdd(CorDbHistEntity* eP, const char* attrName
 //
 // corDbHistoryEntityEvent -
 //
-bool corDbHistoryEntityEvent(CorDbHistEntity* eP, const char* entityOp, uint64_t atNs, CorAlloc* kaP, CorBinBuffer* outP)
+void corDbHistoryEntityEventApply(CorDbHistEntity* eP, const char* entityOp, uint64_t atNs)
 {
   if (strcmp(entityOp, "deleted") == 0)
     eP->deletedAtNs = atNs;
@@ -321,23 +360,36 @@ bool corDbHistoryEntityEvent(CorDbHistEntity* eP, const char* entityOp, uint64_t
     if ((eP->createdAtNs == 0) || (strcmp(entityOp, "created") == 0))
       eP->createdAtNs = atNs;
   }
+}
+
+
+
+bool corDbHistoryEntityEventEncode(const char* entityId, const char* entityType, const char* entityOp, uint64_t atNs, CorAlloc* kaP, CorBinBuffer* outP)
+{
+  outP->buf  = NULL;
+  outP->len  = 0;
+  outP->size = 0;
 
   CorNode* recP = corTreeObject(kaP, NULL);
 
   if (recP == NULL)
     return false;
 
-  corTreeChildAdd(recP, corTreeString(kaP, "id", eP->id));
-  if (eP->type != NULL)
-    corTreeChildAdd(recP, corTreeString(kaP, "type", eP->type));
+  corTreeChildAdd(recP, corTreeString(kaP, "id", entityId));
+  if (entityType != NULL)
+    corTreeChildAdd(recP, corTreeString(kaP, "type", entityType));
   corTreeChildAdd(recP, corTreeString(kaP, "entityOp", entityOp));
   corTreeChildAdd(recP, corTreeInteger(kaP, "at", (long long) atNs));
 
-  outP->buf  = NULL;
-  outP->len  = 0;
-  outP->size = 0;
-
   return corTreeBinEncode(recP, &ldBinCodec, NULL, outP);
+}
+
+
+
+bool corDbHistoryEntityEvent(CorDbHistEntity* eP, const char* entityOp, uint64_t atNs, CorAlloc* kaP, CorBinBuffer* outP)
+{
+  corDbHistoryEntityEventApply(eP, entityOp, atNs);
+  return corDbHistoryEntityEventEncode(eP->id, eP->type, entityOp, atNs, kaP, outP);
 }
 
 
@@ -360,6 +412,19 @@ CorNode* corDbHistoryInstanceDecode(CorDbInstance* iP, CorAlloc* kaP)
 
   instP->name = NULL;
   instP->next = NULL;
+
+  //
+  // The instanceId sits beside the instance in the record (so a write never clones an instance to give
+  // it one) - an answer has it in the instance
+  //
+  CorNode* idP = corTreeLookup(recP, "instanceId");
+
+  if ((idP != NULL) && (corTreeLookup(instP, "instanceId") == NULL))
+  {
+    corTreeChildRemove(recP, idP);
+    corTreeChildAdd(instP, idP);
+  }
+
   return instP;
 }
 
