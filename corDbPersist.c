@@ -80,6 +80,9 @@ static bool             kicked       = false;
 static bool             stopping     = false;
 static bool             flusherUp    = false;
 static pthread_t        flusherTid;
+static pthread_cond_t   snapCond     = PTHREAD_COND_INITIALIZER;   // the snapshotter waits on it
+static bool             snapKicked   = false;
+static pthread_t        snapTid;
 
 
 
@@ -437,16 +440,9 @@ static bool encodeArray(CorNode* arrayP, CorDbLogOp op, Chunks* cP, uint64_t seq
 
 // -----------------------------------------------------------------------------
 //
-// snapshotEncode - every entity, subscription and registration of the store as PUT records
+// SNAPSHOT_SLICE - entities encoded per hold of the read lock: about a millisecond
 //
-static bool snapshotEncode(CorDbStore* storeP, Chunks* cP, uint64_t seq)
-{
-  uint64_t t = nowNs();
-
-  return encodeArray(storeP->entities,                                  CorDbLogEntityPut, cP, seq, t) &&
-         encodeArray(corTreeLookup(storeP->tree, "subscriptions"),      CorDbLogSubPut,    cP, seq, t) &&
-         encodeArray(corTreeLookup(storeP->tree, "registrations"),      CorDbLogRegPut,    cP, seq, t);
-}
+enum { SNAPSHOT_SLICE = 1000 };
 
 
 
@@ -454,9 +450,21 @@ static bool snapshotEncode(CorDbStore* storeP, Chunks* cP, uint64_t seq)
 //
 // snapshot - the tenant's store as snap-N+1, the log continued in log-N+1, the older files deleted
 //
-// Under the write lock: what is buffered goes to log-N, the segment switches, the store is encoded.
-// The encoding is a copy, so the file is written after the lock goes. A snapshot that fails leaves
-// snap-N and every log after it - recovery replays the longer way, nothing is lost.
+// Under the write lock only the start: what is buffered goes to log-N, the segment switches, the
+// cursor is set on the first entity. Then the store is encoded in slices of SNAPSHOT_SLICE entities,
+// each under the READ lock - readers run beside it, writers between the slices.
+//
+// So the snapshot is not the store at one instant, and does not need to be: the records are effects
+// (a whole entity put, an id deleted), and recovery replays log-N+1 - every write since the start -
+// on top of it. A write that a slice saw is replayed to the same state; one it missed is replayed to
+// its state; an entity deleted after a slice took it is deleted again. The creation order holds: a
+// slice walks the list in its order, and an entity created during the snapshot is at its end in both.
+//
+// Held under the write lock, the whole store was encoded at once and every writer waited: p99 of a
+// create 241 ms while a growing store was snapshotted.
+//
+// A snapshot that fails leaves snap-N and every log after it - recovery replays the longer way,
+// nothing is lost.
 //
 static void snapshot(CorDbPersist* pP)
 {
@@ -467,8 +475,13 @@ static void snapshot(CorDbPersist* pP)
   struct timespec t0;
   struct timespec t1;
 
-  clock_gettime(CLOCK_MONOTONIC, &t0);
+  uint64_t        seq    = 0;
+  long            maxUs  = 0;                          // the longest any writer could have waited on it
 
+  //
+  // The start, under the write lock
+  //
+  clock_gettime(CLOCK_MONOTONIC, &t0);
   pthread_rwlock_wrlock(&storeP->lock);
   pthread_mutex_lock(&pP->ioMutex);
 
@@ -479,24 +492,68 @@ static void snapshot(CorDbPersist* pP)
     COR_E("corDB: snapshot of '%s': no new log segment - no snapshot", pP->tenant);
   else
   {
-    n  = pP->segment;
-    ok = snapshotEncode(storeP, &snap, pP->seq);
-    if (ok == false)
-      COR_E("corDB: snapshot of '%s': out of memory - no snapshot", pP->tenant);
+    ok                 = true;
+    n                  = pP->segment;
+    seq                = pP->seq;
+    storeP->snapCursor = storeP->entities->value.head;
   }
 
   pthread_mutex_unlock(&pP->ioMutex);
   pthread_rwlock_unlock(&storeP->lock);
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  maxUs = (t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_nsec - t0.tv_nsec) / 1000;
 
   pthread_mutex_lock(&flushMutex);                     // its flush may have synced what a --dbSync request writer waits for
   pthread_cond_broadcast(&syncedCond);
   pthread_mutex_unlock(&flushMutex);
 
-  clock_gettime(CLOCK_MONOTONIC, &t1);
-  long lockedMs = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+  //
+  // The slices, under the read lock - the cursor is moved by writers in between (corDbIndex.c)
+  //
+  uint64_t t    = nowNs();
+  bool     done = (ok == false);
+
+  while (done == false)
+  {
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    pthread_rwlock_rdlock(&storeP->lock);
+
+    CorNode* eP = storeP->snapCursor;
+
+    for (int k = 0; (eP != NULL) && (k < SNAPSHOT_SLICE) && ok; k++, eP = eP->next)
+    {
+      CorBinBuffer* bP = chunkCurrent(&snap);
+
+      ok = (bP != NULL) && corDbLogEncode(bP, CorDbLogEntityPut, seq, t, eP);
+    }
+
+    storeP->snapCursor = eP;
+
+    if ((eP == NULL) || (ok == false))
+    {
+      //
+      // The last slice: the subscriptions and registrations, few, whole
+      //
+      ok = ok &&
+           encodeArray(corTreeLookup(storeP->tree, "subscriptions"), CorDbLogSubPut, &snap, seq, t) &&
+           encodeArray(corTreeLookup(storeP->tree, "registrations"), CorDbLogRegPut, &snap, seq, t);
+      storeP->snapCursor = NULL;
+      done               = true;
+    }
+
+    pthread_rwlock_unlock(&storeP->lock);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    long us = (t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_nsec - t0.tv_nsec) / 1000;
+    if (us > maxUs)
+      maxUs = us;
+  }
+
+  long lockedMs = maxUs / 1000;
 
   if (ok == false)
   {
+    COR_E("corDB: snapshot of '%s': out of memory - no snapshot", pP->tenant);
     chunksFree(&snap);
     return;
   }
@@ -533,7 +590,7 @@ static void snapshot(CorDbPersist* pP)
     pP->sinceSnapBytes = pP->segBytes;                 // what the new segment got while the file was written
     pthread_mutex_unlock(&pP->ioMutex);
 
-    COR_I("corDB: snapshot of '%s': %llu bytes as '%s' (writers held %ld ms)", pP->tenant, bytes, snapPath, lockedMs);
+    COR_I("corDB: snapshot of '%s': %llu bytes as '%s' (writers held at most %ld ms at a time)", pP->tenant, bytes, snapPath, lockedMs);
   }
   else
   {
@@ -557,15 +614,59 @@ static void flushAll(void)
   for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
     flushOne(pP);
 
-  pthread_mutex_lock(&flushMutex);
-  pthread_cond_broadcast(&syncedCond);
-  pthread_mutex_unlock(&flushMutex);
+  bool due = false;
 
   for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
+    due = due || pP->snapshotDue;
+
+  pthread_mutex_lock(&flushMutex);
+  pthread_cond_broadcast(&syncedCond);
+  if (due)
   {
-    if (pP->snapshotDue)
-      snapshot(pP);
+    snapKicked = true;
+    pthread_cond_signal(&snapCond);                    // the snapshots are the snapshotter's - a sync never waits behind one
   }
+  pthread_mutex_unlock(&flushMutex);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// snapshotter - takes the snapshots the flusher found due, on a thread of its own
+//
+// A snapshot of a big store takes seconds; on the flusher's thread, every sync of every tenant - and
+// every --dbSync request writer - waited for it.
+//
+static void* snapshotter(void* unused)
+{
+  (void) unused;
+
+  pthread_mutex_lock(&flushMutex);
+
+  while (stopping == false)
+  {
+    while ((snapKicked == false) && (stopping == false))
+      pthread_cond_wait(&snapCond, &flushMutex);
+
+    snapKicked = false;
+    if (stopping)
+      break;
+
+    CorDbPersist* headP = persistList;
+    pthread_mutex_unlock(&flushMutex);
+
+    for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
+    {
+      if (pP->snapshotDue)
+        snapshot(pP);
+    }
+
+    pthread_mutex_lock(&flushMutex);
+  }
+
+  pthread_mutex_unlock(&flushMutex);
+  return NULL;
 }
 
 
@@ -683,6 +784,14 @@ bool corDbPersistInit(void)
   }
 
   pthread_setname_np(flusherTid, "corDbFlusher");     // not one of the broker's own threads, to whoever looks (top, gdb, /proc)
+
+  if (pthread_create(&snapTid, NULL, snapshotter, NULL) != 0)
+  {
+    COR_E("corDB: no snapshot thread: %s", strerror(errno));
+    return false;
+  }
+
+  pthread_setname_np(snapTid, "corDbSnapshot");
   flusherUp = true;
   COR_I("corDB: persistent in '%s' (--dbSync %s, every %d ms)", corDbDir, corDbSync, corDbSyncInterval);
   return true;
@@ -1317,9 +1426,11 @@ void corDbPersistClose(void)
   pthread_mutex_lock(&flushMutex);
   stopping = true;
   pthread_cond_signal(&kickCond);
+  pthread_cond_signal(&snapCond);
   pthread_mutex_unlock(&flushMutex);
 
   pthread_join(flusherTid, NULL);
+  pthread_join(snapTid, NULL);                         // a snapshot it is taking is finished first
   flusherUp = false;
 
   //

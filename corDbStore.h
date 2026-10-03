@@ -63,6 +63,14 @@ typedef struct CorDbStore
   // the lock goes: lock order is log order.
   //
   struct CorDbPersist*  persistP;
+
+  //
+  // A snapshot in progress (corDbPersist.c): the next entity it encodes. A snapshot reads the store
+  // in slices, under the READ lock, and writers run between them - so a writer that takes this entity
+  // out of the list or swaps it moves the cursor on (corDbIndexUnlink, corDbIndexReplace), under the
+  // write lock. NULL: no snapshot.
+  //
+  CorNode*            snapCursor;
 } CorDbStore;
 
 

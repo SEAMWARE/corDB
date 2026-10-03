@@ -324,6 +324,9 @@ void corDbIndexUnlink(CorDbStore* storeP, CorNode* entityP)
   if ((storeP == NULL) || (entityP == NULL))
     return;
 
+  if (storeP->snapCursor == entityP)                 // a snapshot's next entity goes: it goes on with the one after
+    storeP->snapCursor = entityP->next;
+
   CorNode*    entities = storeP->entities;
   const char* id       = corDbEntityId(entityP);
   CorNode*    prevEntityP = NULL;
@@ -382,6 +385,9 @@ void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
 {
   if ((storeP == NULL) || (oldP == NULL) || (newP == NULL))
     return;
+
+  if (storeP->snapCursor == oldP)                    // a snapshot's next entity is swapped: it encodes the new one
+    storeP->snapCursor = newP;
 
   idFirst(newP);
 
