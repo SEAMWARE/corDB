@@ -81,7 +81,7 @@ log's size or the encoding under the lock costs.
   4       4     body length (bytes)
   8       8     sequence (per tenant, monotonic - the snapshot's name is one)
   16      8     system time, ns   (= createdAt/modifiedAt/deletedAt of what it wrote: § 4.10a of coraine's cor-protocol-details.md)
-  24      4     CRC-32C of bytes 0-23 + the body
+  24      4     CRC-32C of the body, continued over bytes 0-23
   28      n     body: the cor binary tree (corTree corTreeBin, coraine's doc/cor-protocol-details.md § 4)
 ```
 
@@ -95,7 +95,9 @@ log's size or the encoding under the lock costs.
   stamped under the write lock, kept beside the node and not as tree members. History's other axis
   (`observedAt`) is in the attributes themselves.
 - **CRC-32C** (SSE4.2 / ARMv8 CRC instructions; a table where neither) - a torn or rotten record is
-  detected, never applied.
+  detected, never applied. Body first, header second: a write whose entity exists before the write
+  lock (create, replace, batch create and update) encodes the body and takes its CRC before the lock;
+  under it only the header (sequence, time, the CRC finished over 24 bytes) and a copy of the body.
 
 ## 5. Writing: group commit on a timer
 
@@ -129,11 +131,17 @@ writes since the last sync (§ 5).
 
 ## 6. Snapshots and recovery
 
-**Snapshot** (every `--dbSnapshotEvery` MiB of log, and at a clean shutdown): under the tenant's
+**Snapshot** (after `--dbSnapshotEvery` MiB of log and at least as much log as the last snapshot was
+big - so the snapshots of a growing store cost in proportion to what is written, not to the square of
+the store - and at a clean shutdown): under the tenant's
 **write lock**, what is buffered is written to the current `log-M.cor`, the log switches to
 `log-N.cor` (N = M + 1), and the store is encoded - every entity, subscription and registration as a
-PUT record, so a snapshot replays with the same loop as a log. After the lock: written to
-`snap-N.tmp`, `fdatasync`, `rename` to `snap-N.cor`, `fsync` the directory. At ~350 MiB per 100 000 entities
+PUT record, so a snapshot replays with the same loop as a log, into buffers of 64 MiB (no single
+buffer for a store of gigabytes). After the lock: written to `snap-N.tmp`, `fdatasync`, `rename` to
+`snap-N.cor`, `fsync` the directory.
+
+**A log segment rolls at 1 GiB** on its own, without a snapshot: no file reaches the 2 GiB the reader's
+offsets allow, whatever the snapshots do. Recovery replays every segment from the snapshot's on. At ~350 MiB per 100 000 entities
 that holds the writers for well under a second, and it is obviously correct, which a copy-on-write
 scheme is not. Older snapshots and logs are deleted once the new snapshot is durable (history, later,
 keeps them: § 7).
