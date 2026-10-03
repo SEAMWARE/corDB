@@ -9,7 +9,7 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-// corDB's log records (doc/cordb-persistence.md § 3-4): a write's EFFECT, a 28-byte header and a cor
+// corDB's log records (doc/persistence.md § 3-4): a write's EFFECT, a 28-byte header and a cor
 // binary tree. Every record decodes on its own.
 //
 #include <stdint.h>                                    // uint64_t

@@ -10,6 +10,7 @@
 
 #include "db/Tenant.h"                                   // tenant0
 #include "corDB/corDbStore.h"             // corDbTenantStore
+#include "corDB/corDbPersist.h"                  // corDbPersistInit
 #include "corDB/corDbGeoMatch.h"          // corDbGeoInit
 #include "corDB/corDbInit.h"              // Own interface
 
@@ -21,6 +22,12 @@
 //
 int corDbInit(void)
 {
+  //
+  // The flusher before the first store: a store opens its log as it is built
+  //
+  if (corDbPersistInit() == false)
+    return -1;
+
   //
   // Create the store for the default tenant eagerly
   //

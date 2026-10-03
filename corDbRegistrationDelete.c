@@ -14,6 +14,7 @@
 
 #include "corTree/corTreeFree.h"                      // corTreeFree
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"          // corDbRegistrations
 #include "corDB/corDbRegistrationDelete.h"  // Own interface
 
@@ -37,6 +38,7 @@ int corDbRegistrationDelete(Tenant* tenantP, const char* regId)
     {
       corTreeChildRemove(registrations, rP);
       corTreeFree(rP);
+      corDbPersistAppendId(corDbLockedStore->persistP, CorDbLogRegDelete, regId);
       return DB_OK;
     }
   }

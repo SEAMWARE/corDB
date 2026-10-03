@@ -15,6 +15,7 @@
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"          // corDbSubscriptions
 #include "corDB/corDbSubscriptionCreate.h"  // Own interface
 
@@ -52,6 +53,7 @@ int corDbSubscriptionCreate(Tenant* tenantP, const char* subId, CorNode* subP)
   }
 
   corTreeChildAdd(subscriptions, cloneP);
+  corDbPersistAppend(corDbLockedStore->persistP, CorDbLogSubPut, cloneP);
 
   return DB_OK;
 }

@@ -35,6 +35,7 @@
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityMerge.h"    // Own interface
 
@@ -155,6 +156,7 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
     if (idP != NULL && idP->type == CorString && strcmp(idP->value.s, entityId) == 0)
     {
       corDbApplyReportToLive(eP, mergedEntity, reportP);
+      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, eP);
       return DB_OK;
     }
   }

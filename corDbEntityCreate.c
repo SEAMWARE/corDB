@@ -19,6 +19,7 @@
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
 #include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityCreate.h"   // Own interface
 
@@ -90,6 +91,7 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
       else
       {
         corDbIndexLink(corDbStoreOf(tenantP), cloneP);
+        corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, cloneP);
         return DB_OK;
       }
     }

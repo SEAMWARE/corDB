@@ -6,7 +6,7 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-// A record (doc/cordb-persistence.md § 4), little-endian:
+// A record (doc/persistence.md § 4), little-endian:
 //
 //   0   4  'c' 'r' version op
 //   4   4  body length

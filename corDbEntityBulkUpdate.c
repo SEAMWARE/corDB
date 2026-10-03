@@ -24,6 +24,7 @@
 
 #include "db/DbDriver.h"                                 // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"             // corDbEntities
 #include "corDB/corDbEntityBulkUpdate.h"  // Own interface
 
@@ -126,6 +127,7 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
       // named `existing` as its predecessor - see corDbIndex.c.
       //
       corDbIndexReplace(idxStoreP, existing, cloneP);
+      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, cloneP);
       cloneV[ix]   = existing;   // stored clone out, replaced entity in - freed below, unlocked
       resultsV[ix] = DB_OK;
       anyOk        = true;

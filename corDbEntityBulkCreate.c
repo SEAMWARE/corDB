@@ -25,6 +25,7 @@
 
 #include "db/DbDriver.h"                               // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"           // corDbEntities
 #include "corDB/corDbEntityBulkCreate.h"// Own interface
 
@@ -138,6 +139,7 @@ int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
     }
 
     corDbIndexLink(corDbStoreOf(tenantP), cloneP);
+    corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, cloneP);
     resultsV[ix] = DB_OK;
     anyOk        = true;
   }

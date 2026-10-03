@@ -19,6 +19,7 @@
 
 #include "db/DbDriver.h"                               // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"           // corDbEntities
 #include "corDB/corDbEntityReplace.h"   // Own interface
 
@@ -76,6 +77,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
         // named the OLD node as its predecessor - see corDbIndex.c.
         //
         corDbIndexReplace(corDbStoreOf(tenantP), eP, cloneP);
+        corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, cloneP);
         oldP = eP;
         break;
       }

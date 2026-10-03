@@ -22,6 +22,7 @@
 #include "corTree/corTreeFree.h"                      // corTreeFree
 #include "corTree/corTreeChildReplace.h"              // corTreeChildReplace
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"          // corDbSubscriptions
 #include "corDB/corDbSubscriptionReplace.h"  // Own interface
 
@@ -52,6 +53,7 @@ int corDbSubscriptionReplace(Tenant* tenantP, const char* subId, CorNode* subP)
 
       corTreeChildReplace(subscriptions, sP, cloneP);
       corTreeFree(sP);
+      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogSubPut, cloneP);
       return DB_OK;
     }
   }

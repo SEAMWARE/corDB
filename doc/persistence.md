@@ -64,8 +64,14 @@ semantics at all: "these attributes now are exactly this".
 a 20-attribute entity logs one attribute (~100 bytes), not the entity (~2 KB) - at 100 000 PATCH/s that
 is the difference between 10 MB/s and 200 MB/s of log.
 
-The 17 places that take `COR_DB_WRITE` are the places that append: each knows exactly what it
+The 16 places that take `COR_DB_WRITE` are the places that append: each knows exactly what it
 changed, and appends it before the lock goes. Lock order is log order.
+
+**Today** (step 2) every entity write logs `ENTITY_PUT` - the whole entity after the change, for an
+update or a merge too - and a batch logs one record per entity, with no `BATCH_BEGIN`/`BATCH_END`:
+an NGSI-LD batch is not atomic (each entity has its own outcome), so a replay that stops inside one
+is a state the broker could have been in. `ATTRS_PUT` comes when the measurement (step 5) says the
+log's size or the encoding under the lock costs.
 
 ## 4. The record format
 
@@ -167,7 +173,7 @@ No `--dbDir`, no change: a corDB without a directory is the in-RAM store of toda
 
 1. **The record writer and reader** in corDB, unit-tested: encode every op, decode it back; a torn
    tail and a flipped bit are found and stop the replay.
-2. **The 17 write sites append**; the flusher; `--dbDir`, `--dbSync`.
+2. **The 16 write sites append**; the flusher; `--dbDir`, `--dbSync`.
 3. **Recovery**: snapshot load + replay. Functests, two kinds that assert different things:
    - **a clean stop loses nothing** - write, stop (SIGTERM), restart, read it ALL back, the last write
      before the stop included, with `--dbSync interval` (the default - so a stop that skipped § 5a's
@@ -223,12 +229,16 @@ each measured before it stays:
 - **geo** - an R-tree over a GeoProperty, for `georel`
 
 An index is a **declaration** kept in the tenant's directory (a record in the log, `INDEX_PUT`), built
-when declared - under the write lock, a full pass - and at every load; the 17 write sites keep it
+when declared - under the write lock, a full pass - and at every load; the 16 write sites keep it
 current. Not in the snapshot: rebuilt from the data, so it can never disagree with it.
 
 ## 11. Open
 
 - Snapshot trigger: log bytes only, or also a time?
-- The CRC: CRC-32C (hardware on x86-64 and ARMv8) or xxHash3 (faster in software, no tables)?
-- Hosted `@context`s and other per-tenant state that is not in the store tree today - persisted
-  through the same log, or out of scope? (A list is the first job of step 2.)
+- With `--dbSync request`, a failed write or sync is logged, and the request still answers its
+  success: the wait happens as the write lock is released, after the operation has returned. The
+  503 of § 5 needs the outcome carried back to the operation.
+
+Decided: the CRC is CRC-32C (corBase's `corCrc32c`, hardware on x86-64 and ARMv8). Hosted
+`@context`s are not corDB's - the plugin implements none of the driver's context functions - so the
+log holds the store tree and nothing else.

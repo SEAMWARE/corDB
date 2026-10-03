@@ -15,6 +15,7 @@
 
 #include "corTree/corTreeFree.h"                      // corTreeFree
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"          // corDbSubscriptions
 #include "corDB/corDbSubscriptionUpdate.h"  // Own interface
 
@@ -87,5 +88,6 @@ int corDbSubscriptionUpdate(Tenant* tenantP, const char* subId, CorNode* fragmen
     }
   }
 
+  corDbPersistAppend(corDbLockedStore->persistP, CorDbLogSubPut, subP);
   return DB_OK;
 }
