@@ -17,7 +17,7 @@
 
 #include "db/Tenant.h"                               // Tenant
 
-#include "currentState/corDB/corDbStore.h"         // Own interface
+#include "corDB/corDbStore.h"         // Own interface
 
 
 

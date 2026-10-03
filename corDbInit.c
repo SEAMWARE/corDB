@@ -9,9 +9,9 @@
 #include "corLog/corLog.h"                               // COR_I
 
 #include "db/Tenant.h"                                   // tenant0
-#include "currentState/corDB/corDbStore.h"             // corDbTenantStore
-#include "currentState/corDB/corDbGeoMatch.h"          // corDbGeoInit
-#include "currentState/corDB/corDbInit.h"              // Own interface
+#include "corDB/corDbStore.h"             // corDbTenantStore
+#include "corDB/corDbGeoMatch.h"          // corDbGeoInit
+#include "corDB/corDbInit.h"              // Own interface
 
 
 

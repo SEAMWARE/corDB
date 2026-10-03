@@ -23,9 +23,9 @@
 #include "corNgsild/ldEntityMatch.h"                    // ldEntityMatchType, ldEntityMatchScope, ldEntityMatchQ
 
 #include "db/DbDriver.h"                              // DB_OK, Tenant
-#include "currentState/corDB/corDbStore.h"          // corDbEntities
-#include "currentState/corDB/corDbGeoMatch.h"       // corDbGeoMatch
-#include "currentState/corDB/corDbEntityQuery.h"    // Own interface
+#include "corDB/corDbStore.h"          // corDbEntities
+#include "corDB/corDbGeoMatch.h"       // corDbGeoMatch
+#include "corDB/corDbEntityQuery.h"    // Own interface
 
 
 

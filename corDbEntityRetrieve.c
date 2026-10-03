@@ -14,9 +14,9 @@
 #include "corRest/CorRestState.h"                       // corRest
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/corDB/corDbIndex.h"        // corDbIndexLookup
-#include "currentState/corDB/corDbStore.h"          // corDbEntities
-#include "currentState/corDB/corDbEntityRetrieve.h" // Own interface
+#include "corDB/corDbIndex.h"        // corDbIndexLookup
+#include "corDB/corDbStore.h"          // corDbEntities
+#include "corDB/corDbEntityRetrieve.h" // Own interface
 
 
 

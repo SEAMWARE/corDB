@@ -15,8 +15,8 @@
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
-#include "currentState/corDB/corDbStore.h"          // corDbRegistrations
-#include "currentState/corDB/corDbRegistrationCreate.h"  // Own interface
+#include "corDB/corDbStore.h"          // corDbRegistrations
+#include "corDB/corDbRegistrationCreate.h"  // Own interface
 
 
 

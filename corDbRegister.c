@@ -15,39 +15,39 @@
 #include "db/DbQueryFilter.h"                          // DbQueryFilter
 #include "shared/geoMatch.h"                           // csrGeoMatchOverlap, csrGeoMatchExact
 
-#include "currentState/corDB/corDbGlobals.h"        // corDbArgV
-#include "currentState/corDB/corDbInit.h"           // corDbInit
-#include "currentState/corDB/corDbClose.h"          // corDbClose
-#include "currentState/corDB/corDbStore.h"          // corDbTenantStore
-#include "currentState/corDB/corDbEntityCreate.h"   // corDbEntityCreate
-#include "currentState/corDB/corDbEntityBulkCreate.h" // corDbEntityBulkCreate
-#include "currentState/corDB/corDbEntityBulkUpdate.h" // corDbEntityBulkUpdate
-#include "currentState/corDB/corDbEntityBulkMerge.h"  // corDbEntityBulkMerge
-#include "currentState/corDB/corDbEntityBulkDelete.h" // corDbEntityBulkDelete
-#include "currentState/corDB/corDbEntityRetrieve.h" // corDbEntityRetrieve
-#include "currentState/corDB/corDbEntityQuery.h"    // corDbEntityQuery
-#include "currentState/corDB/corDbEntityDelete.h"   // corDbEntityDelete
-#include "currentState/corDB/corDbEntityMerge.h"    // corDbEntityMerge
-#include "currentState/corDB/corDbEntityReplace.h"  // corDbEntityReplace
-#include "currentState/corDB/corDbEntityAttrsSet.h" // corDbEntityAttrsSet
-#include "currentState/corDB/corDbTypeList.h"       // corDbTypeList
-#include "currentState/corDB/corDbAttrList.h"       // corDbAttrList
+#include "corDB/corDbGlobals.h"        // corDbArgV
+#include "corDB/corDbInit.h"           // corDbInit
+#include "corDB/corDbClose.h"          // corDbClose
+#include "corDB/corDbStore.h"          // corDbTenantStore
+#include "corDB/corDbEntityCreate.h"   // corDbEntityCreate
+#include "corDB/corDbEntityBulkCreate.h" // corDbEntityBulkCreate
+#include "corDB/corDbEntityBulkUpdate.h" // corDbEntityBulkUpdate
+#include "corDB/corDbEntityBulkMerge.h"  // corDbEntityBulkMerge
+#include "corDB/corDbEntityBulkDelete.h" // corDbEntityBulkDelete
+#include "corDB/corDbEntityRetrieve.h" // corDbEntityRetrieve
+#include "corDB/corDbEntityQuery.h"    // corDbEntityQuery
+#include "corDB/corDbEntityDelete.h"   // corDbEntityDelete
+#include "corDB/corDbEntityMerge.h"    // corDbEntityMerge
+#include "corDB/corDbEntityReplace.h"  // corDbEntityReplace
+#include "corDB/corDbEntityAttrsSet.h" // corDbEntityAttrsSet
+#include "corDB/corDbTypeList.h"       // corDbTypeList
+#include "corDB/corDbAttrList.h"       // corDbAttrList
 #if COR_FEATURE_SUBSCRIPTIONS
-#include "currentState/corDB/corDbSubscriptionCreate.h"    // corDbSubscriptionCreate
-#include "currentState/corDB/corDbSubscriptionRetrieve.h"  // corDbSubscriptionRetrieve
-#include "currentState/corDB/corDbSubscriptionQuery.h"     // corDbSubscriptionQuery
-#include "currentState/corDB/corDbSubscriptionUpdate.h"    // corDbSubscriptionUpdate
-#include "currentState/corDB/corDbSubscriptionReplace.h"   // corDbSubscriptionReplace
-#include "currentState/corDB/corDbSubscriptionDelete.h"    // corDbSubscriptionDelete
+#include "corDB/corDbSubscriptionCreate.h"    // corDbSubscriptionCreate
+#include "corDB/corDbSubscriptionRetrieve.h"  // corDbSubscriptionRetrieve
+#include "corDB/corDbSubscriptionQuery.h"     // corDbSubscriptionQuery
+#include "corDB/corDbSubscriptionUpdate.h"    // corDbSubscriptionUpdate
+#include "corDB/corDbSubscriptionReplace.h"   // corDbSubscriptionReplace
+#include "corDB/corDbSubscriptionDelete.h"    // corDbSubscriptionDelete
 #endif
 #if COR_FEATURE_REGISTRATIONS
-#include "currentState/corDB/corDbRegistrationCreate.h"    // corDbRegistrationCreate
-#include "currentState/corDB/corDbRegistrationRetrieve.h"  // corDbRegistrationRetrieve
-#include "currentState/corDB/corDbRegistrationQuery.h"     // corDbRegistrationQuery
-#include "currentState/corDB/corDbRegistrationUpdate.h"    // corDbRegistrationUpdate
-#include "currentState/corDB/corDbRegistrationDelete.h"    // corDbRegistrationDelete
+#include "corDB/corDbRegistrationCreate.h"    // corDbRegistrationCreate
+#include "corDB/corDbRegistrationRetrieve.h"  // corDbRegistrationRetrieve
+#include "corDB/corDbRegistrationQuery.h"     // corDbRegistrationQuery
+#include "corDB/corDbRegistrationUpdate.h"    // corDbRegistrationUpdate
+#include "corDB/corDbRegistrationDelete.h"    // corDbRegistrationDelete
 #endif
-#include "currentState/corDB/corDbGeoMatch.h"             // corDbGeoMatch
+#include "corDB/corDbGeoMatch.h"             // corDbGeoMatch
 
 
 

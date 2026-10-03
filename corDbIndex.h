@@ -11,7 +11,7 @@
 //
 #include "corTree/CorNode.h"                         // CorNode
 
-#include "currentState/corDB/corDbStore.h"           // CorDbStore
+#include "corDB/corDbStore.h"           // CorDbStore
 
 
 

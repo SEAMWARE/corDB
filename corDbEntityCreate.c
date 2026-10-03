@@ -18,9 +18,9 @@
 
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
-#include "currentState/corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
-#include "currentState/corDB/corDbStore.h"          // corDbEntities
-#include "currentState/corDB/corDbEntityCreate.h"   // Own interface
+#include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
+#include "corDB/corDbStore.h"          // corDbEntities
+#include "corDB/corDbEntityCreate.h"   // Own interface
 
 
 

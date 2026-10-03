@@ -14,9 +14,9 @@
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink
-#include "currentState/corDB/corDbStore.h"          // corDbEntities
-#include "currentState/corDB/corDbEntityDelete.h"   // Own interface
+#include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink
+#include "corDB/corDbStore.h"          // corDbEntities
+#include "corDB/corDbEntityDelete.h"   // Own interface
 
 
 

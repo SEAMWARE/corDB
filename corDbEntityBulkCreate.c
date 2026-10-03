@@ -24,9 +24,9 @@
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
 #include "db/DbDriver.h"                               // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
-#include "currentState/corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
-#include "currentState/corDB/corDbStore.h"           // corDbEntities
-#include "currentState/corDB/corDbEntityBulkCreate.h"// Own interface
+#include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
+#include "corDB/corDbStore.h"           // corDbEntities
+#include "corDB/corDbEntityBulkCreate.h"// Own interface
 
 
 

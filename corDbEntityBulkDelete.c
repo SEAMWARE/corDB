@@ -23,9 +23,9 @@
 #include "corRest/CorRestState.h"                           // corRest (kallocP arena)
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
-#include "currentState/corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink, corDbEntityId
-#include "currentState/corDB/corDbStore.h"              // corDbEntities
-#include "currentState/corDB/corDbEntityBulkDelete.h"   // Own interface
+#include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink, corDbEntityId
+#include "corDB/corDbStore.h"              // corDbEntities
+#include "corDB/corDbEntityBulkDelete.h"   // Own interface
 
 
 

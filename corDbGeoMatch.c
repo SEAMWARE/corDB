@@ -9,7 +9,7 @@
 // Thin wrappers around the shared geoMatch implementation.
 //
 #include "shared/geoMatch.h"
-#include "currentState/corDB/corDbGeoMatch.h"
+#include "corDB/corDbGeoMatch.h"
 
 void corDbGeoInit(void)                                              { geoMatchInit(); }
 void corDbGeoClose(void)                                             { geoMatchClose(); }

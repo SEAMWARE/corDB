@@ -26,8 +26,8 @@
 
 #include "db/DbDriver.h"                                // DB_OK
 #include "db/Tenant.h"                                  // Tenant
-#include "currentState/corDB/corDbStore.h"            // corDbEntities
-#include "currentState/corDB/corDbAttrList.h"         // Own interface
+#include "corDB/corDbStore.h"            // corDbEntities
+#include "corDB/corDbAttrList.h"         // Own interface
 
 
 

@@ -15,8 +15,8 @@
 
 #include "corTree/corTreeFree.h"                      // corTreeFree
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/corDB/corDbStore.h"          // corDbSubscriptions
-#include "currentState/corDB/corDbSubscriptionUpdate.h"  // Own interface
+#include "corDB/corDbStore.h"          // corDbSubscriptions
+#include "corDB/corDbSubscriptionUpdate.h"  // Own interface
 
 
 

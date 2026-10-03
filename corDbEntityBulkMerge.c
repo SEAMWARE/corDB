@@ -29,9 +29,9 @@
 #include "corNgsild/ldEntityMerge.h"                       // LdMergeReport
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_ERR, Tenant
-#include "currentState/corDB/corDbStore.h"              // corDbEntities
-#include "currentState/corDB/corDbEntityMerge.h"        // corDbApplyReportToLive
-#include "currentState/corDB/corDbEntityBulkMerge.h"    // Own interface
+#include "corDB/corDbStore.h"              // corDbEntities
+#include "corDB/corDbEntityMerge.h"        // corDbApplyReportToLive
+#include "corDB/corDbEntityBulkMerge.h"    // Own interface
 
 
 

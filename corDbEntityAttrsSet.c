@@ -16,9 +16,9 @@
 #include "corNgsild/ldEntityAttrsSet.h"                // ldEntityAttrsSet
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
-#include "currentState/corDB/corDbIndex.h"        // corDbIndexLookup
-#include "currentState/corDB/corDbStore.h"          // corDbEntities
-#include "currentState/corDB/corDbEntityAttrsSet.h" // Own interface
+#include "corDB/corDbIndex.h"        // corDbIndexLookup
+#include "corDB/corDbStore.h"          // corDbEntities
+#include "corDB/corDbEntityAttrsSet.h" // Own interface
 
 
 

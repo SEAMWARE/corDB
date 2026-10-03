@@ -22,8 +22,8 @@
 #include "corTree/corTreeFree.h"                      // corTreeFree
 #include "corTree/corTreeChildReplace.h"              // corTreeChildReplace
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
-#include "currentState/corDB/corDbStore.h"          // corDbRegistrations
-#include "currentState/corDB/corDbRegistrationUpdate.h"  // Own interface
+#include "corDB/corDbStore.h"          // corDbRegistrations
+#include "corDB/corDbRegistrationUpdate.h"  // Own interface
 
 
 

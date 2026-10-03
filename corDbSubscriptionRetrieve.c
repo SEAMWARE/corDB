@@ -14,8 +14,8 @@
 
 #include "corRest/CorRestState.h"                       // corRest
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
-#include "currentState/corDB/corDbStore.h"          // corDbSubscriptions
-#include "currentState/corDB/corDbSubscriptionRetrieve.h"  // Own interface
+#include "corDB/corDbStore.h"          // corDbSubscriptions
+#include "corDB/corDbSubscriptionRetrieve.h"  // Own interface
 
 
 

@@ -19,7 +19,7 @@
 #include "corTree/corTreeLookup.h"                   // corTreeLookup
 
 #include "corNgsild/ldTermId.h"                      // ldTermId, CorTerm*
-#include "currentState/corDB/corDbIndex.h"           // Own interface
+#include "corDB/corDbIndex.h"           // Own interface
 
 
 

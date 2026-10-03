@@ -15,9 +15,9 @@
 #include "corTree/corTreeFree.h"                         // corTreeFree
 
 #include "db/Tenant.h"                                   // tenant0, tenantList
-#include "currentState/corDB/corDbGeoMatch.h"          // corDbGeoClose
-#include "currentState/corDB/corDbStore.h"        // CorDbStore
-#include "currentState/corDB/corDbClose.h"             // Own interface
+#include "corDB/corDbGeoMatch.h"          // corDbGeoClose
+#include "corDB/corDbStore.h"        // CorDbStore
+#include "corDB/corDbClose.h"             // Own interface
 
 
 

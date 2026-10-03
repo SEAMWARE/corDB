@@ -8,7 +8,7 @@
 //
 #include "corArgs/CorArg.h"                          // CorArg
 
-#include "currentState/corDB/corDbGlobals.h"           // Own interface
+#include "corDB/corDbGlobals.h"           // Own interface
 
 
 
