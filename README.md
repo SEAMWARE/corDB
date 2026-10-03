@@ -38,7 +38,28 @@ servers.
 
 Through the broker: coraine's functional suite run with `-db corDB` (`corTest`), and in coraine's CI.
 
+## Persistence
+
+In RAM by default. With `--dbDir <directory>` the store survives a restart: every write appends its
+effect to a log (per tenant), synced every 100 ms, with a snapshot as the log grows - taken in
+slices, so a writer waits for it a few milliseconds at most. A clean stop loses nothing; `kill -9` at
+most the last 100 ms (`--dbSync request`: nothing acknowledged). 100 000 entities are back in 0.2 s.
+
+```console
+coraine --database corDB --dbDir /var/lib/coraine
+```
+
+| Option | Default | |
+|---|---|---|
+| `--dbDir` | none: in RAM only | one subdirectory per tenant: `snap-N.cor`, `log-N.cor` |
+| `--dbSync` | `interval` | `request`: a write answers once its record is synced; `none`: never synced |
+| `--dbSyncInterval` | 100 | ms |
+| `--dbSnapshotEvery` | 64 | MiB of log (and at least as much as the last snapshot) |
+
+[The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
+[performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".
+
 ## Next
 
-Persistence - a log and snapshots, so the store survives a restart - and corsh, the maintenance
-tool: [the design](doc/persistence.md). Further ideas: coraine's [Ideas](https://github.com/SEAMWARE/coraine/blob/main/doc/ideas.md).
+corsh, the maintenance tool ([the design](doc/persistence.md) § 10), and a PATCH that logs only the
+attributes it touched. Further ideas: coraine's [Ideas](https://github.com/SEAMWARE/coraine/blob/main/doc/ideas.md).
