@@ -12,7 +12,8 @@
 //   4   4  body length
 //   8   8  sequence
 //   16  8  system time, ns
-//   24  4  CRC-32C of bytes 0-23 and the body
+//   24  4  CRC-32C of the body, continued over bytes 0-23 - body first, so a body can be encoded and
+//          its CRC taken before the write lock, and only the header's 24 bytes are left for under it
 //   28  n  body: the cor binary tree - the NGSI-LD codec, NO string tables, so it decodes on its own
 //
 #include <stdbool.h>                                   // bool
@@ -39,17 +40,51 @@ static bool room(CorBinBuffer* outP, int n)
   if (outP->len + n <= outP->size)
     return true;
 
-  int   size = (outP->size == 0) ? 4096 : outP->size;
-  while (size < outP->len + n)
-    size *= 2;
+  //
+  // In 64 bits, and refused past an int: CorBinBuffer's length is one. Doubled in an int, a buffer
+  // past 1 GiB overflowed to zero and the loop below never ended - a snapshot of a million entities
+  // hung the broker's stop
+  //
+  long long need = (long long) outP->len + n;
+  long long size = (outP->size == 0) ? 4096 : outP->size;
 
-  char* buf = realloc(outP->buf, size);
+  if (need > 0x7FFFFFFF)
+    return false;
+
+  while (size < need)
+    size *= 2;
+  if (size > 0x7FFFFFFF)
+    size = 0x7FFFFFFF;
+
+  char* buf = realloc(outP->buf, (size_t) size);
   if (buf == NULL)
     return false;
 
   outP->buf  = buf;
-  outP->size = size;
+  outP->size = (int) size;
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// header - the 28 bytes at h, for a body of bodyLen bytes whose CRC-32C is bodyCrc
+//
+static void header(char* h, CorDbLogOp op, uint64_t seq, uint64_t sysTimeNs, int bodyLen, uint32_t bodyCrc)
+{
+  uint32_t len = (uint32_t) bodyLen;
+
+  h[0] = 'c';
+  h[1] = 'r';
+  h[2] = (char) VERSION;
+  h[3] = (char) op;
+  memcpy(&h[4],  &len,       4);
+  memcpy(&h[8],  &seq,       8);
+  memcpy(&h[16], &sysTimeNs, 8);
+
+  uint32_t crc = corCrc32c(bodyCrc, h, 24);
+  memcpy(&h[24], &crc, 4);
 }
 
 
@@ -73,20 +108,50 @@ bool corDbLogEncode(CorBinBuffer* outP, CorDbLogOp op, uint64_t seq, uint64_t sy
     return false;
   }
 
-  char*    h       = &outP->buf[start];
-  uint32_t bodyLen = (uint32_t) (outP->len - start - COR_DB_LOG_HEADER_LEN);
+  int      bodyLen = outP->len - start - COR_DB_LOG_HEADER_LEN;
+  uint32_t bodyCrc = corCrc32c(0, &outP->buf[start + COR_DB_LOG_HEADER_LEN], bodyLen);
 
-  h[0] = 'c';
-  h[1] = 'r';
-  h[2] = (char) VERSION;
-  h[3] = (char) op;
-  memcpy(&h[4],  &bodyLen,   4);
-  memcpy(&h[8],  &seq,       8);
-  memcpy(&h[16], &sysTimeNs, 8);
+  header(&outP->buf[start], op, seq, sysTimeNs, bodyLen, bodyCrc);
+  return true;
+}
 
-  uint32_t crc = corCrc32c(0, h, 24);
-  crc = corCrc32c(crc, &h[COR_DB_LOG_HEADER_LEN], bodyLen);
-  memcpy(&h[24], &crc, 4);
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbLogBodyEncode -
+//
+bool corDbLogBodyEncode(CorBinBuffer* outP, CorNode* bodyP, int* lenP, uint32_t* crcP)
+{
+  int start = outP->len;
+
+  if (corTreeBinEncode(bodyP, &ldBinCodec, NULL, outP) == false)
+  {
+    outP->len = start;
+    return false;
+  }
+
+  *lenP = outP->len - start;
+  *crcP = corCrc32c(0, &outP->buf[start], *lenP);
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbLogAppendEncoded -
+//
+bool corDbLogAppendEncoded(CorBinBuffer* outP, CorDbLogOp op, uint64_t seq, uint64_t sysTimeNs, const char* body, int bodyLen, uint32_t bodyCrc)
+{
+  if (room(outP, COR_DB_LOG_HEADER_LEN + bodyLen) == false)
+    return false;
+
+  char* h = &outP->buf[outP->len];
+
+  memcpy(&h[COR_DB_LOG_HEADER_LEN], body, bodyLen);
+  header(h, op, seq, sysTimeNs, bodyLen, bodyCrc);
+  outP->len += COR_DB_LOG_HEADER_LEN + bodyLen;
 
   return true;
 }
@@ -119,7 +184,7 @@ CorDbLogStatus corDbLogNext(const char* buf, int len, int* offsetP, CorAlloc* ka
     return CorDbLogTorn;
 
   memcpy(&crc, &h[24], 4);
-  if (corCrc32c(corCrc32c(0, h, 24), &h[COR_DB_LOG_HEADER_LEN], bodyLen) != crc)
+  if (corCrc32c(corCrc32c(0, &h[COR_DB_LOG_HEADER_LEN], bodyLen), h, 24) != crc)
     return CorDbLogTorn;
 
   recP->op = (CorDbLogOp) (unsigned char) h[3];

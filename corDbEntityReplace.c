@@ -46,6 +46,12 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
     return DB_ERR;
   }
 
+  //
+  // The record's body encoded now, before the lock (corDbPersist.h, CorDbPre) - only without --dbDir not at all
+  //
+  COR_DB_PRE(pre);
+  int preIx = corDbPersistOn() ? corDbPersistPreAdd(&pre, cloneP) : -1;
+
   {
     COR_DB_WRITE(tenantP);
 
@@ -77,7 +83,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
         // named the OLD node as its predecessor - see corDbIndex.c.
         //
         corDbIndexReplace(corDbStoreOf(tenantP), eP, cloneP);
-        corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, cloneP);
+        corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
         oldP = eP;
         break;
       }

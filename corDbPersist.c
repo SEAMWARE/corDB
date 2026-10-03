@@ -178,6 +178,38 @@ static void filePath(CorDbPersist* pP, const char* kind, unsigned int n, const c
 
 // -----------------------------------------------------------------------------
 //
+// segmentNext - the log continues in log-<segment + 1>; false if that file cannot be opened
+//
+// Under ioMutex. The old segment is complete: everything in it is written (and synced, by the
+// flush that called this or the snapshot that did).
+//
+static bool segmentNext(CorDbPersist* pP)
+{
+  char path[600];
+
+  filePath(pP, "log", pP->segment + 1, "cor", path, sizeof(path));
+
+  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+
+  if (fd < 0)
+  {
+    COR_E("corDB: the next log segment '%s': %s - '%s' goes on", path, strerror(errno), pP->path);
+    return false;
+  }
+
+  close(pP->fd);
+  pP->fd       = fd;
+  pP->segment += 1;
+  pP->segBytes = 0;
+  strcpy(pP->path, path);
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // flushLocked - the buffer swapped out under 'mutex', written and synced with only 'ioMutex' held
 //
 static void flushLocked(CorDbPersist* pP)
@@ -206,10 +238,26 @@ static void flushLocked(CorDbPersist* pP)
       ok = false;
     }
 
-    pP->segBytes += (unsigned long long) out.len;
+    pP->segBytes       += (unsigned long long) out.len;
+    pP->sinceSnapBytes += (unsigned long long) out.len;
 
-    if (pP->segBytes >= (unsigned long long) corDbSnapshotEvery * 1024 * 1024)
+    //
+    // A snapshot is due after --dbSnapshotEvery MiB of log AND at least as much log as the last
+    // snapshot was big. Every 64 MiB alone, a growing store was snapshotted whole, under its write
+    // lock, again and again - 8 times in 10 s of creates, the work growing with the square of the
+    // store. Tied to the snapshot's size, the snapshots cost in proportion to what is written.
+    //
+    unsigned long long every = (unsigned long long) corDbSnapshotEvery * 1024 * 1024;
+
+    if ((pP->sinceSnapBytes >= every) && (pP->sinceSnapBytes >= pP->lastSnapBytes))
       pP->snapshotDue = true;
+
+    //
+    // And the segment rolls at 1 GiB whatever the snapshots do: the reader's offsets are ints, so no
+    // file may reach 2 GiB - a log that did (snapshots rare, or failing) could not be replayed
+    //
+    if (pP->segBytes >= 1024ULL * 1024 * 1024)
+      segmentNext(pP);
   }
 
   out.len   = 0;
@@ -310,34 +358,94 @@ static void dropBefore(CorDbPersist* pP, unsigned int n)
 
 // -----------------------------------------------------------------------------
 //
-// snapshotEncode - every entity, subscription and registration of the store as PUT records
+// Chunks - an encoded snapshot, in buffers of about 64 MiB: no one buffer for the whole store, which
+// past 2 GiB is more than a CorBinBuffer can hold
 //
-static bool snapshotEncode(CorDbStore* storeP, CorBinBuffer* outP, uint64_t seq)
+typedef struct Chunks
 {
-  uint64_t t = nowNs();
+  CorBinBuffer*  v;
+  int            n;
+  int            size;
+} Chunks;
 
-  for (CorNode* eP = storeP->entities->value.head; eP != NULL; eP = eP->next)
+
+
+// -----------------------------------------------------------------------------
+//
+// chunkCurrent - the buffer the next record goes into; a new one once the current is 64 MiB
+//
+static CorBinBuffer* chunkCurrent(Chunks* cP)
+{
+  if ((cP->n > 0) && (cP->v[cP->n - 1].len < 64 * 1024 * 1024))
+    return &cP->v[cP->n - 1];
+
+  if (cP->n == cP->size)
   {
-    if (corDbLogEncode(outP, CorDbLogEntityPut, seq, t, eP) == false)
-      return false;
+    int           size = (cP->size == 0) ? 8 : cP->size * 2;
+    CorBinBuffer* v    = (CorBinBuffer*) realloc(cP->v, size * sizeof(CorBinBuffer));
+
+    if (v == NULL)
+      return NULL;
+
+    cP->v    = v;
+    cP->size = size;
   }
 
-  CorNode* subsP = corTreeLookup(storeP->tree, "subscriptions");
-  CorNode* regsP = corTreeLookup(storeP->tree, "registrations");
+  CorBinBuffer* bP = &cP->v[cP->n++];
 
-  for (CorNode* sP = subsP->value.head; sP != NULL; sP = sP->next)
-  {
-    if (corDbLogEncode(outP, CorDbLogSubPut, seq, t, sP) == false)
-      return false;
-  }
+  bP->buf  = NULL;
+  bP->len  = 0;
+  bP->size = 0;
 
-  for (CorNode* rP = regsP->value.head; rP != NULL; rP = rP->next)
+  return bP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// chunksFree -
+//
+static void chunksFree(Chunks* cP)
+{
+  for (int i = 0; i < cP->n; i++)
+    free(cP->v[i].buf);
+
+  free(cP->v);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// encodeArray - every member of a store array as a record of 'op'
+//
+static bool encodeArray(CorNode* arrayP, CorDbLogOp op, Chunks* cP, uint64_t seq, uint64_t t)
+{
+  for (CorNode* nodeP = arrayP->value.head; nodeP != NULL; nodeP = nodeP->next)
   {
-    if (corDbLogEncode(outP, CorDbLogRegPut, seq, t, rP) == false)
+    CorBinBuffer* bP = chunkCurrent(cP);
+
+    if ((bP == NULL) || (corDbLogEncode(bP, op, seq, t, nodeP) == false))
       return false;
   }
 
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// snapshotEncode - every entity, subscription and registration of the store as PUT records
+//
+static bool snapshotEncode(CorDbStore* storeP, Chunks* cP, uint64_t seq)
+{
+  uint64_t t = nowNs();
+
+  return encodeArray(storeP->entities,                                  CorDbLogEntityPut, cP, seq, t) &&
+         encodeArray(corTreeLookup(storeP->tree, "subscriptions"),      CorDbLogSubPut,    cP, seq, t) &&
+         encodeArray(corTreeLookup(storeP->tree, "registrations"),      CorDbLogRegPut,    cP, seq, t);
 }
 
 
@@ -353,7 +461,7 @@ static bool snapshotEncode(CorDbStore* storeP, CorBinBuffer* outP, uint64_t seq)
 static void snapshot(CorDbPersist* pP)
 {
   CorDbStore*     storeP = pP->storeP;
-  CorBinBuffer    snap   = { NULL, 0, 0 };
+  Chunks          snap   = { NULL, 0, 0 };
   bool            ok     = false;
   unsigned int    n;
   struct timespec t0;
@@ -366,23 +474,12 @@ static void snapshot(CorDbPersist* pP)
 
   flushLocked(pP);
   pP->snapshotDue = false;
-  n               = pP->segment + 1;
 
-  char logPath[600];
-  filePath(pP, "log", n, "cor", logPath, sizeof(logPath));
-
-  int fd = open(logPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-
-  if (fd < 0)
-    COR_E("corDB: snapshot of '%s': the log '%s': %s - no snapshot", pP->tenant, logPath, strerror(errno));
+  if (segmentNext(pP) == false)
+    COR_E("corDB: snapshot of '%s': no new log segment - no snapshot", pP->tenant);
   else
   {
-    close(pP->fd);
-    pP->fd       = fd;
-    pP->segment  = n;
-    pP->segBytes = 0;
-    strcpy(pP->path, logPath);
-
+    n  = pP->segment;
     ok = snapshotEncode(storeP, &snap, pP->seq);
     if (ok == false)
       COR_E("corDB: snapshot of '%s': out of memory - no snapshot", pP->tenant);
@@ -400,35 +497,49 @@ static void snapshot(CorDbPersist* pP)
 
   if (ok == false)
   {
-    free(snap.buf);
+    chunksFree(&snap);
     return;
   }
 
-  char tmpPath[600];
-  char snapPath[600];
+  char               tmpPath[600];
+  char               snapPath[600];
+  unsigned long long bytes = 0;
 
   filePath(pP, "snap", n, "tmp", tmpPath, sizeof(tmpPath));
   filePath(pP, "snap", n, "cor", snapPath, sizeof(snapPath));
 
-  fd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-  ok = (fd >= 0) && writeAll(fd, snap.buf, snap.len) && (fdatasync(fd) == 0);
+  int fd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+
+  ok = (fd >= 0);
+  for (int i = 0; ok && (i < snap.n); i++)
+  {
+    ok     = writeAll(fd, snap.v[i].buf, snap.v[i].len);
+    bytes += (unsigned long long) snap.v[i].len;
+  }
+  ok = ok && (fdatasync(fd) == 0);
 
   if (fd >= 0)
     close(fd);
+
+  chunksFree(&snap);
 
   if (ok && (rename(tmpPath, snapPath) == 0))
   {
     syncDir(pP->dir);
     dropBefore(pP, n);
-    COR_I("corDB: snapshot of '%s': %d bytes as '%s' (writers held %ld ms)", pP->tenant, snap.len, snapPath, lockedMs);
+
+    pthread_mutex_lock(&pP->ioMutex);                  // the flusher's counters
+    pP->lastSnapBytes  = bytes;
+    pP->sinceSnapBytes = pP->segBytes;                 // what the new segment got while the file was written
+    pthread_mutex_unlock(&pP->ioMutex);
+
+    COR_I("corDB: snapshot of '%s': %llu bytes as '%s' (writers held %ld ms)", pP->tenant, bytes, snapPath, lockedMs);
   }
   else
   {
     COR_E("corDB: snapshot of '%s' to '%s': %s - the log since the last snapshot is kept", pP->tenant, tmpPath, strerror(errno));
     unlink(tmpPath);
   }
-
-  free(snap.buf);
 }
 
 
@@ -789,10 +900,15 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
 
   pP->segment = haveSnap ? snapN : 0;
 
+  struct stat st;
+
   if (haveSnap)
   {
     filePath(pP, "snap", snapN, "cor", path, sizeof(path));
     ok = loadFile(pP, storeP, path, false, &records);
+
+    if (stat(path, &st) == 0)
+      pP->lastSnapBytes = (unsigned long long) st.st_size;
   }
 
   for (int i = 0; (ok == true) && (i < logs); i++)
@@ -803,6 +919,9 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
     filePath(pP, "log", logV[i], "cor", path, sizeof(path));
     ok          = loadFile(pP, storeP, path, (i == logs - 1), &records);
     pP->segment = logV[i];
+
+    if (stat(path, &st) == 0)                          // after a torn tail's cut
+      pP->sinceSnapBytes += (unsigned long long) st.st_size;
   }
 
   free(logV);
@@ -939,6 +1058,103 @@ void corDbPersistAppendId(CorDbPersist* pP, CorDbLogOp op, const char* id)
   idNode.value.s = (char*) id;
 
   corDbPersistAppend(pP, op, &idNode);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistOn - is there a log to write to (--dbDir)
+//
+bool corDbPersistOn(void)
+{
+  return flusherUp;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistPreAdd - one more body, encoded now; its index
+//
+int corDbPersistPreAdd(CorDbPre* preP, CorNode* bodyP)
+{
+  if (preP->n == preP->size)
+  {
+    int size = (preP->size == 0) ? 4 : preP->size * 2;
+    int*      offV = (int*)      realloc(preP->offV, size * sizeof(int));
+    int*      lenV = (offV != NULL) ? (int*) realloc(preP->lenV, size * sizeof(int)) : NULL;
+    uint32_t* crcV = (lenV != NULL) ? (uint32_t*) realloc(preP->crcV, size * sizeof(uint32_t)) : NULL;
+
+    if (offV != NULL) preP->offV = offV;
+    if (lenV != NULL) preP->lenV = lenV;
+    if (crcV != NULL) preP->crcV = crcV;
+    if (crcV == NULL)
+      return -1;
+
+    preP->size = size;
+  }
+
+  int ix = preP->n++;
+
+  preP->offV[ix] = preP->buf.len;
+  preP->lenV[ix] = -1;
+
+  if ((bodyP != NULL) && (corDbLogBodyEncode(&preP->buf, bodyP, &preP->lenV[ix], &preP->crcV[ix]) == false))
+    preP->lenV[ix] = -1;
+
+  return ix;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistAppendPre - the record of a pre-encoded body; under the write lock
+//
+void corDbPersistAppendPre(CorDbPersist* pP, CorDbLogOp op, CorDbPre* preP, int ix, CorNode* bodyP)
+{
+  if (pP == NULL)
+    return;
+
+  if ((ix < 0) || (ix >= preP->n) || (preP->lenV[ix] < 0))
+  {
+    corDbPersistAppend(pP, op, bodyP);                 // not pre-encoded: here, as before
+    return;
+  }
+
+  uint64_t t = nowNs();
+
+  pthread_mutex_lock(&pP->mutex);
+
+  uint64_t seq = pP->seq + 1;
+
+  if (corDbLogAppendEncoded(&pP->buf, op, seq, t, &preP->buf.buf[preP->offV[ix]], preP->lenV[ix], preP->crcV[ix]) == true)
+    pP->seq = seq;
+  else
+  {
+    COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->path);
+    __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+  }
+
+  pthread_mutex_unlock(&pP->mutex);
+
+  pendingP   = pP;
+  pendingSeq = seq;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistPreFree - the cleanup behind COR_DB_PRE
+//
+void corDbPersistPreFree(CorDbPre* preP)
+{
+  free(preP->buf.buf);
+  free(preP->offV);
+  free(preP->lenV);
+  free(preP->crcV);
 }
 
 
@@ -1115,7 +1331,7 @@ void corDbPersistClose(void)
 
   for (CorDbPersist* pP = persistList; pP != NULL; pP = pP->next)
   {
-    if (pP->segBytes != 0)                             // written since the last snapshot
+    if (pP->sinceSnapBytes != 0)                       // written since the last snapshot
       snapshot(pP);
   }
 

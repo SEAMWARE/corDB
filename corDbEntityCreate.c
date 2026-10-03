@@ -43,6 +43,12 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
   CorNode* cloneP = corTreeClone(NULL, entityP);   // malloc, not a buffer allocator: store lifetime
   int      rc     = DB_OK;
 
+  //
+  // The record's body encoded now, before the lock (corDbPersist.h, CorDbPre) - only without --dbDir not at all
+  //
+  COR_DB_PRE(pre);
+  int preIx = ((cloneP != NULL) && corDbPersistOn()) ? corDbPersistPreAdd(&pre, cloneP) : -1;
+
   {
     COR_DB_WRITE(tenantP);
 
@@ -91,7 +97,7 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
       else
       {
         corDbIndexLink(corDbStoreOf(tenantP), cloneP);
-        corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, cloneP);
+        corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
         return DB_OK;
       }
     }

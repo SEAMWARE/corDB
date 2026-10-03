@@ -51,7 +51,9 @@ typedef struct CorDbPersist
   pthread_mutex_t       ioMutex;                       // the file: a flush's write + sync, a snapshot's switch of segment
   int                   fd;                            // the open log segment, log-<segment>.cor
   unsigned int          segment;
-  unsigned long long    segBytes;                      // written to it - a snapshot is due at --dbSnapshotEvery MiB
+  unsigned long long    segBytes;                      // written to it - the segment rolls at 1 GiB
+  unsigned long long    sinceSnapBytes;                // log written since the last snapshot
+  unsigned long long    lastSnapBytes;                 // the size of that snapshot
   bool                  snapshotDue;
   char                  path[600];                     // the segment's path, for the errors
   char                  dir[512];                      // the tenant's directory
@@ -102,6 +104,36 @@ extern void corDbPersistTenants(void);
 //
 extern void corDbPersistAppend(CorDbPersist* persistP, CorDbLogOp op, CorNode* bodyP);
 extern void corDbPersistAppendId(CorDbPersist* persistP, CorDbLogOp op, const char* id);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// CorDbPre - record bodies encoded BEFORE the write lock
+//
+// Where the entity a write stores exists before the lock - the clone of a create, a replace, a batch
+// create or update - its body is encoded and its CRC taken first, and under the lock only the header
+// is written and the body copied (corDbLogBodyEncode / corDbLogAppendEncoded). Encoded under the lock,
+// the record cost a batch create of twenty entities 61 % of its throughput. Index i is the i-th
+// corDbPersistPreAdd; a body that could not be encoded (or a NULL node) has length -1, and its
+// record is then encoded under the lock as before.
+//
+typedef struct CorDbPre
+{
+  CorBinBuffer  buf;
+  int           n;
+  int           size;
+  int*          offV;
+  int*          lenV;
+  uint32_t*     crcV;
+} CorDbPre;
+
+#define COR_DB_PRE(name)  CorDbPre name __attribute__((cleanup(corDbPersistPreFree))) = { { NULL, 0, 0 }, 0, 0, NULL, NULL, NULL }
+
+extern bool corDbPersistOn(void);
+extern int  corDbPersistPreAdd(CorDbPre* preP, CorNode* bodyP);
+extern void corDbPersistAppendPre(CorDbPersist* persistP, CorDbLogOp op, CorDbPre* preP, int ix, CorNode* bodyP);
+extern void corDbPersistPreFree(CorDbPre* preP);
 
 
 

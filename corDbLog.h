@@ -12,7 +12,8 @@
 // corDB's log records (doc/persistence.md § 3-4): a write's EFFECT, a 28-byte header and a cor
 // binary tree. Every record decodes on its own.
 //
-#include <stdint.h>                                    // uint64_t
+#include <stdbool.h>                                   // bool
+#include <stdint.h>                                    // uint64_t, uint32_t
 
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
 #include "corTree/CorNode.h"                           // CorNode
@@ -68,6 +69,20 @@ enum { COR_DB_LOG_HEADER_LEN = 28 };
 // corDbLogEncode - append one record to outP (a growable malloc'd buffer, as corTreeBinEncode's)
 //
 extern bool corDbLogEncode(CorBinBuffer* outP, CorDbLogOp op, uint64_t seq, uint64_t sysTimeNs, CorNode* bodyP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbLogBodyEncode / corDbLogAppendEncoded - a record in two halves
+//
+// corDbLogBodyEncode appends only the body, and gives its length and CRC-32C: work that needs no
+// sequence number, so it is done before the write lock. corDbLogAppendEncoded, under the lock,
+// writes the header (sequence, time, the CRC finished over the header) and copies the body after it.
+// The two halves together make the record corDbLogEncode makes.
+//
+extern bool corDbLogBodyEncode(CorBinBuffer* outP, CorNode* bodyP, int* lenP, uint32_t* crcP);
+extern bool corDbLogAppendEncoded(CorBinBuffer* outP, CorDbLogOp op, uint64_t seq, uint64_t sysTimeNs, const char* body, int bodyLen, uint32_t bodyCrc);
 
 
 

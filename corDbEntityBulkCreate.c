@@ -70,6 +70,17 @@ int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
     cloneV[ix] = ((idP != NULL) && (idP->type == CorString)) ? corTreeClone(NULL, inP) : NULL;
   }
 
+  //
+  // Every record's body encoded now, before the lock (corDbPersist.h, CorDbPre) - index ix is entity ix
+  //
+  COR_DB_PRE(pre);
+
+  if (corDbPersistOn())
+  {
+    for (int i = 0; i < count; i++)
+      corDbPersistPreAdd(&pre, cloneV[i]);
+  }
+
   COR_DB_WRITE(tenantP);
 
   CorNode* entities = corDbEntities(tenantP);
@@ -139,7 +150,7 @@ int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
     }
 
     corDbIndexLink(corDbStoreOf(tenantP), cloneP);
-    corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, cloneP);
+    corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, ix, cloneP);
     resultsV[ix] = DB_OK;
     anyOk        = true;
   }
