@@ -15,8 +15,10 @@
 # The broker's feature switches the sources read - a plugin must be built as its broker was:
 #   COR_FEATURE_SUBSCRIPTIONS=0|1  COR_FEATURE_REGISTRATIONS=0|1   (default 1, as coraine's)
 #
-# OBJDIR and OUT move the objects and the two .so elsewhere - coraine's reduced-build check builds a
-# variant per configuration that way, without touching this tree's own build.
+# Each flavour keeps its objects AND its plugins in obj/<BUILD> - switching flavours never leaves the other
+# flavour's .so in place (a debug build after a release one relinks nothing, so a shared output would be
+# the release one). OBJDIR and OUT move both elsewhere - coraine's reduced-build check builds a variant
+# per configuration that way, without touching this tree's own builds.
 #
 # Copyright 2026 Seamware
 # SPDX-License-Identifier: Apache-2.0
@@ -27,7 +29,7 @@ CORAINE      ?= $(COR_LIBS)/coraine
 PLUGIN_DIR   ?= /opt/seamware/plugins
 BUILD        ?= debug
 OBJDIR       ?= obj/$(BUILD)
-OUT          ?= .
+OUT          ?= $(OBJDIR)
 
 COR_FEATURE_SUBSCRIPTIONS ?= 1
 COR_FEATURE_REGISTRATIONS ?= 1
@@ -115,7 +117,7 @@ di:  install
 ci:  clean install
 
 clean:
-	rm -rf obj corDB.so troe/corDB.so *~
+	rm -rf obj *~
 
 -include $(DEPS)
 
