@@ -16,6 +16,7 @@
 
 #include "db/Tenant.h"                                   // tenant0, tenantList
 #include "corDB/corDbGeoMatch.h"          // corDbGeoClose
+#include "corDB/corDbHistory.h"                  // corDbHistoryFree
 #include "corDB/corDbPersist.h"                  // corDbPersistClose
 #include "corDB/corDbStore.h"        // CorDbStore
 #include "corDB/corDbClose.h"             // Own interface
@@ -41,6 +42,13 @@ static void corDbFreeTenantStore(Tenant* tenantP)
       corHashRelease(storeP->idToPrevEntity);
 
     corTreeFree(storeP->tree);
+
+    if (storeP->historyP != NULL)
+    {
+      corDbHistoryFree(storeP->historyP);
+      free(storeP->historyP);
+    }
+
     pthread_rwlock_destroy(&storeP->lock);
     free(storeP);
 

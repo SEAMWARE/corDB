@@ -16,6 +16,8 @@
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
+#include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityDelete.h"   // Own interface
 
@@ -58,6 +60,7 @@ int corDbEntityDelete(Tenant* tenantP, const char* entityId)
     {
       corDbIndexUnlink(idxStoreP, eP);
       corDbPersistAppendId(corDbLockedStore->persistP, CorDbLogEntityDelete, entityId);
+      corDbHistoryDeleted(corDbLockedStore, eP, corRest.kallocP);
       goneP = eP;
       break;
     }

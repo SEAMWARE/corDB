@@ -20,6 +20,8 @@
 #include "shared/geoMatch.h"                          // geoEntityValidate
 #include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
+#include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityCreate.h"   // Own interface
 
@@ -98,6 +100,7 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
       {
         corDbIndexLink(corDbStoreOf(tenantP), cloneP);
         corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
+        corDbHistoryCreated(corDbLockedStore, cloneP, corRest.kallocP);
         return DB_OK;
       }
     }

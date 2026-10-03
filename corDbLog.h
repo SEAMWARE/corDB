@@ -36,7 +36,8 @@ typedef enum CorDbLogOp
   CorDbLogRegPut       = 7,
   CorDbLogRegDelete    = 8,
   CorDbLogBatchBegin   = 9,     // { "count": n } - replayed all or nothing
-  CorDbLogBatchEnd     = 10
+  CorDbLogBatchEnd     = 10,
+  CorDbLogHistInstance = 11      // a history record (corDbHistory.h): { id, type, attr, datasetId?, deletedAt?, instance } - hist-N.cor only
 } CorDbLogOp;
 
 

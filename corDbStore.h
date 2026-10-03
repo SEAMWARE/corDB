@@ -71,6 +71,12 @@ typedef struct CorDbStore
   // write lock. NULL: no snapshot.
   //
   CorNode*            snapCursor;
+
+  //
+  // The tenant's temporal history (corDbHistory.h) - NULL without `--troe corDB`. Written by the
+  // same write sites, under the same lock: current state overwrites, history appends.
+  //
+  struct CorDbHistory*  historyP;
 } CorDbStore;
 
 

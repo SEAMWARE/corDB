@@ -17,6 +17,7 @@
 
 #include "db/Tenant.h"                               // Tenant
 
+#include "corDB/corDbHistory.h"                      // CorDbHistory, corDbHistoryOn
 #include "corDB/corDbPersist.h"                      // corDbPersistOpen, corDbPersistSyncWait
 #include "corDB/corDbStore.h"         // Own interface
 
@@ -85,6 +86,7 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->idxSlots = 0;
   storeP->idxCount = 0;
   storeP->snapCursor = NULL;
+  storeP->historyP   = corDbHistoryOn ? (struct CorDbHistory*) calloc(1, sizeof(CorDbHistory)) : NULL;
   pthread_rwlock_init(&storeP->lock, NULL);
   storeP->persistP = corDbPersistOpen(tenantP, storeP);   // the log replayed into it - NULL without --dbDir
 

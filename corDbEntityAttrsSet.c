@@ -18,6 +18,8 @@
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
+#include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityAttrsSet.h" // Own interface
 
@@ -57,6 +59,7 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
       // NULL allocator → malloc heap (tenant store lifetime)
       ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
       corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, eP);
+      corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }
   }
