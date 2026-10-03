@@ -9,6 +9,7 @@
 #
 #   make                 debug build (-DDEBUG -DCOR_T_ON), the same flags coraine's CMake gives a plugin
 #   make BUILD=release   release build (-O2 -g, no traces)
+#   make BUILD=coverage  instrumented (--coverage), as coraine's `make coverage` builds the broker
 #   make install         into $(PLUGIN_DIR)/db/currentState and $(PLUGIN_DIR)/troe/temporal
 #   make di / ci         install / clean + install
 #
@@ -44,8 +45,11 @@ ifeq ($(BUILD),debug)
 CFLAGS       += -g -DDEBUG -DCOR_T_ON
 else ifeq ($(BUILD),release)
 CFLAGS       += -O2 -g
+else ifeq ($(BUILD),coverage)
+CFLAGS       += -g -O0 --coverage -fprofile-update=atomic -DCOR_T_ON
+EXTRA_LDFLAGS += --coverage
 else
-$(error BUILD must be debug or release, not '$(BUILD)')
+$(error BUILD must be debug, release or coverage, not '$(BUILD)')
 endif
 
 LIBS          = -lgeos_c -lm
