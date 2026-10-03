@@ -61,11 +61,22 @@ extern bool corDbPersistInit(void);
 
 // -----------------------------------------------------------------------------
 //
-// corDbPersistOpen - the tenant's log, opened (its directory created) - NULL without --dbDir
+// corDbPersistOpen - the tenant's log replayed into its store, then opened - NULL without --dbDir
 //
-// Called once per store, while it is built and before anyone else sees it.
+// Called once per store, while it is built and before anyone else sees it: recovery (§ 6) is the
+// store's construction. A log that exists and cannot be read ends the broker - serving the store
+// without it would answer, and then overwrite, a past that is not the real one.
 //
-extern CorDbPersist* corDbPersistOpen(Tenant* tenantP);
+struct CorDbStore;
+extern CorDbPersist* corDbPersistOpen(Tenant* tenantP, struct CorDbStore* storeP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistTenants - the tenants --dbDir has directories for, created and their stores loaded
+//
+extern void corDbPersistTenants(void);
 
 
 

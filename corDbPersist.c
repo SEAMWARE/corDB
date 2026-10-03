@@ -22,19 +22,25 @@
 #include <stdio.h>                                     // snprintf
 #include <stdlib.h>                                    // free
 #include <string.h>                                    // strcmp, strerror, strlen
+#include <dirent.h>                                    // opendir, readdir
 #include <sys/stat.h>                                  // mkdir
 #include <time.h>                                      // clock_gettime
 #include <unistd.h>                                    // write, fdatasync, close
 
 #include "corLog/corLog.h"                             // COR_E, COR_I, COR_W
+#include "corAlloc/CorAlloc.h"                         // CorAlloc
+#include "corAlloc/corAllocBufferInit.h"               // corAllocBufferInit
+#include "corAlloc/corAllocBufferReset.h"              // corAllocBufferReset
 #include "corBase/corCoLoop.h"                         // corCoBlocking
 #include "corTree/CorNode.h"                           // CorNode
 #include "corRest/CorRestState.h"                      // corRestP
 
-#include "db/Tenant.h"                                 // Tenant
+#include "db/Tenant.h"                                 // Tenant, tenantGetOrCreate
 
 #include "corDB/corDbGlobals.h"                        // corDbDir, corDbSync, corDbSyncInterval
 #include "corDB/corDbLog.h"                            // corDbLogEncode
+#include "corDB/corDbReplay.h"                         // corDbReplay
+#include "corDB/corDbStore.h"                          // CorDbStore
 #include "corDB/corDbPersist.h"                        // Own interface
 
 
@@ -260,6 +266,36 @@ static void* flusher(void* unused)
 
 // -----------------------------------------------------------------------------
 //
+// mkdirs - the directory and every missing parent (mkdir -p)
+//
+static bool mkdirs(const char* path)
+{
+  char p[512];
+
+  if (snprintf(p, sizeof(p), "%s", path) >= (int) sizeof(p))
+  {
+    errno = ENAMETOOLONG;
+    return false;
+  }
+
+  for (char* sP = &p[1]; *sP != 0; sP++)
+  {
+    if (*sP != '/')
+      continue;
+
+    *sP = 0;
+    if ((mkdir(p, 0700) != 0) && (errno != EEXIST))
+      return false;
+    *sP = '/';
+  }
+
+  return (mkdir(p, 0700) == 0) || (errno == EEXIST);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbPersistInit -
 //
 bool corDbPersistInit(void)
@@ -276,7 +312,7 @@ bool corDbPersistInit(void)
     return false;
   }
 
-  if ((mkdir(corDbDir, 0700) != 0) && (errno != EEXIST))
+  if (mkdirs(corDbDir) == false)
   {
     COR_E("corDB: --dbDir '%s': %s", corDbDir, strerror(errno));
     return false;
@@ -304,9 +340,139 @@ bool corDbPersistInit(void)
 
 // -----------------------------------------------------------------------------
 //
+// load - the tenant's log replayed into its store (§ 6); a torn tail cut off; false if unreadable
+//
+// Record by record until the end or the first record that is short or fails its CRC - what a death
+// in mid-write leaves. The file is truncated there, so the records appended after the restart follow
+// the last good one and a later replay reaches them.
+//
+// Each record decodes into a scratch arena and is cloned into the store, as a request's tree is.
+// The arena is emptied every 1000 records: memory stays bounded whatever the log's length.
+//
+static bool load(CorDbPersist* pP, CorDbStore* storeP, const char* tenantName)
+{
+  int fd = open(pP->path, O_RDONLY | O_CLOEXEC);
+
+  if (fd < 0)
+  {
+    if (errno == ENOENT)
+      return true;                                     // a new tenant
+
+    COR_E("corDB: log '%s': %s", pP->path, strerror(errno));
+    return false;
+  }
+
+  struct stat st;
+
+  if (fstat(fd, &st) != 0)
+  {
+    COR_E("corDB: log '%s': %s", pP->path, strerror(errno));
+    close(fd);
+    return false;
+  }
+
+  if (st.st_size == 0)
+  {
+    close(fd);
+    return true;
+  }
+
+  if (st.st_size > 0x7FFFFFFF)                         // the reader's offsets are ints - rollover (§ 6) keeps a log far below
+  {
+    COR_E("corDB: log '%s' is %lld bytes - more than one log file can be", pP->path, (long long) st.st_size);
+    close(fd);
+    return false;
+  }
+
+  int   len = (int) st.st_size;
+  char* buf = (char*) malloc(len);
+  int   got = 0;
+
+  while ((buf != NULL) && (got < len))
+  {
+    ssize_t n = read(fd, &buf[got], len - got);
+
+    if ((n < 0) && (errno == EINTR))
+      continue;
+    if (n <= 0)
+      break;
+    got += (int) n;
+  }
+
+  close(fd);
+
+  if ((buf == NULL) || (got < len))
+  {
+    COR_E("corDB: reading the log '%s': %s", pP->path, (buf == NULL) ? "out of memory" : strerror(errno));
+    free(buf);
+    return false;
+  }
+
+  struct timespec t0;
+  struct timespec t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+
+  enum { ARENA_INIT = 64 * 1024 };
+  char*          arenaBuf = (char*) malloc(ARENA_INIT);
+  CorAlloc       arena;
+  int            off      = 0;
+  int            records  = 0;
+  int            failed   = 0;
+  uint64_t       lastSeq  = 0;
+  CorDbLogStatus status   = CorDbLogEnd;
+  CorDbLogRecord rec;
+
+  if (arenaBuf == NULL)
+  {
+    free(buf);
+    return false;
+  }
+
+  corAllocBufferInit(&arena, arenaBuf, ARENA_INIT, 1024 * 1024, NULL, "corDB replay");
+
+  while ((status = corDbLogNext(buf, len, &off, &arena, &rec)) == CorDbLogOk)
+  {
+    if (corDbReplay(storeP, &rec) == false)
+      ++failed;                                        // said why; the next records still apply
+
+    lastSeq = rec.seq;
+
+    if ((++records % 1000) == 0)
+      corAllocBufferReset(&arena, true);
+  }
+
+  corAllocBufferReset(&arena, false);
+  free(arenaBuf);
+  free(buf);
+
+  if (status == CorDbLogTorn)
+  {
+    COR_W("corDB: log '%s': a torn record at byte %d of %d - the %d bytes after the last good record are cut", pP->path, off, len, len - off);
+
+    if (truncate(pP->path, off) != 0)
+    {
+      COR_E("corDB: cutting the torn tail of '%s': %s", pP->path, strerror(errno));
+      return false;
+    }
+  }
+
+  pP->seq       = lastSeq;
+  pP->syncedSeq = lastSeq;
+
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+
+  COR_I("corDB: tenant '%s': %d records replayed in %ld ms (last sequence %llu)%s", tenantName, records, ms, (unsigned long long) lastSeq, (failed != 0) ? " - some did not apply, see above" : "");
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbPersistOpen -
 //
-CorDbPersist* corDbPersistOpen(Tenant* tenantP)
+CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
 {
   if (flusherUp == false)
     return NULL;
@@ -336,6 +502,12 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP)
   {
     free(pP);                                          // cannot be: dirPath left room above
     return NULL;
+  }
+
+  if (load(pP, storeP, tenantP->name) == false)
+  {
+    COR_E("corDB: tenant '%s': its log could not be read - the broker does not start on a store it cannot trust", tenantP->name);
+    exit(1);
   }
 
   pP->fd = open(pP->path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
@@ -465,6 +637,91 @@ void corDbPersistSyncWait(void)
 
   corCoBlocking(syncWait, &w);
   corRestP = savedP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// unescape - a tenant directory's name back to the tenant's (tenantDir's inverse); false if it is not one
+//
+static bool unescape(const char* dir, char* out, int outSize)
+{
+  int o = 0;
+
+  for (const char* p = dir; *p != 0; p++)
+  {
+    if (o >= outSize - 1)
+      return false;
+
+    if (*p != '%')
+    {
+      out[o++] = *p;
+      continue;
+    }
+
+    unsigned int c;
+
+    if ((p[1] == 0) || (p[2] == 0) || (sscanf(&p[1], "%2X", &c) != 1))
+      return false;
+
+    out[o++] = (char) c;
+    p += 2;
+  }
+
+  out[o] = 0;
+  return (o > 0);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistTenants - every tenant with a directory in --dbDir, created and loaded
+//
+// At start, before the broker loads its subscription and registration caches - which walk the
+// tenants it knows. The default tenant's store is built by corDbInit itself.
+//
+void corDbPersistTenants(void)
+{
+  if (flusherUp == false)
+    return;
+
+  DIR* dirP = opendir(corDbDir);
+
+  if (dirP == NULL)
+  {
+    COR_E("corDB: --dbDir '%s': %s", corDbDir, strerror(errno));
+    return;
+  }
+
+  struct dirent* entryP;
+
+  while ((entryP = readdir(dirP)) != NULL)
+  {
+    if ((entryP->d_name[0] == '.') || (strcmp(entryP->d_name, "_") == 0))
+      continue;
+
+    char name[256];
+
+    if (unescape(entryP->d_name, name, sizeof(name)) == false)
+    {
+      COR_W("corDB: '%s/%s' is not a tenant directory - left alone", corDbDir, entryP->d_name);
+      continue;
+    }
+
+    Tenant* tP = tenantGetOrCreate(name);
+
+    if (tP == NULL)
+    {
+      COR_E("corDB: '%s/%s': the tenant '%s' could not be created", corDbDir, entryP->d_name, name);
+      continue;
+    }
+
+    corDbStoreOf(tP);                                  // built - and so loaded - now, not on the first request
+  }
+
+  closedir(dirP);
 }
 
 

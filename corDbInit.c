@@ -32,6 +32,7 @@ int corDbInit(void)
   // Create the store for the default tenant eagerly
   //
   corDbTenantStore(&tenant0);
+  corDbPersistTenants();                             // and every other tenant --dbDir knows
   corDbGeoInit();
 
   COR_I("corDB: in-memory store ready (per-tenant CorNode trees, GEOS enabled)");

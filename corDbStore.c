@@ -84,8 +84,8 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->idToPrevEntity = NULL;                     // built on the first entity
   storeP->idxSlots = 0;
   storeP->idxCount = 0;
-  storeP->persistP = corDbPersistOpen(tenantP);      // NULL without --dbDir
   pthread_rwlock_init(&storeP->lock, NULL);
+  storeP->persistP = corDbPersistOpen(tenantP, storeP);   // the log replayed into it - NULL without --dbDir
 
   //
   // Published complete, under the mutex. Two requests arriving together for a tenant with no store
