@@ -55,6 +55,7 @@ typedef struct CorDbPersist
   unsigned long long    sinceSnapBytes;                // log written since the last snapshot
   unsigned long long    lastSnapBytes;                 // the size of that snapshot
   bool                  snapshotDue;
+  bool                  snapshotting;                  // one is being taken: the flusher arms no other
   char                  path[600];                     // the segment's path, for the errors
   char                  dir[512];                      // the tenant's directory
   char                  tenant[64];                    // the tenant's name, for the log lines

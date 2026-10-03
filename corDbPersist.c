@@ -252,7 +252,7 @@ static void flushLocked(CorDbPersist* pP)
     //
     unsigned long long every = (unsigned long long) corDbSnapshotEvery * 1024 * 1024;
 
-    if ((pP->sinceSnapBytes >= every) && (pP->sinceSnapBytes >= pP->lastSnapBytes))
+    if ((pP->snapshotting == false) && (pP->sinceSnapBytes >= every) && (pP->sinceSnapBytes >= pP->lastSnapBytes))
       pP->snapshotDue = true;
 
     //
@@ -479,29 +479,76 @@ static void snapshot(CorDbPersist* pP)
   long            maxUs  = 0;                          // the longest any writer could have waited on it
 
   //
-  // The start, under the write lock
+  // The start. ioMutex first - the flusher waits, so whatever is appended from here on stays in the
+  // buffer for the NEW segment - then, under the tenant's write lock, only what touches no disk: the
+  // buffered records (the old segment's) swapped out, the sequence, the cursor. They are written and
+  // synced into the old segment after the lock: a writer never waits for the disk here (syncing under
+  // the lock was a create's p99 of 123 ms).
   //
-  clock_gettime(CLOCK_MONOTONIC, &t0);
-  pthread_rwlock_wrlock(&storeP->lock);
+  // Lock order: ioMutex, then the tenant's lock, then 'mutex' - as everywhere: a writer takes the
+  // tenant's lock and 'mutex', the flusher ioMutex and 'mutex'.
+  //
   pthread_mutex_lock(&pP->ioMutex);
 
-  flushLocked(pP);
-  pP->snapshotDue = false;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  pthread_rwlock_wrlock(&storeP->lock);
+  pthread_mutex_lock(&pP->mutex);
 
-  if (segmentNext(pP) == false)
-    COR_E("corDB: snapshot of '%s': no new log segment - no snapshot", pP->tenant);
-  else
-  {
-    ok                 = true;
-    n                  = pP->segment;
-    seq                = pP->seq;
-    storeP->snapCursor = storeP->entities->value.head;
-  }
+  CorBinBuffer old     = pP->buf;
+  uint64_t     oldLast = pP->seq;
 
-  pthread_mutex_unlock(&pP->ioMutex);
+  pP->buf             = pP->spare;
+  pP->buf.len         = 0;
+  pP->spare           = (CorBinBuffer) { NULL, 0, 0 };
+  seq                 = pP->seq;
+  storeP->snapCursor  = storeP->entities->value.head;
+  pP->snapshotDue     = false;
+  pP->snapshotting    = true;
+  pP->sinceSnapBytes  = 0;                             // the new segment is what this snapshot's log will be
+
+  pthread_mutex_unlock(&pP->mutex);
   pthread_rwlock_unlock(&storeP->lock);
   clock_gettime(CLOCK_MONOTONIC, &t1);
   maxUs = (t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_nsec - t0.tv_nsec) / 1000;
+
+  //
+  // The old segment completed, the log switched - still under ioMutex, outside the tenant's lock
+  //
+  ok = true;
+  if (old.len > 0)
+  {
+    if ((writeAll(pP->fd, old.buf, old.len) == false) || ((syncMode != SyncNone) && (fdatasync(pP->fd) != 0)))
+    {
+      COR_E("corDB: writing the log '%s': %s - what was buffered may NOT be on the disk", pP->path, strerror(errno));
+      __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+      ok = false;
+    }
+    else
+      __atomic_store_n(&pP->syncedSeq, oldLast, __ATOMIC_RELEASE);
+
+    pP->segBytes += (unsigned long long) old.len;
+  }
+  else
+    __atomic_store_n(&pP->syncedSeq, oldLast, __ATOMIC_RELEASE);
+
+  old.len   = 0;
+  pP->spare = old;                                     // the buffer goes on as the flusher's spare
+
+  if (ok && (segmentNext(pP) == false))
+  {
+    COR_E("corDB: snapshot of '%s': no new log segment - no snapshot", pP->tenant);
+    ok = false;
+  }
+
+  n = pP->segment;
+  pthread_mutex_unlock(&pP->ioMutex);
+
+  if (ok == false)                                     // the cursor goes: no slices to walk it
+  {
+    pthread_rwlock_wrlock(&storeP->lock);
+    storeP->snapCursor = NULL;
+    pthread_rwlock_unlock(&storeP->lock);
+  }
 
   pthread_mutex_lock(&flushMutex);                     // its flush may have synced what a --dbSync request writer waits for
   pthread_cond_broadcast(&syncedCond);
@@ -547,6 +594,17 @@ static void snapshot(CorDbPersist* pP)
     long us = (t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_nsec - t0.tv_nsec) / 1000;
     if (us > maxUs)
       maxUs = us;
+
+    //
+    // A breath between two slices. glibc's rwlock prefers readers: released and taken straight back,
+    // the read lock went to this thread again before a woken writer ran, and the writers of a growing
+    // store got a fraction of the lock while a snapshot lasted
+    //
+    if (done == false)
+    {
+      struct timespec pause = { 0, 50 * 1000 };
+      nanosleep(&pause, NULL);
+    }
   }
 
   long lockedMs = maxUs / 1000;
@@ -555,6 +613,9 @@ static void snapshot(CorDbPersist* pP)
   {
     COR_E("corDB: snapshot of '%s': out of memory - no snapshot", pP->tenant);
     chunksFree(&snap);
+    pthread_mutex_lock(&pP->ioMutex);
+    pP->snapshotting = false;
+    pthread_mutex_unlock(&pP->ioMutex);
     return;
   }
 
@@ -586,8 +647,8 @@ static void snapshot(CorDbPersist* pP)
     dropBefore(pP, n);
 
     pthread_mutex_lock(&pP->ioMutex);                  // the flusher's counters
-    pP->lastSnapBytes  = bytes;
-    pP->sinceSnapBytes = pP->segBytes;                 // what the new segment got while the file was written
+    pP->lastSnapBytes = bytes;
+    pP->snapshotting  = false;
     pthread_mutex_unlock(&pP->ioMutex);
 
     COR_I("corDB: snapshot of '%s': %llu bytes as '%s' (writers held at most %ld ms at a time)", pP->tenant, bytes, snapPath, lockedMs);
@@ -596,6 +657,10 @@ static void snapshot(CorDbPersist* pP)
   {
     COR_E("corDB: snapshot of '%s' to '%s': %s - the log since the last snapshot is kept", pP->tenant, tmpPath, strerror(errno));
     unlink(tmpPath);
+
+    pthread_mutex_lock(&pP->ioMutex);
+    pP->snapshotting = false;
+    pthread_mutex_unlock(&pP->ioMutex);
   }
 }
 
