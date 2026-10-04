@@ -1,12 +1,14 @@
 //
-// FILE            corDbRegister.c
+// FILE            ramDbRegister.c
 //
 // AUTHOR          Ken Zangelin
 //
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-// "corDB" troe plugin — in-memory ring buffer for dev/test.
+// "ramDB" troe plugin (--troe ramDB) — an in-memory ring of the broker's TRoE events: the most recent
+// N, nothing on disk. Today for dev/test (the functests assert the broker's TRoE event contract through
+// it); the seed of a short-term history (STH) - RAM only, "the last X".
 //
 // Captures the most recent N events. The ring is global to the broker
 // process (shared across worker threads); access is mutex-guarded so a
@@ -188,7 +190,7 @@ static void corDbTroeDumpInfo(CorAlloc* allocP, CorNode* root)
 //
 void troeRegister(TroeDriver* driverP)
 {
-  driverP->alias        = "corDB";
+  driverP->alias        = "ramDB";
   driverP->version      = PLUGIN_VERSION;
   driverP->args         = NULL;
   driverP->init         = corDbTroeInit;

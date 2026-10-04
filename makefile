@@ -1,6 +1,6 @@
 #
-# corDB - the coraine NGSI-LD broker's in-process database: its current-state plugin (corDB.so) and its
-# temporal plugin (troe/corDB.so).
+# corDB - the coraine NGSI-LD broker's in-process database: its current-state plugins (corDB.so - with
+# --troe corDB its history too - and ramDB.so) and ramDB's temporal plugin (troe/ramDB.so, a ring in RAM).
 #
 # Built against its siblings, as every Cor-Lib is (sources use -I.. and include "corTree/CorNode.h"),
 # and against the broker's plugin interface - the DbDriver / TroeDriver headers - in the coraine
@@ -83,7 +83,7 @@ endif
 GEOMATCH      = $(CORAINE)/src/plugins/shared/geoMatch.c
 
 OBJECTS       = $(SOURCES:%.c=$(OBJDIR)/%.o) $(OBJDIR)/geoMatch.o
-TROE_OBJECTS  = $(OBJDIR)/troe/corDbRegister.o
+TROE_OBJECTS  = $(OBJDIR)/troe/ramDbRegister.o
 
 #
 # ramDB - corDB in RAM only: the same sources built with COR_DB_RAM_ONLY=1 - no disk options, no
@@ -98,7 +98,7 @@ DEPS          = $(OBJECTS:.o=.d) $(TROE_OBJECTS:.o=.d) $(RAM_SOURCES:%.c=$(RAM_O
 
 PLUGIN        = $(OUT)/corDB.so
 RAM_PLUGIN    = $(OUT)/ramDB.so
-TROE_PLUGIN   = $(OUT)/troe/corDB.so
+TROE_PLUGIN   = $(OUT)/troe/ramDB.so
 
 ifeq ($(HAVE_CORAINE),)
 ifeq ($(COR_DB_REQUIRED),1)
@@ -151,7 +151,8 @@ $(OBJDIR)/geoMatch.o: $(GEOMATCH) $(OBJDIR)/.flags
 install: all
 	mkdir -p $(PLUGIN_DIR)/db/currentState $(PLUGIN_DIR)/troe/temporal
 	cp -p $(PLUGIN)      $(PLUGIN_DIR)/db/currentState/corDB.so
-	cp -p $(TROE_PLUGIN) $(PLUGIN_DIR)/troe/temporal/corDB.so
+	cp -p $(TROE_PLUGIN) $(PLUGIN_DIR)/troe/temporal/ramDB.so
+	rm -f $(PLUGIN_DIR)/troe/temporal/corDB.so                  # the ring's old name: --troe corDB is corDB.so's own now
 	cp -p $(RAM_PLUGIN)  $(PLUGIN_DIR)/db/currentState/ramDB.so
 
 i:     install
