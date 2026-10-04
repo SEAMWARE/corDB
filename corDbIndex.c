@@ -28,14 +28,17 @@
 // COR_DB_INDEX_SLOTS - starting size, and the growth factor
 //
 // corHash never rehashes, so a table sized for a thousand entities becomes a
-// thousand linked lists at a million. corDbIndexAdd grows it instead: when the
-// entity count passes COR_DB_INDEX_LOAD per slot, the table is rebuilt eight
-// times larger. Rebuilding is O(n) and happens log8(n) times, so the amortised
-// cost is nothing and the bucket walk stays short at any size.
+// thousand linked lists at a million. corDbIndexLink grows it instead: when the
+// entity count passes COR_DB_INDEX_LOAD per slot, a table eight times larger
+// takes over, and the old one's slots move into it COR_DB_INDEX_MOVE at a time,
+// at every link, unlink and replace (indexMigrate). Moving them all at once held
+// the write lock for 313 ms at 2 million entities - every request of the tenant
+// waited that long, a batch-create p99 of 259 ms.
 //
 #define COR_DB_INDEX_SLOTS  1024
 #define COR_DB_INDEX_LOAD      4
 #define COR_DB_INDEX_GROWTH    8
+#define COR_DB_INDEX_MOVE     32
 
 
 
@@ -176,28 +179,66 @@ static void idFirst(CorNode* entityP)
 
 // -----------------------------------------------------------------------------
 //
-// indexRebuild - a bigger table, with everything in it
+// indexMigrate - move up to 'slots' of the old table's slots into the current one (all: -1)
 //
-static void indexRebuild(CorDbStore* storeP, int slots)
+// An item is relinked, not copied: its hash code is cached and both sizes are powers of two, so its
+// slot in the new table is one mask away - no allocation, no hashing, no compare. The old table is
+// released once its last slot is empty.
+//
+static void indexMigrate(CorDbStore* storeP, int slots)
 {
+  CorHashTable* oldP = storeP->idxOld;
+
+  if (oldP == NULL)
+    return;
+
+  CorHashTable* newP = storeP->idToPrevEntity;
+
+  while ((slots != 0) && (storeP->idxOldMoved < oldP->arraySize))
+  {
+    CorHashListItem* itemP = oldP->array[storeP->idxOldMoved];
+
+    oldP->array[storeP->idxOldMoved] = NULL;
+
+    while (itemP != NULL)
+    {
+      CorHashListItem* nextP = itemP->next;
+      unsigned int     slot  = itemP->hashCode & newP->mask;
+
+      itemP->next       = newP->array[slot];
+      newP->array[slot] = itemP;
+      itemP             = nextP;
+    }
+
+    storeP->idxOldMoved += 1;
+    slots               -= 1;
+  }
+
+  if (storeP->idxOldMoved >= oldP->arraySize)
+  {
+    corHashRelease(oldP);                            // every slot empty: the arrays only
+    storeP->idxOld      = NULL;
+    storeP->idxOldMoved = 0;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// indexGrow - a table 'slots' big takes over; the current one's entries move into it bit by bit
+//
+static void indexGrow(CorDbStore* storeP, int slots)
+{
+  indexMigrate(storeP, -1);                          // a growth before the last one's move finished
+
   CorHashTable* newP = corHashTableCreate(NULL, idHash, idCompare, slots);
 
   if (newP == NULL)
-    return;                                          // keep the old one; slower, not wrong
+    return;                                          // keep the current one; slower, not wrong
 
-  CorNode* prevEntityP = storeP->entities;          // the first entity's predecessor: the array
-
-  for (CorNode* eP = storeP->entities->value.head; eP != NULL; prevEntityP = eP, eP = eP->next)
-  {
-    const char* id = corDbEntityId(eP);
-
-    if (id != NULL)
-      corHashItemAdd(newP, id, prevEntityP);
-  }
-
-  if (storeP->idToPrevEntity != NULL)
-    corHashRelease(storeP->idToPrevEntity);
-
+  storeP->idxOld         = storeP->idToPrevEntity;
+  storeP->idxOldMoved    = 0;
   storeP->idToPrevEntity = newP;
   storeP->idxSlots       = slots;
 }
@@ -206,12 +247,82 @@ static void indexRebuild(CorDbStore* storeP, int slots)
 
 // -----------------------------------------------------------------------------
 //
+// indexRebuild - a table built from the list, at least 'slots' big and big enough for the list
+//
+// For the first table (the store's entities loaded, or the first entity) and for the fallback
+// paths below that find the table disagreeing with the list. Sized to the list, so a store loaded
+// with a million entities does not start in a table for a thousand.
+//
+static void indexRebuild(CorDbStore* storeP, int slots)
+{
+  int n = 0;
+
+  for (CorNode* eP = storeP->entities->value.head; eP != NULL; eP = eP->next)
+    ++n;
+
+  while (n > slots * COR_DB_INDEX_LOAD)
+    slots *= COR_DB_INDEX_GROWTH;
+
+  CorHashTable* newP = corHashTableCreate(NULL, idHash, idCompare, slots);
+
+  if (newP == NULL)
+    return;                                          // keep the old one; slower, not wrong
+
+  CorNode* prevEntityP = storeP->entities;          // the first entity's predecessor: the array
+  int      count       = 0;
+
+  for (CorNode* eP = storeP->entities->value.head; eP != NULL; prevEntityP = eP, eP = eP->next)
+  {
+    const char* id = corDbEntityId(eP);
+
+    if (id != NULL)
+    {
+      corHashItemAdd(newP, id, prevEntityP);
+      ++count;
+    }
+  }
+
+  if (storeP->idToPrevEntity != NULL)
+    corHashRelease(storeP->idToPrevEntity);
+
+  if (storeP->idxOld != NULL)
+    corHashRelease(storeP->idxOld);
+
+  storeP->idToPrevEntity = newP;
+  storeP->idxSlots       = slots;
+  storeP->idxCount       = count;
+  storeP->idxOld         = NULL;
+  storeP->idxOldMoved    = 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// tableLookup - the current table, then - during a growth - the old one
+//
+static CorNode* tableLookup(CorDbStore* storeP, const char* id)
+{
+  CorNode* prevEntityP = (CorNode*) corHashItemLookup(storeP->idToPrevEntity, id);
+
+  if ((prevEntityP == NULL) && (storeP->idxOld != NULL))
+    prevEntityP = (CorNode*) corHashItemLookup(storeP->idxOld, id);
+
+  return prevEntityP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // entryAdd / entryDel - one id's entry, set or dropped. Remove-then-add: corHash does not check
 // for duplicates, and a second entry for an id survives the first's removal (see corDbIndexLink).
+// An entry not yet moved is still in the old table; a new one always goes into the current.
 //
 static void entryDel(CorDbStore* storeP, const char* id)
 {
-  if (corHashItemRemove(storeP->idToPrevEntity, id) == 0)
+  if ((corHashItemRemove(storeP->idToPrevEntity, id) == 0) ||
+      ((storeP->idxOld != NULL) && (corHashItemRemove(storeP->idxOld, id) == 0)))
     storeP->idxCount -= 1;
 }
 
@@ -301,10 +412,11 @@ void corDbIndexLink(CorDbStore* storeP, CorNode* entityP)
   if (id == NULL)
     return;
 
+  indexMigrate(storeP, COR_DB_INDEX_MOVE);
   entryAdd(storeP, id, prevEntityP);
 
   if (storeP->idxCount > (storeP->idxSlots * COR_DB_INDEX_LOAD))
-    indexRebuild(storeP, storeP->idxSlots * COR_DB_INDEX_GROWTH);
+    indexGrow(storeP, storeP->idxSlots * COR_DB_INDEX_GROWTH);
 
   indexCheck(storeP, entityP, "link");
 }
@@ -331,8 +443,10 @@ void corDbIndexUnlink(CorDbStore* storeP, CorNode* entityP)
   const char* id       = corDbEntityId(entityP);
   CorNode*    prevEntityP = NULL;
 
+  indexMigrate(storeP, COR_DB_INDEX_MOVE);
+
   if ((storeP->idToPrevEntity != NULL) && (id != NULL))
-    prevEntityP = (CorNode*) corHashItemLookup(storeP->idToPrevEntity, id);
+    prevEntityP = tableLookup(storeP, id);
 
   if ((prevEntityP == NULL) || (entityAfter(prevEntityP) != entityP))
   {
@@ -395,8 +509,10 @@ void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
   const char* id          = corDbEntityId(oldP);
   CorNode*    prevEntityP = NULL;
 
+  indexMigrate(storeP, COR_DB_INDEX_MOVE);
+
   if ((storeP->idToPrevEntity != NULL) && (id != NULL))
-    prevEntityP = (CorNode*) corHashItemLookup(storeP->idToPrevEntity, id);
+    prevEntityP = tableLookup(storeP, id);
 
   if ((prevEntityP == NULL) || (entityAfter(prevEntityP) != oldP))
   {
@@ -450,7 +566,7 @@ CorNode* corDbIndexLookup(CorDbStore* storeP, const char* entityId)
   if ((storeP == NULL) || (storeP->idToPrevEntity == NULL) || (entityId == NULL))
     return NULL;
 
-  CorNode* prevEntityP = (CorNode*) corHashItemLookup(storeP->idToPrevEntity, entityId);
+  CorNode* prevEntityP = tableLookup(storeP, entityId);
 
   return (prevEntityP != NULL) ? entityAfter(prevEntityP) : NULL;
 }
