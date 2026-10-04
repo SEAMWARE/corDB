@@ -61,6 +61,20 @@ typedef struct CorDbPersist
   char                  tenant[64];                    // the tenant's name, for the log lines
   struct CorDbStore*    storeP;                        // the store the snapshots are taken of
 
+  //
+  // The history log (`--troe corDB`): its own segments, hist-<n>.cor, appended to and flushed with the
+  // current-state log but never dropped by a snapshot - history is not a store's state at one instant.
+  // Guarded as the log is: 'mutex' for histBuf/histSeq, 'ioMutex' for the file.
+  //
+  CorBinBuffer          histBuf;
+  CorBinBuffer          histSpare;
+  uint64_t              histSeq;
+  uint64_t              syncedHistSeq;                 // the last history record on the disk (atomic)
+  int                   histFd;                        // -1: no history
+  unsigned int          histSegment;
+  unsigned long long    histSegBytes;
+  char                  histPath[600];
+
   struct CorDbPersist*  next;                          // every tenant's, for the flusher
 } CorDbPersist;
 
@@ -85,6 +99,15 @@ extern bool corDbPersistInit(void);
 // without it would answer, and then overwrite, a past that is not the real one.
 //
 extern CorDbPersist* corDbPersistOpen(Tenant* tenantP, struct CorDbStore* storeP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistHistAppend - a history record (its body encoded by corDbHistoryInstanceAdd) to the
+// tenant's history log. Under the tenant's write lock, as an append to the log is.
+//
+extern void corDbPersistHistAppend(CorDbPersist* persistP, const char* body, int bodyLen);
 
 
 

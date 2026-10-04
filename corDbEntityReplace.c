@@ -20,6 +20,8 @@
 #include "db/DbDriver.h"                               // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistory.h"                      // corDbHistoryOn
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
 #include "corDB/corDbStore.h"           // corDbEntities
 #include "corDB/corDbEntityReplace.h"   // Own interface
 
@@ -51,6 +53,10 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
   //
   COR_DB_PRE(pre);
   int preIx = corDbPersistOn() ? corDbPersistPreAdd(&pre, cloneP) : -1;
+
+  COR_DB_HIST_PRE(hist);                             // its history records too (--troe corDB)
+  if (corDbHistoryOn)
+    corDbHistoryPrepare(&hist, cloneP, "replaced", corRest.kallocP);
 
   {
     COR_DB_WRITE(tenantP);
@@ -84,6 +90,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
         //
         corDbIndexReplace(corDbStoreOf(tenantP), eP, cloneP);
         corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
+        corDbHistoryReplacedPre(corDbLockedStore, &hist, cloneP, eP, corRest.kallocP);
         oldP = eP;
         break;
       }

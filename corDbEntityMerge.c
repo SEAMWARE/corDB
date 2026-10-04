@@ -36,6 +36,8 @@
 #include "shared/geoMatch.h"                          // geoEntityValidate
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
+#include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityMerge.h"    // Own interface
 
@@ -157,6 +159,7 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
     {
       corDbApplyReportToLive(eP, mergedEntity, reportP);
       corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, eP);
+      corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }
   }

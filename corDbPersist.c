@@ -38,8 +38,10 @@
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
 #include "corAlloc/corAllocBufferInit.h"               // corAllocBufferInit
 #include "corAlloc/corAllocBufferReset.h"              // corAllocBufferReset
+#include "corBase/corCrc32c.h"                         // corCrc32c
 #include "corBase/corCoLoop.h"                         // corCoBlocking
 #include "corTree/CorNode.h"                           // CorNode
+#include "corTree/corTreeBuilder.h"                    // corTreeChildRemove, corTreeChildAdd
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 #include "corRest/CorRestState.h"                      // corRestP
 
@@ -47,6 +49,7 @@
 
 #include "corDB/corDbGlobals.h"                        // corDbDir, corDbSync, corDbSyncInterval
 #include "corDB/corDbLog.h"                            // corDbLogEncode
+#include "corDB/corDbHistory.h"                        // corDbHistoryEntity, corDbHistoryInstanceAdd
 #include "corDB/corDbReplay.h"                         // corDbReplay
 #include "corDB/corDbStore.h"                          // CorDbStore
 #include "corDB/corDbPersist.h"                        // Own interface
@@ -213,6 +216,35 @@ static bool segmentNext(CorDbPersist* pP)
 
 // -----------------------------------------------------------------------------
 //
+// histSegmentNext - the history log continues in hist-<histSegment + 1> (under ioMutex)
+//
+static bool histSegmentNext(CorDbPersist* pP)
+{
+  char path[600];
+
+  filePath(pP, "hist", pP->histSegment + 1, "cor", path, sizeof(path));
+
+  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+
+  if (fd < 0)
+  {
+    COR_E("corDB: the next history segment '%s': %s - '%s' goes on", path, strerror(errno), pP->histPath);
+    return false;
+  }
+
+  close(pP->histFd);
+  pP->histFd       = fd;
+  pP->histSegment += 1;
+  pP->histSegBytes = 0;
+  strcpy(pP->histPath, path);
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // flushLocked - the buffer swapped out under 'mutex', written and synced with only 'ioMutex' held
 //
 static void flushLocked(CorDbPersist* pP)
@@ -221,12 +253,39 @@ static void flushLocked(CorDbPersist* pP)
 
   CorBinBuffer out  = pP->buf;
   uint64_t     last = pP->seq;
+  CorBinBuffer hist     = pP->histBuf;
+  uint64_t     histLast = pP->histSeq;
 
-  pP->buf       = pP->spare;
-  pP->buf.len   = 0;
+  pP->buf          = pP->spare;
+  pP->buf.len      = 0;
+  pP->histBuf      = pP->histSpare;
+  pP->histBuf.len  = 0;
   pthread_mutex_unlock(&pP->mutex);
 
   bool ok = true;
+
+  //
+  // History first: a write's history and its current state reach the disk in the same round, before
+  // syncedSeq says the write is there - so --dbSync request covers both
+  //
+  if (hist.len > 0)
+  {
+    if ((writeAll(pP->histFd, hist.buf, hist.len) == false) || ((syncMode != SyncNone) && (fdatasync(pP->histFd) != 0)))
+    {
+      COR_E("corDB: writing the history log '%s': %s - what was buffered may NOT be on the disk", pP->histPath, strerror(errno));
+      ok = false;
+    }
+
+    pP->histSegBytes += (unsigned long long) hist.len;
+    if (pP->histSegBytes >= 1024ULL * 1024 * 1024)
+      histSegmentNext(pP);
+  }
+
+  if (ok)
+    __atomic_store_n(&pP->syncedHistSeq, histLast, __ATOMIC_RELEASE);
+
+  hist.len      = 0;
+  pP->histSpare = hist;
 
   if (out.len > 0)
   {
@@ -866,6 +925,84 @@ bool corDbPersistInit(void)
 
 // -----------------------------------------------------------------------------
 //
+// histReplay - one history record into the tenant's history (corDbHistory.h)
+//
+static bool histReplay(CorDbStore* storeP, CorDbLogRecord* recP, CorAlloc* kaP)
+{
+  if ((recP->op != CorDbLogHistInstance) || (recP->bodyP == NULL))
+  {
+    COR_E("corDB: history record %llu: op %d is not a history record", (unsigned long long) recP->seq, recP->op);
+    return false;
+  }
+
+  CorNode* idP    = corTreeLookup(recP->bodyP, "id");
+  CorNode* typeP  = corTreeLookup(recP->bodyP, "type");
+  CorNode* attrP  = corTreeLookup(recP->bodyP, "attr");
+  CorNode* dsP    = corTreeLookup(recP->bodyP, "datasetId");
+  CorNode* delP   = corTreeLookup(recP->bodyP, "deletedAt");
+  CorNode* instP  = corTreeLookup(recP->bodyP, "instance");
+
+  //
+  // A temporal-API write (corDbTroeWrite.c): applied by the same code that applied it live
+  //
+  if (corTreeLookup(recP->bodyP, "histOp") != NULL)
+    return corDbHistoryOpApply(storeP->historyP, recP->bodyP, kaP) != -1;
+
+  CorNode* opP = corTreeLookup(recP->bodyP, "entityOp");
+
+  if ((idP != NULL) && (idP->type == CorString) && (opP != NULL) && (opP->type == CorString))
+  {
+    //
+    // An entity-level record: created, replaced, deleted
+    //
+    CorNode*         atP = corTreeLookup(recP->bodyP, "at");
+    CorDbHistEntity* eP  = corDbHistoryEntity(storeP->historyP, idP->value.s, ((typeP != NULL) && (typeP->type == CorString)) ? typeP->value.s : NULL, true);
+    CorBinBuffer     scratch;
+
+    if (eP == NULL)
+      return false;
+
+    if ((typeP != NULL) && (typeP->type == CorString) && (strcmp(opP->value.s, "deleted") != 0))
+      corDbHistoryEntityTypes(storeP->historyP, eP, typeP->value.s, true);   // created / replaced: exactly these
+
+    bool ok = corDbHistoryEntityEvent(eP, opP->value.s, ((atP != NULL) && (atP->type == CorInt)) ? (uint64_t) atP->value.i : 0, kaP, &scratch);
+    free(scratch.buf);                                 // replayed: it is on the disk already
+    return ok;
+  }
+
+  if ((idP == NULL) || (idP->type != CorString) || (attrP == NULL) || (attrP->type != CorString) || (instP == NULL))
+  {
+    COR_E("corDB: history record %llu is incomplete", (unsigned long long) recP->seq);
+    return false;
+  }
+
+  CorDbHistEntity* eP = corDbHistoryEntity(storeP->historyP, idP->value.s, ((typeP != NULL) && (typeP->type == CorString)) ? typeP->value.s : NULL, true);
+
+  if (eP == NULL)
+    return false;
+
+  uint64_t deletedAtNs = ((delP != NULL) && (delP->type == CorInt)) ? (uint64_t) delP->value.i : 0;
+
+  //
+  // The record keeps the instanceId beside the instance: handed back to it, so the replay keeps the id
+  // the instance was given, not a new one
+  //
+  CorNode* instanceIdP = corTreeLookup(recP->bodyP, "instanceId");
+
+  if ((instanceIdP != NULL) && (corTreeLookup(instP, "instanceId") == NULL))
+  {
+    corTreeChildRemove(recP->bodyP, instanceIdP);
+    corTreeChildAdd(instP, instanceIdP);
+  }
+
+  return corDbHistoryInstanceAdd(storeP->historyP, eP, attrP->value.s, ((dsP != NULL) && (dsP->type == CorString)) ? dsP->value.s : NULL,
+                                 instP, deletedAtNs, kaP) != NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // loadFile - one snapshot or log segment replayed into the store (§ 6); false if it cannot be trusted
 //
 // Record by record until the end or the first record that is short or fails its CRC - what a death
@@ -876,7 +1013,7 @@ bool corDbPersistInit(void)
 // Each record decodes into a scratch arena and is cloned into the store, as a request's tree is.
 // The arena is emptied every 1000 records: memory stays bounded whatever the file's length.
 //
-static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, bool tornIsTail, int* recordsP)
+static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, bool tornIsTail, int* recordsP, bool history)
 {
   int fd = open(path, O_RDONLY | O_CLOEXEC);
 
@@ -950,10 +1087,18 @@ static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, boo
 
   while ((status = corDbLogNext(buf, len, &off, &arena, &rec)) == CorDbLogOk)
   {
-    if (corDbReplay(storeP, &rec) == false)
-      ++failed;                                        // said why; the next records still apply
-
-    pP->seq = rec.seq;
+    if (history == true)
+    {
+      if (histReplay(storeP, &rec, &arena) == false)
+        ++failed;
+      pP->histSeq = rec.seq;
+    }
+    else
+    {
+      if (corDbReplay(storeP, &rec) == false)
+        ++failed;                                      // said why; the next records still apply
+      pP->seq = rec.seq;
+    }
 
     if ((++*recordsP % 1000) == 0)
       corAllocBufferReset(&arena, true);
@@ -1025,6 +1170,9 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
   unsigned int*  logV     = NULL;
   int            logs     = 0;
   int            logSize  = 0;
+  unsigned int*  histV    = NULL;
+  int            hists    = 0;
+  int            histSize = 0;
   struct dirent* entryP;
 
   while ((entryP = readdir(dirP)) != NULL)
@@ -1043,6 +1191,22 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
       if ((haveSnap == false) || (k > snapN))
         snapN = k;
       haveSnap = true;
+    }
+    else if (nameNumber(entryP->d_name, "hist", "cor", &k))
+    {
+      if (hists == histSize)
+      {
+        histSize = (histSize == 0) ? 16 : histSize * 2;
+        histV    = (unsigned int*) realloc(histV, histSize * sizeof(unsigned int));
+        if (histV == NULL)
+        {
+          closedir(dirP);
+          free(logV);
+          return false;
+        }
+      }
+
+      histV[hists++] = k;
     }
     else if (nameNumber(entryP->d_name, "log", "cor", &k))
     {
@@ -1079,7 +1243,7 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
   if (haveSnap)
   {
     filePath(pP, "snap", snapN, "cor", path, sizeof(path));
-    ok = loadFile(pP, storeP, path, false, &records);
+    ok = loadFile(pP, storeP, path, false, &records, false);
 
     if (stat(path, &st) == 0)
       pP->lastSnapBytes = (unsigned long long) st.st_size;
@@ -1091,7 +1255,7 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
       continue;
 
     filePath(pP, "log", logV[i], "cor", path, sizeof(path));
-    ok          = loadFile(pP, storeP, path, (i == logs - 1), &records);
+    ok          = loadFile(pP, storeP, path, (i == logs - 1), &records, false);
     pP->segment = logV[i];
 
     if (stat(path, &st) == 0)                          // after a torn tail's cut
@@ -1100,13 +1264,35 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
 
   free(logV);
 
+  //
+  // The history: every segment, oldest first - no snapshot bounds it (retention will). Without
+  // --troe corDB a history found here is left alone: it is not this run's to read, nor to drop.
+  //
+  qsort(histV, hists, sizeof(unsigned int), uintCompare);
+
+  if ((ok == true) && (hists > 0) && (storeP->historyP == NULL))
+    COR_W("corDB: tenant '%s' has a history (%d segments) and this broker runs without --troe corDB - left as it is", pP->tenant, hists);
+
+  for (int i = 0; (ok == true) && (storeP->historyP != NULL) && (i < hists); i++)
+  {
+    filePath(pP, "hist", histV[i], "cor", path, sizeof(path));
+    ok              = loadFile(pP, storeP, path, (i == hists - 1), &records, true);
+    pP->histSegment = histV[i];
+
+    if ((i == hists - 1) && (stat(path, &st) == 0))
+      pP->histSegBytes = (unsigned long long) st.st_size;
+  }
+
+  free(histV);
+
   if (ok == false)
     return false;
 
   if (haveSnap)
     dropBefore(pP, snapN);
 
-  pP->syncedSeq = pP->seq;
+  pP->syncedSeq     = pP->seq;
+  pP->syncedHistSeq = pP->histSeq;
 
   clock_gettime(CLOCK_MONOTONIC, &t1);
   long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
@@ -1173,6 +1359,16 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
   if (fstat(pP->fd, &st) == 0)
     pP->segBytes = (unsigned long long) st.st_size;
 
+  pP->histFd = -1;
+  if (storeP->historyP != NULL)
+  {
+    filePath(pP, "hist", pP->histSegment, "cor", pP->histPath, sizeof(pP->histPath));
+
+    pP->histFd = open(pP->histPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (pP->histFd < 0)
+      COR_E("corDB: history log '%s': %s - the tenant's history is NOT persistent", pP->histPath, strerror(errno));
+  }
+
   pthread_mutex_init(&pP->mutex, NULL);
   pthread_mutex_init(&pP->ioMutex, NULL);
 
@@ -1232,6 +1428,33 @@ void corDbPersistAppendId(CorDbPersist* pP, CorDbLogOp op, const char* id)
   idNode.value.s = (char*) id;
 
   corDbPersistAppend(pP, op, &idNode);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistHistAppend -
+//
+void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
+{
+  if ((pP == NULL) || (pP->histFd < 0))
+    return;
+
+  uint32_t crc = corCrc32c(0, body, bodyLen);
+  uint64_t t   = nowNs();
+
+  pthread_mutex_lock(&pP->mutex);
+
+  if (corDbLogAppendEncoded(&pP->histBuf, CorDbLogHistInstance, pP->histSeq + 1, t, body, bodyLen, crc) == true)
+    ++pP->histSeq;
+  else
+  {
+    COR_E("corDB: out of memory for the history log of '%s' - a history record is NOT persistent", pP->tenant);
+    __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+  }
+
+  pthread_mutex_unlock(&pP->mutex);
 }
 
 
@@ -1341,7 +1564,8 @@ typedef struct SyncWait
 {
   CorDbPersist*  pP;
   uint64_t       seq;
-} SyncWait;
+  uint64_t       histSeq;                              // the history appended by then: a write's history is drained after its lock,
+} SyncWait;                                            // maybe after the flush that synced its own record
 
 
 
@@ -1355,7 +1579,7 @@ static void syncWait(void* arg)
 
   pthread_mutex_lock(&flushMutex);
 
-  while ((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) < wP->seq) &&
+  while (((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) < wP->seq) || (__atomic_load_n(&wP->pP->syncedHistSeq, __ATOMIC_ACQUIRE) < wP->histSeq)) &&
          (__atomic_load_n(&wP->pP->failed, __ATOMIC_ACQUIRE) == false) &&
          (stopping == false))
   {
@@ -1379,12 +1603,16 @@ static void syncWait(void* arg)
 void corDbPersistSyncWait(void)
 {
   CorDbPersist* pP  = pendingP;
-  SyncWait      w   = { pP, pendingSeq };
+  SyncWait      w   = { pP, pendingSeq, 0 };
 
   pendingP = NULL;
 
   if ((pP == NULL) || (syncMode != SyncRequest))
     return;
+
+  pthread_mutex_lock(&pP->mutex);
+  w.histSeq = pP->histSeq;                             // drained before this (corDbStoreUnlock): it covers this write's history
+  pthread_mutex_unlock(&pP->mutex);
 
   CorRestState* savedP = corRestP;                     // corCoBlocking: the thread may be rebound meanwhile
 
@@ -1520,6 +1748,15 @@ void corDbPersistClose(void)
     if (fsync(pP->fd) != 0)
       COR_E("corDB: fsync of the log '%s': %s", pP->path, strerror(errno));
     close(pP->fd);
+
+    if (pP->histFd >= 0)
+    {
+      if (fsync(pP->histFd) != 0)
+        COR_E("corDB: fsync of the history log '%s': %s", pP->histPath, strerror(errno));
+      close(pP->histFd);
+    }
+    free(pP->histBuf.buf);
+    free(pP->histSpare.buf);
 
     if (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true)
       COR_E("corDB: the log '%s' had a write error - what it lost is in the errors above", pP->path);

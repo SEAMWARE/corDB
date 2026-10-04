@@ -30,6 +30,7 @@
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_ERR, Tenant
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
 #include "corDB/corDbStore.h"              // corDbEntities
 #include "corDB/corDbEntityMerge.h"        // corDbApplyReportToLive
 #include "corDB/corDbEntityBulkMerge.h"    // Own interface
@@ -152,6 +153,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
     {
       corDbApplyReportToLive(live, mergedTargetsV[i], &reportsV[i]);
       corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, live);
+      corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
       anyOk = true;
     }
   }

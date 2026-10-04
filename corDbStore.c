@@ -17,6 +17,8 @@
 
 #include "db/Tenant.h"                               // Tenant
 
+#include "corDB/corDbHistory.h"                      // CorDbHistory, corDbHistoryOn
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryDrain
 #include "corDB/corDbPersist.h"                      // corDbPersistOpen, corDbPersistSyncWait
 #include "corDB/corDbStore.h"         // Own interface
 
@@ -85,6 +87,11 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->idxSlots = 0;
   storeP->idxCount = 0;
   storeP->snapCursor = NULL;
+  storeP->historyP   = corDbHistoryOn ? (struct CorDbHistory*) calloc(1, sizeof(CorDbHistory)) : NULL;
+  storeP->histQHead  = NULL;
+  storeP->histQTail  = NULL;
+  pthread_mutex_init(&storeP->histQMutex, NULL);
+  pthread_mutex_init(&storeP->histMutex, NULL);
   pthread_rwlock_init(&storeP->lock, NULL);
   storeP->persistP = corDbPersistOpen(tenantP, storeP);   // the log replayed into it - NULL without --dbDir
 
@@ -147,6 +154,10 @@ void corDbStoreUnlock(CorDbStore** storePP)
   if ((storePP != NULL) && (*storePP != NULL))
   {
     pthread_rwlock_unlock(&(*storePP)->lock);
+
+    if (__atomic_load_n(&(*storePP)->histQHead, __ATOMIC_ACQUIRE) != NULL)
+      corDbHistoryDrain(*storePP);                   // the history this write enqueued - before the answer, so a read sees it
+
     corDbPersistSyncWait();                          // --dbSync request only, and only after a write
   }
 }

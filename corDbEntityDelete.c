@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <stdbool.h>                                 // bool
+#include <stdlib.h>                                  // free
 #include <string.h>                                   // strcmp
 
 #include "corTree/CorNode.h"                          // CorNode
@@ -16,6 +17,9 @@
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistory.h"                      // corDbHistoryOn
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
+#include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityDelete.h"   // Own interface
 
@@ -32,6 +36,10 @@ int corDbEntityDelete(Tenant* tenantP, const char* entityId)
   // whole entity's worth of free()s, and every other writer of the tenant waited them out.
   //
   CorNode* goneP = NULL;
+
+  CorDbHistDel hist = { { NULL, 0, 0 }, 0 };       // its history record, encoded before the lock (--troe corDB)
+  if (corDbHistoryOn)
+    corDbHistoryDeletePrepare(&hist, entityId, corRest.kallocP);
 
   {
   COR_DB_WRITE(tenantP);
@@ -58,11 +66,14 @@ int corDbEntityDelete(Tenant* tenantP, const char* entityId)
     {
       corDbIndexUnlink(idxStoreP, eP);
       corDbPersistAppendId(corDbLockedStore->persistP, CorDbLogEntityDelete, entityId);
+      corDbHistoryDeletedPre(corDbLockedStore, &hist, entityId);
       goneP = eP;
       break;
     }
   }
   }
+
+  free(hist.event.buf);
 
   if (goneP == NULL)
     return DB_NOT_FOUND;

@@ -20,6 +20,9 @@
 #include "shared/geoMatch.h"                          // geoEntityValidate
 #include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
+#include "corDB/corDbHistory.h"                      // corDbHistoryOn
+#include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
+#include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityCreate.h"   // Own interface
 
@@ -48,6 +51,10 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
   //
   COR_DB_PRE(pre);
   int preIx = ((cloneP != NULL) && corDbPersistOn()) ? corDbPersistPreAdd(&pre, cloneP) : -1;
+
+  COR_DB_HIST_PRE(hist);                             // its history records too (--troe corDB)
+  if ((cloneP != NULL) && corDbHistoryOn)
+    corDbHistoryPrepare(&hist, cloneP, "created", corRest.kallocP);
 
   {
     COR_DB_WRITE(tenantP);
@@ -98,6 +105,7 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
       {
         corDbIndexLink(corDbStoreOf(tenantP), cloneP);
         corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
+        corDbHistoryCreatedPre(corDbLockedStore, &hist, cloneP, corRest.kallocP);
         return DB_OK;
       }
     }

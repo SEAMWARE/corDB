@@ -6,8 +6,8 @@ server. Two plugins:
 
 | Plugin | Selected with | What it is |
 |---|---|---|
-| `corDB.so` | `--database corDB` | the current-state store |
-| `troe/corDB.so` | `--troe corDB` | temporal history (TRoE) in the same process |
+| `corDB.so` | `--database corDB` | the current-state store - and with `--troe corDB` the temporal history (TRoE), in the same store |
+| `troe/corDB.so` | - | the former TRoE ring buffer: no longer loaded (`--troe corDB` takes its functions from `corDB.so`) |
 
 What it measures against MongoDB is in coraine's
 [performance and footprint](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md).
@@ -58,6 +58,12 @@ coraine --database corDB --dbDir /var/lib/coraine
 
 [The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
 [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".
+
+## History (TRoE)
+
+`--database corDB --troe corDB`: every write that reaches an attribute appends an instance, captured
+where current state changes; on disk with `--dbDir` (`hist-N.cor`). [The design](doc/troe.md),
+[how it got here](doc/history/troe.md).
 
 ## Next
 
