@@ -18,6 +18,7 @@
 // the hist-N.cor segments at recovery (corDbPersist.c).
 //
 #include <stdbool.h>                                   // bool
+#include <stddef.h>                                    // size_t
 #include <stdint.h>                                    // uint64_t
 
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
@@ -39,8 +40,8 @@ typedef struct CorDbInstance
   uint64_t   createdAtNs;
   uint64_t   modifiedAtNs;
   uint64_t   deletedAtNs;                              // != 0: the attribute was deleted - the instance is its tombstone
-  char*      datasetId;                                // NULL: the default instance (malloc only for a named one)
-  char*      body;                                     // the history RECORD, cor binary: { id, type, attr, datasetId?, deletedAt?, instanceId, instance }
+  char*      datasetId;                                // NULL: the default instance; a named one in the tenant's arena (CorDbHistory.chunks)
+  char*      body;                                     // the history RECORD, cor binary: { id, type, attr, datasetId?, deletedAt?, instanceId, instance } - in the arena
   int        bodyLen;                                  //   - the same bytes as the history log's record body
 } CorDbInstance;
 
@@ -79,6 +80,23 @@ struct CorDbHistory;
 
 // -----------------------------------------------------------------------------
 //
+// CorDbHistChunk - a piece of a tenant's history arena: instance bodies and dataset ids, appended
+//
+// History only grows (until retention, which drops whole old chunks): a malloc per instance was a
+// heap that never shrank and a quarter of a batch update's history CPU (malloc/free on it, measured).
+//
+typedef struct CorDbHistChunk
+{
+  struct CorDbHistChunk*  next;                        // the older one
+  size_t                  used;
+  size_t                  size;
+  char                    data[];
+} CorDbHistChunk;
+
+
+
+// -----------------------------------------------------------------------------
+//
 // CorDbHistory - one tenant's history
 //
 typedef struct CorDbHistory
@@ -97,6 +115,8 @@ typedef struct CorDbHistory
   char**                nameV;                         // every interned string, to free them
   int                   namesN;
   int                   namesSize;
+
+  CorDbHistChunk*       chunks;                        // the arena - the newest chunk first
 } CorDbHistory;
 
 
@@ -126,7 +146,7 @@ extern CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityI
 //
 typedef struct CorDbHistRecord
 {
-  char*        body;                                 // malloc, exactly its size - taken over by corDbHistoryRecordAdd
+  char*        body;                                 // in the kaP it was encoded with - corDbHistoryRecordAdd copies it
   int          bodyLen;
   const char*  attrName;                             // these four point into the caller's data / arena
   const char*  instanceId;
@@ -154,8 +174,8 @@ extern bool corDbHistoryRecordEncode(const char* entityId, const char* entityTyp
 
 // -----------------------------------------------------------------------------
 //
-// corDbHistoryRecordAdd - an encoded record into the entity's history (its body taken over); under
-// the write lock. NULL out of memory (the body then still the caller's).
+// corDbHistoryRecordAdd - an encoded record into the entity's history (its body copied to the arena);
+// under the history mutex. NULL out of memory.
 //
 extern CorDbInstance* corDbHistoryRecordAdd(CorDbHistory* hP, CorDbHistEntity* eP, CorDbHistRecord* recP);
 

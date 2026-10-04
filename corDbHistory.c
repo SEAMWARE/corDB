@@ -224,25 +224,34 @@ static CorDbHistAttr* attrOf(CorDbHistory* hP, CorDbHistEntity* eP, const char* 
 
 // -----------------------------------------------------------------------------
 //
-// timeOf - a timestamp member of an instance, in ns: an integer (the store's form) or ISO text
+// arenaCopy - len bytes into the tenant's history arena (8-aligned); NULL out of memory
 //
-static uint64_t timeOf(CorNode* instanceP, const char* name)
+static char* arenaCopy(CorDbHistory* hP, const void* src, size_t len)
 {
-  CorNode* tP = corTreeLookup(instanceP, name);
+  CorDbHistChunk* cP = hP->chunks;
 
-  if (tP == NULL)
-    return 0;
-
-  if (tP->type == CorInt)
-    return (tP->value.i > 0) ? (uint64_t) tP->value.i : 0;
-
-  if (tP->type == CorString)
+  if ((cP == NULL) || (cP->used + len > cP->size))
   {
-    int64_t ns = ldIsoToNanoseconds(tP->value.s);
-    return (ns > 0) ? (uint64_t) ns : 0;
+    size_t size = (len > 1024 * 1024) ? len : 1024 * 1024;
+
+    cP = (CorDbHistChunk*) malloc(sizeof(CorDbHistChunk) + size);
+    if (cP == NULL)
+      return NULL;
+
+    cP->next   = hP->chunks;
+    cP->used   = 0;
+    cP->size   = size;
+    hP->chunks = cP;
   }
 
-  return 0;
+  char* p = &cP->data[cP->used];
+
+  memcpy(p, src, len);
+  cP->used += (len + 7) & ~((size_t) 7);
+  if (cP->used > cP->size)
+    cP->used = cP->size;
+
+  return p;
 }
 
 
@@ -278,6 +287,77 @@ static bool encodeExact(CorNode* treeP, char** bodyPP, int* lenP)
 
 // -----------------------------------------------------------------------------
 //
+// encodeInto - the same, copied into kaP (a request's arena): a record lives until it is queued,
+// where it is copied again - no malloc of its own
+//
+static bool encodeInto(CorNode* treeP, CorAlloc* kaP, char** bodyPP, int* lenP)
+{
+  scratch.len = 0;
+
+  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, &scratch) == false)
+    return false;
+
+  char* bodyP = (char*) corAlloc(kaP, scratch.len);
+
+  if (bodyP == NULL)
+    return false;
+
+  memcpy(bodyP, scratch.buf, scratch.len);
+  *bodyPP = bodyP;
+  *lenP   = scratch.len;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// instanceScan - the members a record needs, in one pass over the instance: instanceId and the four
+// timestamps (a lookup each was five walks of the same members)
+//
+static uint64_t nsOf(CorNode* tP)
+{
+  if (tP->type == CorInt)
+    return (tP->value.i > 0) ? (uint64_t) tP->value.i : 0;
+
+  if (tP->type == CorString)
+  {
+    int64_t ns = ldIsoToNanoseconds(tP->value.s);
+    return (ns > 0) ? (uint64_t) ns : 0;
+  }
+
+  return 0;
+}
+
+static CorNode* instanceScan(CorNode* instanceP, CorDbHistRecord* recP)
+{
+  CorNode* instanceIdP = NULL;
+
+  for (CorNode* mP = instanceP->value.head; mP != NULL; mP = mP->next)
+  {
+    const char* n = mP->name;
+
+    if (n == NULL)
+      continue;
+
+    switch (n[0])
+    {
+    case 'i': if (strcmp(n, "instanceId") == 0) instanceIdP        = mP;      break;
+    case 'o': if (strcmp(n, "observedAt") == 0) recP->observedAtNs = nsOf(mP); break;
+    case 'c': if (strcmp(n, "createdAt")  == 0) recP->createdAtNs  = nsOf(mP); break;
+    case 'm': if (strcmp(n, "modifiedAt") == 0) recP->modifiedAtNs = nsOf(mP); break;
+    case 'd': if (strcmp(n, "deletedAt")  == 0) recP->deletedAtNs  = nsOf(mP); break;
+    }
+  }
+
+  return instanceIdP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbHistoryRecordEncode -
 //
 bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, const char* attrName, const char* datasetId,
@@ -290,7 +370,7 @@ bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, cons
   // It goes into the RECORD, beside the instance - not into the instance, which may be the live store's
   // and would have to be cloned to carry it (a whole copy of every instance on every write, measured)
   //
-  CorNode*    instanceIdP = corTreeLookup(instanceP, "instanceId");
+  CorNode*    instanceIdP = (instanceP->type == CorObject) ? instanceScan(instanceP, recP) : NULL;
   const char* instanceId  = ((instanceIdP != NULL) && (instanceIdP->type == CorString)) ? instanceIdP->value.s : NULL;
 
   if (instanceId == NULL)
@@ -327,17 +407,15 @@ bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, cons
   corTreeChildAdd(treeP, corTreeString(kaP, "instanceId", instanceId));
   corTreeChildAdd(treeP, wrapP);
 
-  if (encodeExact(treeP, &recP->body, &recP->bodyLen) == false)
+  if (encodeInto(treeP, kaP, &recP->body, &recP->bodyLen) == false)
     return false;
 
   recP->attrName     = attrName;
   recP->instanceId   = instanceId;
   recP->datasetId    = namedDataset ? datasetId : NULL;
   recP->instanceP    = instanceP;
-  recP->observedAtNs = timeOf(instanceP, "observedAt");
-  recP->createdAtNs  = timeOf(instanceP, "createdAt");
-  recP->modifiedAtNs = timeOf(instanceP, "modifiedAt");
-  recP->deletedAtNs  = (deletedAtNs != 0) ? deletedAtNs : timeOf(instanceP, "deletedAt");
+  if (deletedAtNs != 0)
+    recP->deletedAtNs = deletedAtNs;
 
   return true;
 }
@@ -382,18 +460,17 @@ CorDbInstance* corDbHistoryRecordAdd(CorDbHistory* hP, CorDbHistEntity* eP, CorD
   // The instanceId is in the record - a reader finds it there; no copy of it per instance
   //
   memset(iP, 0, sizeof(*iP));
-  iP->datasetId    = (recP->datasetId != NULL) ? strdup(recP->datasetId) : NULL;
-  iP->body         = recP->body;                     // taken over
+  iP->datasetId    = (recP->datasetId != NULL) ? arenaCopy(hP, recP->datasetId, strlen(recP->datasetId) + 1) : NULL;
+  iP->body         = arenaCopy(hP, recP->body, recP->bodyLen);
   iP->bodyLen      = recP->bodyLen;
   iP->observedAtNs = recP->observedAtNs;
   iP->createdAtNs  = recP->createdAtNs;
   iP->modifiedAtNs = recP->modifiedAtNs;
   iP->deletedAtNs  = recP->deletedAtNs;
 
-  if ((recP->datasetId != NULL) && (iP->datasetId == NULL))
-    return NULL;                                     // the body is still the caller's
+  if ((iP->body == NULL) || ((recP->datasetId != NULL) && (iP->datasetId == NULL)))
+    return NULL;
 
-  recP->body = NULL;
   ++aP->instances;
   return iP;
 }
@@ -412,10 +489,7 @@ CorDbInstance* corDbHistoryInstanceAdd(CorDbHistory* hP, CorDbHistEntity* eP, co
   if (corDbHistoryRecordEncode(eP->id, eP->type, attrName, datasetId, instanceP, deletedAtNs, kaP, &rec) == false)
     return NULL;
 
-  CorDbInstance* iP = corDbHistoryRecordAdd(hP, eP, &rec);
-
-  free(rec.body);                                    // NULL when taken over
-  return iP;
+  return corDbHistoryRecordAdd(hP, eP, &rec);
 }
 
 
@@ -526,12 +600,6 @@ void corDbHistoryFree(CorDbHistory* hP)
     {
       nextAP = aP->next;
 
-      for (int i = 0; i < aP->instances; i++)
-      {
-        free(aP->instanceV[i].datasetId);
-        free(aP->instanceV[i].body);
-      }
-
       if (aP->instanceV != aP->inlineV)
         free(aP->instanceV);
       free(aP);                                      // its name is interned: freed below
@@ -550,6 +618,14 @@ void corDbHistoryFree(CorDbHistory* hP)
   for (int i = 0; i < hP->namesN; i++)
     free(hP->nameV[i]);
   free(hP->nameV);
+
+  CorDbHistChunk* nextCP;
+
+  for (CorDbHistChunk* cP = hP->chunks; cP != NULL; cP = nextCP)
+  {
+    nextCP = cP->next;
+    free(cP);                                        // the bodies and dataset ids of every instance in it
+  }
 
   memset(hP, 0, sizeof(*hP));
 }

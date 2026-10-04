@@ -118,7 +118,7 @@ typedef struct CorDbHistItem
 {
   struct CorDbHistItem*  next;
   bool                   isEvent;
-  char*                  body;                       // malloc - the index takes it over
+  char*                  body;                       // a record's: in the item (strings[]); an event's: malloc
   int                    bodyLen;
   uint64_t               observedAtNs;
   uint64_t               createdAtNs;
@@ -137,9 +137,10 @@ typedef struct CorDbHistItem
 
 // -----------------------------------------------------------------------------
 //
-// itemNew - an item with copies of its strings
+// itemNew - an item with copies of its strings and of a record's body (an event's body is its malloc)
 //
-static CorDbHistItem* itemNew(const char* id, const char* type, const char* attrName, const char* datasetId, const char* entityOp)
+static CorDbHistItem* itemNew(const char* id, const char* type, const char* attrName, const char* datasetId, const char* entityOp,
+                              const char* body, int bodyLen)
 {
   const char* sV[5] = { id, type, attrName, datasetId, entityOp };
   int         lenV[5];
@@ -151,7 +152,7 @@ static CorDbHistItem* itemNew(const char* id, const char* type, const char* attr
     total  += lenV[i];
   }
 
-  CorDbHistItem* itemP = (CorDbHistItem*) malloc(sizeof(CorDbHistItem) + total);
+  CorDbHistItem* itemP = (CorDbHistItem*) malloc(sizeof(CorDbHistItem) + total + ((body != NULL) ? bodyLen : 0));
 
   if (itemP == NULL)
     return NULL;
@@ -169,6 +170,13 @@ static CorDbHistItem* itemNew(const char* id, const char* type, const char* attr
     memcpy(p, sV[i], lenV[i]);
     *dstV[i] = p;
     p       += lenV[i];
+  }
+
+  if (body != NULL)
+  {
+    memcpy(p, body, bodyLen);
+    itemP->body    = p;
+    itemP->bodyLen = bodyLen;
   }
 
   return itemP;
@@ -249,13 +257,11 @@ void corDbHistoryDrain(CorDbStore* storeP)
       if (iP == NULL)
         COR_E("corDB: out of memory recording an instance of '%s' of '%s'", itemP->attrName, itemP->entityId);
       else
-      {
         corDbPersistHistAppend(storeP->persistP, iP->body, iP->bodyLen);
-        itemP->body = NULL;                            // the index's now
-      }
     }
 
-    free(itemP->body);
+    if (itemP->isEvent)
+      free(itemP->body);
     free(itemP);
   }
 
@@ -270,7 +276,7 @@ void corDbHistoryDrain(CorDbStore* storeP)
 //
 static void enqueueRecord(HistCtx* cP, CorDbHistRecord* recP)
 {
-  CorDbHistItem* itemP = itemNew(cP->id, cP->type, recP->attrName, recP->datasetId, NULL);
+  CorDbHistItem* itemP = itemNew(cP->id, cP->type, recP->attrName, recP->datasetId, NULL, recP->body, recP->bodyLen);
 
   if (itemP == NULL)
   {
@@ -278,20 +284,17 @@ static void enqueueRecord(HistCtx* cP, CorDbHistRecord* recP)
     return;
   }
 
-  itemP->body         = recP->body;
-  itemP->bodyLen      = recP->bodyLen;
   itemP->observedAtNs = recP->observedAtNs;
   itemP->createdAtNs  = recP->createdAtNs;
   itemP->modifiedAtNs = recP->modifiedAtNs;
   itemP->deletedAtNs  = recP->deletedAtNs;
-  recP->body          = NULL;
 
   enqueue(cP->storeP, itemP);
 }
 
 static void enqueueEvent(CorDbStore* storeP, const char* id, const char* type, const char* entityOp, uint64_t atNs, char* body, int bodyLen)
 {
-  CorDbHistItem* itemP = itemNew(id, type, NULL, NULL, entityOp);
+  CorDbHistItem* itemP = itemNew(id, type, NULL, NULL, entityOp, NULL, 0);
 
   if (itemP == NULL)
   {
@@ -456,6 +459,42 @@ static void removedInstances(CorDbStore* storeP, HistCtx* eP, const char* attrNa
 
 // -----------------------------------------------------------------------------
 //
+// lookupFrom - a member by name, searched from *cursorPP on and then from the start; *cursorPP left
+// after it. Two entities walked with their attributes in the same order (a replace's new and old
+// entity, a clone and its original) cost a compare or two per attribute instead of a walk each.
+//
+static CorNode* lookupFrom(CorNode* containerP, CorNode** cursorPP, const char* name)
+{
+  if ((containerP == NULL) || (containerP->type != CorObject))
+    return NULL;
+
+  CorNode* startP = (*cursorPP != NULL) ? *cursorPP : containerP->value.head;
+
+  for (CorNode* mP = startP; mP != NULL; mP = mP->next)
+  {
+    if ((mP->name != NULL) && (strcmp(mP->name, name) == 0))
+    {
+      *cursorPP = mP->next;
+      return mP;
+    }
+  }
+
+  for (CorNode* mP = containerP->value.head; mP != startP; mP = mP->next)
+  {
+    if ((mP->name != NULL) && (strcmp(mP->name, name) == 0))
+    {
+      *cursorPP = mP->next;
+      return mP;
+    }
+  }
+
+  return NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // modifiedAtOf - an instance's modifiedAt (0: none)
 //
 static uint64_t modifiedAtOf(CorNode* instanceP)
@@ -578,10 +617,7 @@ void corDbHistoryPreVFree(CorDbHistPreV* preVP)
 //
 void corDbHistoryPreFree(CorDbHistPre* preP)
 {
-  for (int i = 0; i < preP->recs; i++)
-    free(preP->recV[i].body);
-
-  free(preP->recV);
+  free(preP->recV);                                  // the bodies are in the request's arena
   free(preP->event.buf);
   memset(preP, 0, sizeof(*preP));
 }
@@ -684,34 +720,43 @@ void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ne
   if (eP == NULL)
     return;
 
-  uint64_t atNs = timeOf(newEntityP);
+  uint64_t atNs = (preP->atNs != 0) ? preP->atNs : timeOf(newEntityP);
 
   preparedEvent(storeP, eP, preP, kaP);
 
   //
   // The entity walked in the order corDbHistoryPrepare walked it: an instance it prepared is the next
-  // record; one it did not (not stamped with the write's time, or out of memory) is encoded here if it
-  // differs from the stored one
+  // record. One stamped with this write's time was written by it - recorded, no comparison needed.
+  // Any other (carried over, or not prepared: out of memory) is recorded if it differs from the stored
+  // one, encoded here.
   //
-  int k = 0;
+  int      k       = 0;
+  CorNode* oldCurP = NULL;
 
   for (CorNode* attrP = newEntityP->value.head; attrP != NULL; attrP = attrP->next)
   {
     if (isAttribute(attrP) == false)
       continue;
 
-    CorNode* oldAttrP = (oldEntityP != NULL) ? corTreeLookup(oldEntityP, attrP->name) : NULL;
+    CorNode* oldAttrP = (oldEntityP != NULL) ? lookupFrom(oldEntityP, &oldCurP, attrP->name) : NULL;
 
     for (CorNode* instP = attrP->value.head; instP != NULL; instP = instP->next)
     {
       if (instP->type != CorObject)
         continue;
 
-      CorDbHistRecord* recP     = ((k < preP->recs) && (preP->recV[k].instanceP == instP)) ? &preP->recV[k++] : NULL;
-      CorNode*         oldInstP = ((oldAttrP != NULL) && (instP->name != NULL)) ? corTreeLookup(oldAttrP, instP->name) : NULL;
+      CorDbHistRecord* recP = ((k < preP->recs) && (preP->recV[k].instanceP == instP)) ? &preP->recV[k++] : NULL;
+
+      if ((recP != NULL) && (recP->modifiedAtNs == atNs))
+      {
+        recordAppend(storeP, eP, recP);
+        continue;
+      }
+
+      CorNode* oldInstP = ((oldAttrP != NULL) && (instP->name != NULL)) ? corTreeLookup(oldAttrP, instP->name) : NULL;
 
       if ((oldInstP != NULL) && (sameModifiedAt(instP, oldInstP) == true))
-        continue;                                    // carried over, not written - a prepared body is freed with the rest
+        continue;                                    // carried over, not written
 
       if (recP != NULL)
         recordAppend(storeP, eP, recP);
@@ -723,10 +768,12 @@ void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ne
   if (oldEntityP == NULL)
     return;
 
+  CorNode* newCurP = NULL;
+
   for (CorNode* oldAttrP = oldEntityP->value.head; oldAttrP != NULL; oldAttrP = oldAttrP->next)
   {
     if (isAttribute(oldAttrP))
-      removedInstances(storeP, eP, oldAttrP->name, oldAttrP, corTreeLookup(newEntityP, oldAttrP->name), atNs, kaP);
+      removedInstances(storeP, eP, oldAttrP->name, oldAttrP, lookupFrom(newEntityP, &newCurP, oldAttrP->name), atNs, kaP);
   }
 }
 
