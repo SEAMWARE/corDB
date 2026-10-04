@@ -14,6 +14,7 @@
 //
 #include <stdbool.h>                                   // bool
 #include <stdint.h>                                    // uint64_t
+#include <stdlib.h>                                    // qsort
 #include <string.h>                                    // strcmp
 
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
@@ -23,6 +24,7 @@
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 #include "corAlloc/corAlloc.h"                         // corAlloc
 #include "corRest/CorRestState.h"                      // corRest
+#include "corNgsild/ldCheckDateTime.h"                 // ldIsoToNanoseconds
 #include "corNgsild/ldTermId.h"                        // ldNodeRename
 
 #include "db/Tenant.h"                                 // Tenant
@@ -156,7 +158,185 @@ static bool attrWanted(TroeQueryFilter* fP, const char* attrName)
 
 // -----------------------------------------------------------------------------
 //
-// temporalEntity - one entity's temporal representation, in kaP
+// datasetWanted - is the instance's datasetId in ?datasetId ("@none": the default instance)
+//
+static bool datasetWanted(TroeQueryFilter* fP, const char* datasetId)
+{
+  if ((fP == NULL) || (fP->datasetIdV == NULL) || (fP->datasetIdV[0] == NULL))
+    return true;
+
+  for (char** dP = fP->datasetIdV; *dP != NULL; dP++)
+  {
+    if (strcmp(*dP, "@none") == 0)
+    {
+      if (datasetId == NULL)
+        return true;
+    }
+    else if ((datasetId != NULL) && (strcmp(*dP, datasetId) == 0))
+      return true;
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// Axis - the timestamp ?timeproperty filters and orders on (§ 4.11, default observedAt)
+//
+// createdAt is the time of the instances that CREATED their attribute, deletedAt the time of the
+// tombstones: an instance has those only when it is one; modifiedAt and observedAt are every instance's.
+//
+typedef enum { AxisObservedAt, AxisModifiedAt, AxisCreatedAt, AxisDeletedAt } Axis;
+
+static Axis axisOf(TroeQueryFilter* fP)
+{
+  const char* tp = (fP != NULL) ? fP->timeproperty : NULL;
+
+  if (tp == NULL)                      return AxisObservedAt;
+  if (strcmp(tp, "modifiedAt") == 0)   return AxisModifiedAt;
+  if (strcmp(tp, "createdAt") == 0)    return AxisCreatedAt;
+  if (strcmp(tp, "deletedAt") == 0)    return AxisDeletedAt;
+  return AxisObservedAt;
+}
+
+static bool onAxis(CorDbInstance* iP, Axis axis)
+{
+  if (axis == AxisCreatedAt)
+    return (iP->deletedAtNs == 0) && (iP->createdAtNs != 0) && (iP->createdAtNs == iP->modifiedAtNs);
+
+  if (axis == AxisDeletedAt)
+    return iP->deletedAtNs != 0;
+
+  return true;
+}
+
+static uint64_t axisNs(CorDbInstance* iP, Axis axis)
+{
+  switch (axis)
+  {
+  case AxisObservedAt:  return iP->observedAtNs;
+  case AxisDeletedAt:   return iP->deletedAtNs;
+  default:              return iP->modifiedAtNs;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// Window - ?timerel on the axis (§ 4.11): before is exclusive, after inclusive, between [timeAt, endTimeAt)
+//
+// An instance without the axis' timestamp is in no window - and, with no window, after every instance
+// that has one, in either direction.
+//
+typedef struct Window
+{
+  int       rel;                                       // 0 none, 1 before, 2 after, 3 between
+  uint64_t  fromNs;
+  uint64_t  toNs;
+} Window;
+
+static uint64_t isoNs(const char* iso)
+{
+  int64_t ns = (iso != NULL) ? ldIsoToNanoseconds(iso) : 0;
+  return (ns > 0) ? (uint64_t) ns : 0;
+}
+
+static void windowOf(TroeQueryFilter* fP, Window* wP)
+{
+  memset(wP, 0, sizeof(*wP));
+
+  if ((fP == NULL) || (fP->timerel == NULL))
+    return;
+
+  wP->fromNs = (fP->timeAtNs != 0) ? fP->timeAtNs : isoNs(fP->timeAtIso);
+
+  if (strcmp(fP->timerel, "before") == 0)        wP->rel = 1;
+  else if (strcmp(fP->timerel, "after") == 0)    wP->rel = 2;
+  else if (strcmp(fP->timerel, "between") == 0)
+  {
+    wP->rel  = 3;
+    wP->toNs = (fP->endTimeAtNs != 0) ? fP->endTimeAtNs : isoNs(fP->endTimeAtIso);
+  }
+}
+
+static bool inWindow(Window* wP, uint64_t ns)
+{
+  switch (wP->rel)
+  {
+  case 0:  return true;
+  case 1:  return (ns != 0) && (ns < wP->fromNs);
+  case 2:  return (ns != 0) && (ns >= wP->fromNs);
+  default: return (ns != 0) && (ns >= wP->fromNs) && (ns < wP->toNs);
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// Pick - an instance that passed the filters, with what orders it
+//
+// Order: the default instance first, then by datasetId; within one, by the axis - ascending, or
+// descending for ?lastN - an instance without the timestamp last either way; equal times in the order
+// they were written (descending: the reverse).
+//
+typedef struct Pick
+{
+  CorDbInstance*  iP;
+  const char*     datasetId;
+  uint64_t        ns;
+  int             ix;                                  // the order written
+  bool            backward;
+} Pick;
+
+static int pickCompare(const void* a, const void* b)
+{
+  const Pick* pA = (const Pick*) a;
+  const Pick* pB = (const Pick*) b;
+
+  if ((pA->datasetId == NULL) != (pB->datasetId == NULL))
+    return (pA->datasetId == NULL) ? -1 : 1;
+
+  if (pA->datasetId != NULL)
+  {
+    int c = strcmp(pA->datasetId, pB->datasetId);
+    if (c != 0)
+      return c;
+  }
+
+  if ((pA->ns == 0) != (pB->ns == 0))
+    return (pA->ns == 0) ? 1 : -1;
+
+  if (pA->ns != pB->ns)
+    return ((pA->ns < pB->ns) != pA->backward) ? -1 : 1;
+
+  return ((pA->ix < pB->ix) != pA->backward) ? -1 : 1;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// isoString - ns as the API's ISO text, to the microsecond (an all-zero fraction left out)
+//
+static const char* isoString(uint64_t ns, CorAlloc* kaP)
+{
+  char* buf = (char*) corAlloc(kaP, 32);
+
+  if (buf != NULL)
+    corTimeIso((int64_t) ns, 6, false, buf);
+
+  return buf;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// temporalEntity - one entity's temporal representation, in kaP - timescale's answer, from the index
 //
 static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRangeInfo* rangeP, CorAlloc* kaP)
 {
@@ -166,61 +346,136 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
   if (eP->type != NULL)
     corTreeChildAdd(entityP, corTreeString(kaP, "type", eP->type));
 
-  int  cap      = INSTANCE_CAP;
-  bool backward = false;
+  int  lastN    = (fP != NULL) ? fP->lastN   : 0;
+  int  firstN   = (fP != NULL) ? fP->firstN  : 0;
+  int  offsetN  = (fP != NULL) ? fP->offsetN : 0;
+  int  cap      = ((fP != NULL) && (fP->instanceCap > 0)) ? fP->instanceCap : INSTANCE_CAP;
+  int  page     = (lastN > 0) ? lastN : ((firstN > 0) ? firstN : cap);
+  bool backward = (lastN > 0);
+  Axis axis     = axisOf(fP);
+  Window window;
 
-  if ((fP != NULL) && (fP->lastN > 0))
-  {
-    cap      = fP->lastN;
-    backward = true;
-  }
-  else if ((fP != NULL) && (fP->firstN > 0))
-    cap = fP->firstN;
+  windowOf(fP, &window);
+
+  uint64_t modifiedNs = (eP->createdAtNs > eP->deletedAtNs) ? eP->createdAtNs : eP->deletedAtNs;
+  uint64_t minNs      = 0;
+  uint64_t maxNs      = 0;
 
   for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = aP->next)
   {
+    for (int i = 0; i < aP->instances; i++)              // the entity's modifiedAt: its last write, filters or not
+    {
+      if (aP->instanceV[i].modifiedAtNs > modifiedNs)
+        modifiedNs = aP->instanceV[i].modifiedAtNs;
+    }
+
     if (attrWanted(fP, aP->name) == false)
       continue;
 
-    CorNode* arrayP = corTreeArray(kaP, aP->name);
-    int      first  = 0;
-    int      last   = aP->instances;                  // exclusive
+    Pick* pickV = (Pick*) corAlloc(kaP, (aP->instances + 1) * sizeof(Pick));
+    int   picks = 0;
 
-    if (aP->instances > cap)
+    if (pickV == NULL)
+      continue;
+
+    for (int i = 0; i < aP->instances; i++)
     {
-      if (rangeP != NULL)
-        rangeP->hasMore = true;
+      CorDbInstance* iP = &aP->instanceV[i];
 
-      if (backward)
-        first = aP->instances - cap;
-      else
-        last = cap;
-    }
-
-    for (int i = first; i < last; i++)
-    {
-      CorNode* instP = corDbHistoryInstanceDecode(&aP->instanceV[i], kaP);
-
-      if (instP == NULL)
+      if ((datasetWanted(fP, iP->datasetId) == false) || (onAxis(iP, axis) == false))
         continue;
 
-      //
-      // The store keys an instance by its datasetId rather than carrying it as a member: the answer
-      // carries it
-      //
-      if ((aP->instanceV[i].datasetId != NULL) && (corTreeLookup(instP, "datasetId") == NULL))
-        corTreeChildAdd(instP, corTreeString(kaP, "datasetId", aP->instanceV[i].datasetId));
+      uint64_t ns = axisNs(iP, axis);
 
-      toApi(instP, kaP);
-      corTreeChildAdd(arrayP, instP);
+      if (inWindow(&window, ns) == false)
+        continue;
+
+      pickV[picks++] = (Pick) { iP, iP->datasetId, ns, i, backward };
+    }
+
+    if (picks == 0)
+      continue;
+
+    qsort(pickV, picks, sizeof(Pick), pickCompare);
+
+    CorNode* arrayP = corTreeArray(kaP, aP->name);
+
+    //
+    // The page is per datasetId (§ 6.4.7.3): offsetN skipped, then at most `page`, in each
+    //
+    for (int p0 = 0; p0 < picks; )
+    {
+      int p1 = p0 + 1;
+
+      while ((p1 < picks) && (((pickV[p1].datasetId == NULL) && (pickV[p0].datasetId == NULL)) ||
+                              ((pickV[p1].datasetId != NULL) && (pickV[p0].datasetId != NULL) && (strcmp(pickV[p1].datasetId, pickV[p0].datasetId) == 0))))
+        ++p1;
+
+      if ((p1 - p0 > offsetN + page) && (rangeP != NULL))
+        rangeP->hasMore = true;
+
+      int from = p0 + offsetN;
+      int to   = (from + page < p1) ? from + page : p1;
+
+      for (int p = from; p < to; p++)
+      {
+        CorNode* instP = corDbHistoryInstanceDecode(pickV[p].iP, kaP);
+
+        if (instP == NULL)
+          continue;
+
+        //
+        // The store keys an instance by its datasetId rather than carrying it as a member: the answer
+        // carries it
+        //
+        if ((pickV[p].datasetId != NULL) && (corTreeLookup(instP, "datasetId") == NULL))
+          corTreeChildAdd(instP, corTreeString(kaP, "datasetId", pickV[p].datasetId));
+
+        toApi(instP, kaP);
+        corTreeChildAdd(arrayP, instP);
+
+        if (pickV[p].ns != 0)
+        {
+          if ((minNs == 0) || (pickV[p].ns < minNs))  minNs = pickV[p].ns;
+          if (pickV[p].ns > maxNs)                    maxNs = pickV[p].ns;
+        }
+      }
+
+      p0 = p1;
     }
 
     if (arrayP->value.head != NULL)
       corTreeChildAdd(entityP, arrayP);
   }
 
+  //
+  // createdAt and modifiedAt of the entity (sysAttrs - the broker strips them unless asked), and its
+  // deletedAt when its last event is its deletion - which is not stripped: it says the entity is gone
+  //
+  if (eP->createdAtNs != 0)
+    corTreeChildAdd(entityP, corTreeString(kaP, "createdAt", isoString(eP->createdAtNs, kaP)));
+  if (modifiedNs != 0)
+    corTreeChildAdd(entityP, corTreeString(kaP, "modifiedAt", isoString(modifiedNs, kaP)));
+  if (eP->deletedAtNs != 0)
+    corTreeChildAdd(entityP, corTreeString(kaP, "deletedAt", isoString(eP->deletedAtNs, kaP)));
+
   if (rangeP != NULL)
-    rangeP->size = cap;
+  {
+    if (minNs != 0)
+    {
+      const char* minIso = isoString(minNs, kaP);
+      if ((rangeP->rangeStartIso == NULL) || (strcmp(minIso, rangeP->rangeStartIso) < 0))
+        rangeP->rangeStartIso = minIso;
+    }
+    if (maxNs != 0)
+    {
+      const char* maxIso = isoString(maxNs, kaP);
+      if ((rangeP->rangeEndIso == NULL) || (strcmp(maxIso, rangeP->rangeEndIso) > 0))
+        rangeP->rangeEndIso = maxIso;
+    }
+    if (rangeP->size == 0)
+      rangeP->size = page;
+  }
 
   return entityP;
 }
