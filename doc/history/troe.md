@@ -2,6 +2,31 @@
 
 The design is [troe.md](../troe.md). This is what measuring found on the way. Newest first.
 
+## 2026-10-04 - phase 2: reading history
+
+The temporal retrieve and query answer from the index with every filter but q, geoQ and aggregation.
+How they were checked, and what that found:
+
+- **The timescale tests as the oracle.** `corTest -db corDB -troeDb corDB` runs every `--troe
+  timescale` test on `--troe corDB` with the same expectations; seven that read timescale's tables
+  (psql) are timescale's only (`REQUIRE_TROEDB: timescale`). Before phase 2: 13 of 70 passed; after it,
+  38 of 63 - every one left needs phase 3 (q, geoQ, aggregation) or phase 5 (the temporal writes).
+- **Two expectations had captured a coin flip.** Instances with no observedAt (the default time
+  property) all tie, and PostgreSQL returned ties in whatever order the plan gave: two tests expected
+  3, 2, 1 and 10, 5 where the spec says ascending. timescale now breaks ties by modified_at (the
+  order written), corDB the same, and the tests say 1, 2, 3 and 5, 10.
+- **The instance cap** was 100 in corDB, a constant copied from timescale's source - whose real
+  default is its `--troeInstanceCap` option's, 1 000 000. corDB has the option now, with that default.
+- **Missing from corDB's history**: the Scope (§ 5.3.2.5 - a plain member in current state, so the
+  write sites skipped it), now recorded; and recorded when it should not be: a bridge's placeholders
+  (`"uninitialized"`), which timescale's event path keeps out by design - now kept out by
+  `corNgsild.troeEntityOnly` around that write.
+- **instanceIds** differ in form (timescale a UUID, corDB its hex:counter, as every id coraine
+  generates); the tests take both.
+- **Measured** against timescale on the same history (doc/troe.md § 6): a retrieve 6×, a query of 100
+  entities 43× - timescale answers a query with three SQL round trips per entity (the counts for the
+  page, the instances, the entity's timestamps).
+
 ## 2026-10-04 - CPU per instance, and three costs removed
 
 ### Measuring the right build

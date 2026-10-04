@@ -18,6 +18,10 @@ events (their hooks are NULL with `--troe corDB`). Current state overwrites; his
   `modifiedAt` as the stored ones) are not recorded again.
 - **A deleted attribute instance** appends a tombstone: its kind, the value `urn:ngsi-ld:null`, and
   `deletedAt`.
+- **The Scope** is recorded as a Property (§ 5.3.2.5) - in current state a plain member, no instance:
+  when an entity is created with one, when a write changes it, and its tombstone when it goes.
+- **A write whose instances are no value anybody supplied** - a bridge's placeholders,
+  `"uninitialized"` - records the entity's event only (`corNgsild.troeEntityOnly`, set around the write).
 - **Entity events** - created, replaced, deleted - are records of their own: `{ id, type, entityOp, at }`.
   A deleted entity's history stays.
 
@@ -58,7 +62,29 @@ its current-state **and** its history records are synced.
 The `hist-N.cor` segments are replayed in order after the current state is back; an instance keeps
 the instanceId it was given. A torn tail is cut in the newest segment only.
 
-## 5. What it costs
+## 5. Reading it - the temporal API
+
+`GET /temporal/entities/{id}`, `GET /temporal/entities` and `POST /temporal/entityOperations/query`
+answer from the index, under the history mutex (what the writes have queued is applied first). The
+answer is the one the timescale plugin gives - the same functional tests check both
+(`corTest -db corDB -troeDb corDB`):
+
+| parameter | |
+|---|---|
+| `attrs`, `datasetId` | which attributes, which instances (`@none`: the default one) |
+| `timeproperty` | `observedAt` (default), `modifiedAt`, `createdAt` (the instances that created their attribute), `deletedAt` (the tombstones) |
+| `timerel`, `timeAt`, `endTimeAt` | `before` exclusive, `after` inclusive, `between` = [timeAt, endTimeAt) - an instance without the time property is in no window |
+| `lastN`, `firstN`, `offsetN`, `--troeInstanceCap` | the page, per attribute and datasetId: descending for lastN, ascending otherwise; the cap (default 1 000 000) when neither is given |
+| `id`, `type`, `idPattern`, `limit`, `offset`, `count` | the query: entities with at least one instance in the window, by id |
+
+- **Order**: per attribute the default instance first, then by datasetId; by the time property; an
+  instance without it last; equal times in the order they were written.
+- **The entity** carries `createdAt` and `modifiedAt` (sysAttrs - the broker strips them unless asked)
+  and `deletedAt` when it was deleted: its history stays.
+- **Not yet**: `q`, `geoQ`, `aggrMethods` (phase 3 - a query with `q` or `geoQ` is refused, not answered
+  as if it had none); the temporal write endpoints (phase 5).
+
+## 6. What it costs
 
 Broker CPU per history instance, `--troe corDB` against `--troe none` on the same workload (PGO
 release, broker pinned to 2 cores, AMD Ryzen 9 8940HX, 2026-10-04):
@@ -91,3 +117,14 @@ Throughput, coraine's `test/perf/perfRun.sh corDB`, same machine and pinning, re
 
 Reads do not touch history (their spread, ±9 %, is the run-to-run noise of this machine). A write
 loses what its instances cost: batch create, a hundred instances per request, the most.
+
+Reading it, against timescale (`--troe timescale`, PostgreSQL 17 + TimescaleDB on the same machine,
+not pinned - so if anything favoured), the same broker and the same history (100 vehicles, 51 instances
+of speed each), broker pinned to 2 cores, 50 connections, median of 3 × 10 s, requests/s:
+
+| read | corDB | timescale | |
+|---|---:|---:|---:|
+| `GET /temporal/entities/{id}?lastN=10` | 56 190 | 9 388 | 6× |
+| `GET /temporal/entities/{id}` (all of it) | 32 144 | 5 398 | 6× |
+| `GET /temporal/entities?type=…&timerel=after&lastN=1` (100 entities) | 7 239 | 170 | 43× |
+
