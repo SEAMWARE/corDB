@@ -2,6 +2,16 @@
 
 The design is [troe.md](../troe.md). This is what measuring found on the way. Newest first.
 
+## 2026-10-04 - phase 3: q and geoQ
+
+- **q** reaches the store as the parsed tree too (`TroeQueryFilter.qTree`, beside timescale's SQL): a
+  term holds when an instance of its attribute, wrapped as a one-attribute entity, passes the
+  current-state matcher (`ldEntityMatchQ`); AND / OR as such; `!attr` when no instance has the
+  attribute. **geoQ** the same with the GEOS matcher, on the GeoProperty instances in the window.
+- **Aggregation** needed nothing: corDB declines the push-down and the broker aggregates the instances.
+- The oracle: 44 of 64 - the 20 left all use the temporal write endpoints (phase 5); `geoq` among them,
+  its step 05 a POST /temporal/entities.
+
 ## 2026-10-04 - phase 2: reading history
 
 The temporal retrieve and query answer from the index with every filter but q, geoQ and aggregation.

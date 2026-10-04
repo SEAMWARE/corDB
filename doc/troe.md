@@ -76,13 +76,15 @@ answer is the one the timescale plugin gives - the same functional tests check b
 | `timerel`, `timeAt`, `endTimeAt` | `before` exclusive, `after` inclusive, `between` = [timeAt, endTimeAt) - an instance without the time property is in no window |
 | `lastN`, `firstN`, `offsetN`, `--troeInstanceCap` | the page, per attribute and datasetId: descending for lastN, ascending otherwise; the cap (default 1 000 000) when neither is given |
 | `id`, `type`, `idPattern`, `limit`, `offset`, `count` | the query: entities with at least one instance in the window, by id |
+| `q` | an entity whose history has, for each term, an instance that satisfies it - anywhere in the history, as timescale's EXISTS; `!attr`: no instance |
+| `georel`, `geometry`, `coordinates`, `geoproperty` | an entity with a GeoProperty instance in the window that satisfies the georel - the current-state store's GEOS matcher |
+| `aggrMethods`, `aggrPeriodDuration` | computed by the broker from the instances (corDB declines the push-down) |
 
 - **Order**: per attribute the default instance first, then by datasetId; by the time property; an
   instance without it last; equal times in the order they were written.
 - **The entity** carries `createdAt` and `modifiedAt` (sysAttrs - the broker strips them unless asked)
   and `deletedAt` when it was deleted: its history stays.
-- **Not yet**: `q`, `geoQ`, `aggrMethods` (phase 3 - a query with `q` or `geoQ` is refused, not answered
-  as if it had none); the temporal write endpoints (phase 5).
+- **Not yet**: the temporal write endpoints (phase 5).
 
 ## 6. What it costs
 

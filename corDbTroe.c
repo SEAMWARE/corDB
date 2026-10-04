@@ -27,9 +27,14 @@
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 #include "corAlloc/corAlloc.h"                         // corAlloc
 #include "corRest/CorRestState.h"                      // corRest
+#include "corNgsild/LdGeoRel.h"          // LdGeoRel
+#include "corNgsild/ldEntityMatch.h"     // ldEntityMatchQ
+#include "corNgsild/LdQ.h"               // LdQNode, LdQTerm
 #include "corNgsild/ldCheckDateTime.h"                 // ldIsoToNanoseconds
 #include "corNgsild/ldTermId.h"                        // ldNodeRename
 
+#include "db/DbQueryFilter.h"            // DbQueryFilter
+#include "corDB/corDbGeoMatch.h"         // corDbGeoMatch
 #include "db/Tenant.h"                                 // Tenant
 #include "troe/TroeDriver.h"                           // TroeDriver, TroeQueryFilter, TroeRangeInfo, TROE_*
 
@@ -561,6 +566,164 @@ static bool hasInstanceInWindow(CorDbHistEntity* eP, TroeQueryFilter* fP)
 
 // -----------------------------------------------------------------------------
 //
+// miniEntity - one instance as the current-state store holds an attribute: { attr: { datasetId: instance } }
+// - the form ldEntityMatchQ and the geo matcher read
+//
+static CorNode* miniEntity(const char* attrName, CorDbInstance* iP, CorAlloc* kaP)
+{
+  CorNode* instP = corDbHistoryInstanceDecode(iP, kaP);
+
+  if (instP == NULL)
+    return NULL;
+
+  CorNode* entityP = corTreeObject(kaP, NULL);
+  CorNode* attrP   = corTreeObject(kaP, attrName);
+
+  instP->name = (char*) ((iP->datasetId != NULL) ? iP->datasetId : "@none");
+  corTreeChildAdd(attrP, instP);
+  corTreeChildAdd(entityP, attrP);
+
+  return entityP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// attrOfEntity - the entity's history of one attribute
+//
+static CorDbHistAttr* attrOfEntity(CorDbHistEntity* eP, const char* attrName)
+{
+  for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = aP->next)
+  {
+    if (strcmp(aP->name, attrName) == 0)
+      return aP;
+  }
+
+  return NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// qTermHolds - does an instance of the term's attribute, anywhere in its history, satisfy it
+//
+// timescale's EXISTS over every instance, in or out of the window (troeQTreeToSql); "!attr" holds when
+// no instance has it.
+//
+static bool qTermHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
+{
+  LdQTerm* tP = &nodeP->term;
+
+  if ((tP->op == LdQNotExists) && (tP->valueType == LdQNoValue))
+  {
+    LdQNode positive = *nodeP;
+
+    positive.term.op = LdQExists;
+    return !qTermHolds(eP, &positive, kaP);
+  }
+
+  CorDbHistAttr* aP = attrOfEntity(eP, tP->attr);
+
+  if (aP == NULL)
+    return false;
+
+  for (int i = 0; i < aP->instances; i++)
+  {
+    CorNode* entityP = miniEntity(aP->name, &aP->instanceV[i], kaP);
+
+    if ((entityP != NULL) && ldEntityMatchQ(entityP, nodeP))
+      return true;
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// qHolds - the q tree over the entity's history: AND and OR of its terms (a linked one never gets
+// here - the broker refuses what it cannot compile for a temporal store)
+//
+static bool qHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
+{
+  switch (nodeP->type)
+  {
+  case LdQTermNode:
+    return qTermHolds(eP, nodeP, kaP);
+
+  case LdQAndNode:
+    for (int i = 0; i < nodeP->group.count; i++)
+    {
+      if (qHolds(eP, nodeP->group.childV[i], kaP) == false)
+        return false;
+    }
+    return true;
+
+  case LdQOrNode:
+    for (int i = 0; i < nodeP->group.count; i++)
+    {
+      if (qHolds(eP, nodeP->group.childV[i], kaP) == true)
+        return true;
+    }
+    return false;
+
+  default:
+    return false;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// geoHolds - does an instance of the GeoProperty, in the window, satisfy the georel (§ 11.3.3: any
+// in-window instance keeps the entity, as timescale's EXISTS) - the current-state store's GEOS matcher
+//
+static bool geoHolds(CorDbHistEntity* eP, TroeQueryFilter* fP, CorAlloc* kaP)
+{
+  const char*    geoProperty = (fP->geoProperty != NULL) ? fP->geoProperty : "location";
+  CorDbHistAttr* aP          = attrOfEntity(eP, geoProperty);
+
+  if ((aP == NULL) || (fP->geoGeometry == NULL) || (fP->geoCoordinates == NULL))
+    return false;
+
+  LdGeoRel      rel = { (LdGeoRelType) fP->geoRelType, fP->geoMaxDistance, fP->geoMinDistance };
+  DbQueryFilter filter;
+
+  memset(&filter, 0, sizeof(filter));
+  filter.geoRel      = &rel;
+  filter.geometry    = (char*) fP->geoGeometry;
+  filter.coordinates = (char*) fP->geoCoordinates;
+  filter.geoproperty = (char*) aP->name;
+
+  Axis   axis = axisOf(fP);
+  Window window;
+
+  windowOf(fP, &window);
+
+  for (int i = 0; i < aP->instances; i++)
+  {
+    CorDbInstance* iP = &aP->instanceV[i];
+
+    if ((iP->deletedAtNs != 0) || (onAxis(iP, axis) == false) || (inWindow(&window, axisNs(iP, axis)) == false))
+      continue;
+
+    CorNode* entityP = miniEntity(aP->name, iP, kaP);
+
+    if ((entityP != NULL) && corDbGeoMatch(entityP, &filter, NULL))
+      return true;
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // entitySelected - id (one of ?id), type (one of ?type, expanded), ?idPattern
 //
 static bool entitySelected(CorDbHistEntity* eP, TroeQueryFilter* fP, regex_t* patternP)
@@ -627,8 +790,8 @@ static bool hasAttributes(CorNode* entityP)
 //
 // corDbTroeQuery - GET /temporal/entities, POST /temporal/entityOperations/query
 //
-// q and geoQ come in phase 3 of corDB's history: until then a query with either is refused (500,
-// logged) rather than answered as if it had none.
+// q and geoQ select entities by their history: an instance anywhere in it satisfies a q term; an
+// instance in the window, the georel.
 //
 static int corDbTroeQuery(Tenant* tenantP, TroeQueryFilter* fP, CorNode** resultPP, TroeRangeInfo* rangeP)
 {
@@ -638,9 +801,9 @@ static int corDbTroeQuery(Tenant* tenantP, TroeQueryFilter* fP, CorNode** result
   *resultPP           = corTreeArray(kaP, NULL);
   rangeP->entityCount = -1;
 
-  if ((fP->qSqlPredicate != NULL) || (fP->geoRelType != 0))
+  if ((fP->qSqlPredicate != NULL) && (fP->qTree == NULL))
   {
-    COR_E("corDB: a temporal query with %s is not supported yet", (fP->qSqlPredicate != NULL) ? "q" : "geoQ");
+    COR_E("corDB: a temporal query with a q but not its parsed tree - a broker older than its corDB");
     return TROE_ERR;
   }
 
@@ -673,7 +836,9 @@ static int corDbTroeQuery(Tenant* tenantP, TroeQueryFilter* fP, CorNode** result
 
   for (CorDbHistEntity* eP = hP->first; (eP != NULL) && (selV != NULL); eP = eP->next)
   {
-    if (entitySelected(eP, fP, patternP) && hasInstanceInWindow(eP, fP))
+    if (entitySelected(eP, fP, patternP) && hasInstanceInWindow(eP, fP) &&
+        ((fP->qTree == NULL) || qHolds(eP, (LdQNode*) fP->qTree, kaP)) &&
+        ((fP->geoRelType == 0) || geoHolds(eP, fP, kaP)))
       selV[sels++] = eP;
   }
 
