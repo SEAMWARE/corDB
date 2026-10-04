@@ -77,6 +77,17 @@ typedef struct CorDbStore
   // same write sites, under the same lock: current state overwrites, history appends.
   //
   struct CorDbHistory*  historyP;
+
+  //
+  // History is applied AFTER the write lock: a write enqueues its items under the lock (lock order is
+  // history order), and whoever releases the lock drains the queue under histMutex - index inserts and
+  // log appends no longer held the tenant's writers up (the write lock was the limit, measured).
+  // histQMutex guards the queue only (held for a link); histMutex the history index and the draining.
+  //
+  pthread_mutex_t       histQMutex;
+  pthread_mutex_t       histMutex;
+  struct CorDbHistItem* histQHead;
+  struct CorDbHistItem* histQTail;
 } CorDbStore;
 
 

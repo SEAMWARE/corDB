@@ -29,6 +29,18 @@
 
 // -----------------------------------------------------------------------------
 //
+// corDbHistoryDrain - the history the writes queued, applied in order (index + history log)
+//
+// A write queues its history under the tenant's write lock and drains after releasing it
+// (corDbStoreUnlock) - before its answer, so a temporal read after it sees it. A temporal read drains
+// too, then reads under the store's histMutex.
+//
+extern void corDbHistoryDrain(CorDbStore* storeP);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // CorDbHistPre - an entity's history records, encoded BEFORE the write lock
 //
 // Create and replace have their entity (the clone) before the lock: its records are encoded then, and

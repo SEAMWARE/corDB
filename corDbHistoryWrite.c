@@ -11,6 +11,7 @@
 #include <stdlib.h>                                    // free, realloc
 #include <string.h>                                    // strcmp
 #include <time.h>                                      // clock_gettime
+#include <pthread.h>                                   // pthread_mutex_*
 
 #include "corLog/corLog.h"                             // COR_E
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
@@ -96,21 +97,235 @@ static uint64_t timeOf(CorNode* entityP)
 
 // -----------------------------------------------------------------------------
 //
-// entityOf - the entity's history, created on its first record
+// HistCtx - the entity a write records history for: what an enqueued item names
 //
-static CorDbHistEntity* entityOf(CorDbStore* storeP, CorNode* entityP)
+typedef struct HistCtx
+{
+  CorDbStore*  storeP;
+  const char*  id;
+  const char*  type;
+} HistCtx;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// CorDbHistItem - one queued piece of history: a record (an instance) or an entity event, owning its
+// body and its strings - one malloc, the strings after the struct. Drained by whoever releases the
+// write lock next, maybe another request's thread: nothing in it may point into a request's arena.
+//
+typedef struct CorDbHistItem
+{
+  struct CorDbHistItem*  next;
+  bool                   isEvent;
+  char*                  body;                       // malloc - the index takes it over
+  int                    bodyLen;
+  uint64_t               observedAtNs;
+  uint64_t               createdAtNs;
+  uint64_t               modifiedAtNs;
+  uint64_t               deletedAtNs;
+  uint64_t               atNs;                       // an event's
+  const char*            entityId;
+  const char*            entityType;                 // NULL: unknown here (a delete)
+  const char*            attrName;
+  const char*            datasetId;
+  const char*            entityOp;
+  char                   strings[];
+} CorDbHistItem;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// itemNew - an item with copies of its strings
+//
+static CorDbHistItem* itemNew(const char* id, const char* type, const char* attrName, const char* datasetId, const char* entityOp)
+{
+  const char* sV[5] = { id, type, attrName, datasetId, entityOp };
+  int         lenV[5];
+  int         total = 0;
+
+  for (int i = 0; i < 5; i++)
+  {
+    lenV[i] = (sV[i] != NULL) ? (int) strlen(sV[i]) + 1 : 0;
+    total  += lenV[i];
+  }
+
+  CorDbHistItem* itemP = (CorDbHistItem*) malloc(sizeof(CorDbHistItem) + total);
+
+  if (itemP == NULL)
+    return NULL;
+
+  memset(itemP, 0, sizeof(CorDbHistItem));
+
+  const char** dstV[5] = { &itemP->entityId, &itemP->entityType, &itemP->attrName, &itemP->datasetId, &itemP->entityOp };
+  char*        p       = itemP->strings;
+
+  for (int i = 0; i < 5; i++)
+  {
+    if (sV[i] == NULL)
+      continue;
+
+    memcpy(p, sV[i], lenV[i]);
+    *dstV[i] = p;
+    p       += lenV[i];
+  }
+
+  return itemP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// enqueue - under the tenant's write lock: lock order is history order
+//
+static void enqueue(CorDbStore* storeP, CorDbHistItem* itemP)
+{
+  pthread_mutex_lock(&storeP->histQMutex);
+
+  if (storeP->histQTail != NULL)
+    storeP->histQTail->next = itemP;
+  else
+    __atomic_store_n(&storeP->histQHead, itemP, __ATOMIC_RELEASE);
+  storeP->histQTail = itemP;
+
+  pthread_mutex_unlock(&storeP->histQMutex);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryDrain - every queued item into the index and the history log, in order
+//
+// Under histMutex, which also guards the index: the list is taken whole, and a later drainer waits for
+// this one - so the items are applied in the order they were queued, whoever drains them.
+//
+void corDbHistoryDrain(CorDbStore* storeP)
+{
+  if ((storeP == NULL) || (storeP->historyP == NULL))
+    return;
+
+  pthread_mutex_lock(&storeP->histMutex);
+
+  pthread_mutex_lock(&storeP->histQMutex);
+  CorDbHistItem* itemP = storeP->histQHead;
+  __atomic_store_n(&storeP->histQHead, NULL, __ATOMIC_RELEASE);
+  storeP->histQTail = NULL;
+  pthread_mutex_unlock(&storeP->histQMutex);
+
+  CorDbHistItem* nextP;
+
+  for (; itemP != NULL; itemP = nextP)
+  {
+    nextP = itemP->next;
+
+    CorDbHistEntity* eP = corDbHistoryEntity(storeP->historyP, itemP->entityId, itemP->entityType, true);
+
+    if (eP == NULL)
+      COR_E("corDB: out of memory for the history of '%s'", itemP->entityId);
+    else if (itemP->isEvent)
+    {
+      corDbHistoryEntityEventApply(eP, itemP->entityOp, itemP->atNs);
+      corDbPersistHistAppend(storeP->persistP, itemP->body, itemP->bodyLen);
+    }
+    else
+    {
+      CorDbHistRecord rec;
+
+      memset(&rec, 0, sizeof(rec));
+      rec.body         = itemP->body;
+      rec.bodyLen      = itemP->bodyLen;
+      rec.attrName     = itemP->attrName;
+      rec.datasetId    = itemP->datasetId;
+      rec.observedAtNs = itemP->observedAtNs;
+      rec.createdAtNs  = itemP->createdAtNs;
+      rec.modifiedAtNs = itemP->modifiedAtNs;
+      rec.deletedAtNs  = itemP->deletedAtNs;
+
+      CorDbInstance* iP = corDbHistoryRecordAdd(storeP->historyP, eP, &rec);
+
+      if (iP == NULL)
+        COR_E("corDB: out of memory recording an instance of '%s' of '%s'", itemP->attrName, itemP->entityId);
+      else
+      {
+        corDbPersistHistAppend(storeP->persistP, iP->body, iP->bodyLen);
+        itemP->body = NULL;                            // the index's now
+      }
+    }
+
+    free(itemP->body);
+    free(itemP);
+  }
+
+  pthread_mutex_unlock(&storeP->histMutex);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// enqueueRecord / enqueueEvent - an encoded record or event, queued (its body handed over)
+//
+static void enqueueRecord(HistCtx* cP, CorDbHistRecord* recP)
+{
+  CorDbHistItem* itemP = itemNew(cP->id, cP->type, recP->attrName, recP->datasetId, NULL);
+
+  if (itemP == NULL)
+  {
+    COR_E("corDB: out of memory queueing history of '%s'", cP->id);
+    return;
+  }
+
+  itemP->body         = recP->body;
+  itemP->bodyLen      = recP->bodyLen;
+  itemP->observedAtNs = recP->observedAtNs;
+  itemP->createdAtNs  = recP->createdAtNs;
+  itemP->modifiedAtNs = recP->modifiedAtNs;
+  itemP->deletedAtNs  = recP->deletedAtNs;
+  recP->body          = NULL;
+
+  enqueue(cP->storeP, itemP);
+}
+
+static void enqueueEvent(CorDbStore* storeP, const char* id, const char* type, const char* entityOp, uint64_t atNs, char* body, int bodyLen)
+{
+  CorDbHistItem* itemP = itemNew(id, type, NULL, NULL, entityOp);
+
+  if (itemP == NULL)
+  {
+    COR_E("corDB: out of memory queueing history of '%s'", id);
+    free(body);
+    return;
+  }
+
+  itemP->isEvent = true;
+  itemP->body    = body;
+  itemP->bodyLen = bodyLen;
+  itemP->atNs    = atNs;
+
+  enqueue(storeP, itemP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// entityOf - the context of a write: its store, the entity's id and type
+//
+static HistCtx* entityOf(CorDbStore* storeP, HistCtx* cP, CorNode* entityP)
 {
   CorNode* idP = corTreeLookup(entityP, "id");
 
   if ((idP == NULL) || (idP->type != CorString))
     return NULL;
 
-  CorDbHistEntity* eP = corDbHistoryEntity(storeP->historyP, idP->value.s, typeOf(entityP), true);
+  cP->storeP = storeP;
+  cP->id     = idP->value.s;
+  cP->type   = typeOf(entityP);
 
-  if (eP == NULL)
-    COR_E("corDB: out of memory for the history of '%s'", idP->value.s);
-
-  return eP;
+  return cP;
 }
 
 
@@ -119,16 +334,18 @@ static CorDbHistEntity* entityOf(CorDbStore* storeP, CorNode* entityP)
 //
 // entityEvent - an entity-level record: the index and the history log
 //
-static void entityEvent(CorDbStore* storeP, CorDbHistEntity* eP, const char* entityOp, uint64_t atNs, CorAlloc* kaP)
+static void entityEvent(CorDbStore* storeP, HistCtx* eP, const char* entityOp, uint64_t atNs, CorAlloc* kaP)
 {
   CorBinBuffer body;
 
-  if (corDbHistoryEntityEvent(eP, entityOp, atNs, kaP, &body) == false)
+  if (corDbHistoryEntityEventEncode(eP->id, eP->type, entityOp, atNs, kaP, &body) == false)
+  {
     COR_E("corDB: out of memory recording '%s' %s", eP->id, entityOp);
-  else
-    corDbPersistHistAppend(storeP->persistP, body.buf, body.len);
+    free(body.buf);
+    return;
+  }
 
-  free(body.buf);
+  enqueueEvent(storeP, eP->id, eP->type, entityOp, atNs, body.buf, body.len);
 }
 
 
@@ -137,18 +354,20 @@ static void entityEvent(CorDbStore* storeP, CorDbHistEntity* eP, const char* ent
 //
 // instanceAppend - one instance: the index and the history log
 //
-static void instanceAppend(CorDbStore* storeP, CorDbHistEntity* eP, const char* attrName, const char* datasetId,
+static void instanceAppend(CorDbStore* storeP, HistCtx* eP, const char* attrName, const char* datasetId,
                            CorNode* instanceP, uint64_t deletedAtNs, CorAlloc* kaP)
 {
-  CorDbInstance* iP = corDbHistoryInstanceAdd(storeP->historyP, eP, attrName, datasetId, instanceP, deletedAtNs, kaP);
+  CorDbHistRecord rec;
 
-  if (iP == NULL)
+  (void) storeP;
+
+  if (corDbHistoryRecordEncode(eP->id, eP->type, attrName, datasetId, instanceP, deletedAtNs, kaP, &rec) == false)
   {
     COR_E("corDB: out of memory recording an instance of '%s' of '%s'", attrName, eP->id);
     return;
   }
 
-  corDbPersistHistAppend(storeP->persistP, iP->body, iP->bodyLen);
+  enqueueRecord(eP, &rec);
 }
 
 
@@ -197,7 +416,7 @@ static const char* datasetOf(CorNode* instanceP)
 //
 // allInstances - every instance of an Attribute (the store keys them by datasetId)
 //
-static void allInstances(CorDbStore* storeP, CorDbHistEntity* eP, CorNode* attrP, CorAlloc* kaP)
+static void allInstances(CorDbStore* storeP, HistCtx* eP, CorNode* attrP, CorAlloc* kaP)
 {
   for (CorNode* instP = attrP->value.head; instP != NULL; instP = instP->next)
   {
@@ -212,7 +431,7 @@ static void allInstances(CorDbStore* storeP, CorDbHistEntity* eP, CorNode* attrP
 //
 // removedInstances - a deletion for each instance of preP that postP lacks (postP NULL: all of them)
 //
-static void removedInstances(CorDbStore* storeP, CorDbHistEntity* eP, const char* attrName, CorNode* preP, CorNode* postP,
+static void removedInstances(CorDbStore* storeP, HistCtx* eP, const char* attrName, CorNode* preP, CorNode* postP,
                              uint64_t atNs, CorAlloc* kaP)
 {
   if ((preP == NULL) || (preP->type != CorObject))
@@ -349,17 +568,10 @@ void corDbHistoryPreFree(CorDbHistPre* preP)
 //
 // recordAppend - a prepared record: into the index, then its bytes to the history log
 //
-static void recordAppend(CorDbStore* storeP, CorDbHistEntity* eP, CorDbHistRecord* recP)
+static void recordAppend(CorDbStore* storeP, HistCtx* eP, CorDbHistRecord* recP)
 {
-  CorDbInstance* iP = corDbHistoryRecordAdd(storeP->historyP, eP, recP);
-
-  if (iP == NULL)
-  {
-    COR_E("corDB: out of memory recording an instance of '%s' of '%s'", recP->attrName, eP->id);
-    return;
-  }
-
-  corDbPersistHistAppend(storeP->persistP, iP->body, iP->bodyLen);
+  (void) storeP;
+  enqueueRecord(eP, recP);
 }
 
 
@@ -369,7 +581,7 @@ static void recordAppend(CorDbStore* storeP, CorDbHistEntity* eP, CorDbHistRecor
 // preparedEvent - the entity-level record a Pre carries: applied to the index, its bytes logged (encoded
 // under the lock when the Pre has none)
 //
-static void preparedEvent(CorDbStore* storeP, CorDbHistEntity* eP, CorDbHistPre* preP, CorAlloc* kaP)
+static void preparedEvent(CorDbStore* storeP, HistCtx* eP, CorDbHistPre* preP, CorAlloc* kaP)
 {
   if (preP->event.buf == NULL)
   {
@@ -377,8 +589,9 @@ static void preparedEvent(CorDbStore* storeP, CorDbHistEntity* eP, CorDbHistPre*
     return;
   }
 
-  corDbHistoryEntityEventApply(eP, preP->entityOp, preP->atNs);
-  corDbPersistHistAppend(storeP->persistP, preP->event.buf, preP->event.len);
+  enqueueEvent(storeP, eP->id, eP->type, preP->entityOp, preP->atNs, preP->event.buf, preP->event.len);
+  preP->event.buf = NULL;                            // the queue's now
+  preP->event.len = 0;
 }
 
 
@@ -404,13 +617,9 @@ void corDbHistoryDeletedPre(CorDbStore* storeP, CorDbHistDel* delP, const char* 
   if ((storeP == NULL) || (storeP->historyP == NULL) || (delP->event.buf == NULL))
     return;
 
-  CorDbHistEntity* eP = corDbHistoryEntity(storeP->historyP, entityId, NULL, true);
-
-  if (eP == NULL)
-    return;
-
-  corDbHistoryEntityEventApply(eP, "deleted", delP->atNs);
-  corDbPersistHistAppend(storeP->persistP, delP->event.buf, delP->event.len);
+  enqueueEvent(storeP, entityId, NULL, "deleted", delP->atNs, delP->event.buf, delP->event.len);
+  delP->event.buf = NULL;                            // the queue's now
+  delP->event.len = 0;
 }
 
 
@@ -424,7 +633,7 @@ void corDbHistoryCreatedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ent
   if ((storeP == NULL) || (storeP->historyP == NULL) || (entityP == NULL))
     return;
 
-  CorDbHistEntity* eP = entityOf(storeP, entityP);
+  HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, entityP);
 
   if (eP == NULL)
     return;
@@ -446,7 +655,7 @@ void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ne
   if ((storeP == NULL) || (storeP->historyP == NULL) || (newEntityP == NULL))
     return;
 
-  CorDbHistEntity* eP = entityOf(storeP, newEntityP);
+  HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, newEntityP);
 
   if (eP == NULL)
     return;
@@ -488,7 +697,7 @@ void corDbHistoryCreated(CorDbStore* storeP, CorNode* entityP, CorAlloc* kaP)
   if ((storeP == NULL) || (storeP->historyP == NULL) || (entityP == NULL))
     return;
 
-  CorDbHistEntity* eP = entityOf(storeP, entityP);
+  HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, entityP);
 
   if (eP == NULL)
     return;
@@ -513,7 +722,7 @@ void corDbHistoryReplaced(CorDbStore* storeP, CorNode* newEntityP, CorNode* oldE
   if ((storeP == NULL) || (storeP->historyP == NULL) || (newEntityP == NULL))
     return;
 
-  CorDbHistEntity* eP = entityOf(storeP, newEntityP);
+  HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, newEntityP);
 
   if (eP == NULL)
     return;
@@ -569,7 +778,7 @@ void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport*
   if ((storeP == NULL) || (storeP->historyP == NULL) || (liveEntityP == NULL) || (reportP == NULL) || (reportP->changes == NULL))
     return;
 
-  CorDbHistEntity* eP = entityOf(storeP, liveEntityP);
+  HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, liveEntityP);
 
   if (eP == NULL)
     return;
@@ -617,7 +826,7 @@ void corDbHistoryDeleted(CorDbStore* storeP, CorNode* goneEntityP, CorAlloc* kaP
   if ((storeP == NULL) || (storeP->historyP == NULL) || (goneEntityP == NULL))
     return;
 
-  CorDbHistEntity* eP = entityOf(storeP, goneEntityP);
+  HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, goneEntityP);
 
   if (eP != NULL)
     entityEvent(storeP, eP, "deleted", timeOf(NULL), kaP);

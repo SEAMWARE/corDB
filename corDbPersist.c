@@ -253,7 +253,8 @@ static void flushLocked(CorDbPersist* pP)
 
   CorBinBuffer out  = pP->buf;
   uint64_t     last = pP->seq;
-  CorBinBuffer hist = pP->histBuf;
+  CorBinBuffer hist     = pP->histBuf;
+  uint64_t     histLast = pP->histSeq;
 
   pP->buf          = pP->spare;
   pP->buf.len      = 0;
@@ -279,6 +280,9 @@ static void flushLocked(CorDbPersist* pP)
     if (pP->histSegBytes >= 1024ULL * 1024 * 1024)
       histSegmentNext(pP);
   }
+
+  if (ok)
+    __atomic_store_n(&pP->syncedHistSeq, histLast, __ATOMIC_RELEASE);
 
   hist.len      = 0;
   pP->histSpare = hist;
@@ -1278,7 +1282,8 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
   if (haveSnap)
     dropBefore(pP, snapN);
 
-  pP->syncedSeq = pP->seq;
+  pP->syncedSeq     = pP->seq;
+  pP->syncedHistSeq = pP->histSeq;
 
   clock_gettime(CLOCK_MONOTONIC, &t1);
   long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
@@ -1550,7 +1555,8 @@ typedef struct SyncWait
 {
   CorDbPersist*  pP;
   uint64_t       seq;
-} SyncWait;
+  uint64_t       histSeq;                              // the history appended by then: a write's history is drained after its lock,
+} SyncWait;                                            // maybe after the flush that synced its own record
 
 
 
@@ -1564,7 +1570,7 @@ static void syncWait(void* arg)
 
   pthread_mutex_lock(&flushMutex);
 
-  while ((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) < wP->seq) &&
+  while (((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) < wP->seq) || (__atomic_load_n(&wP->pP->syncedHistSeq, __ATOMIC_ACQUIRE) < wP->histSeq)) &&
          (__atomic_load_n(&wP->pP->failed, __ATOMIC_ACQUIRE) == false) &&
          (stopping == false))
   {
@@ -1588,12 +1594,16 @@ static void syncWait(void* arg)
 void corDbPersistSyncWait(void)
 {
   CorDbPersist* pP  = pendingP;
-  SyncWait      w   = { pP, pendingSeq };
+  SyncWait      w   = { pP, pendingSeq, 0 };
 
   pendingP = NULL;
 
   if ((pP == NULL) || (syncMode != SyncRequest))
     return;
+
+  pthread_mutex_lock(&pP->mutex);
+  w.histSeq = pP->histSeq;                             // drained before this (corDbStoreUnlock): it covers this write's history
+  pthread_mutex_unlock(&pP->mutex);
 
   CorRestState* savedP = corRestP;                     // corCoBlocking: the thread may be rebound meanwhile
 

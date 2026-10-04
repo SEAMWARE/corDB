@@ -29,7 +29,8 @@
 #include "troe/TroeDriver.h"                           // TroeDriver, TroeQueryFilter, TroeRangeInfo, TROE_*
 
 #include "corDB/corDbHistory.h"                        // CorDbHistory, corDbHistoryOn, corDbHistoryEntity, corDbHistoryInstanceDecode
-#include "corDB/corDbStore.h"                          // COR_DB_READ
+#include "corDB/corDbHistoryWrite.h"                   // corDbHistoryDrain
+#include "corDB/corDbStore.h"                          // corDbStoreOf
 
 
 
@@ -232,20 +233,30 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
 //
 static int corDbTroeRetrieve(Tenant* tenantP, const char* entityId, TroeQueryFilter* fP, CorNode** resultPP, TroeRangeInfo* rangeP)
 {
-  COR_DB_READ(tenantP);
+  CorDbStore* storeP = corDbStoreOf(tenantP);
 
   *resultPP = NULL;
 
-  if ((corDbLockedStore == NULL) || (corDbLockedStore->historyP == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL))
     return TROE_NOT_FOUND;
 
-  CorDbHistEntity* eP = corDbHistoryEntity(corDbLockedStore->historyP, entityId, NULL, false);
+  //
+  // The history index is the history mutex's, not the store lock's: what is queued applied first
+  //
+  corDbHistoryDrain(storeP);
+  pthread_mutex_lock(&storeP->histMutex);
 
-  if (eP == NULL)
-    return TROE_NOT_FOUND;
+  int              rc = TROE_NOT_FOUND;
+  CorDbHistEntity* eP = corDbHistoryEntity(storeP->historyP, entityId, NULL, false);
 
-  *resultPP = temporalEntity(eP, fP, rangeP, corRest.kallocP);
-  return TROE_OK;
+  if (eP != NULL)
+  {
+    *resultPP = temporalEntity(eP, fP, rangeP, corRest.kallocP);
+    rc        = TROE_OK;
+  }
+
+  pthread_mutex_unlock(&storeP->histMutex);
+  return rc;
 }
 
 

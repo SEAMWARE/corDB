@@ -69,6 +69,7 @@ typedef struct CorDbPersist
   CorBinBuffer          histBuf;
   CorBinBuffer          histSpare;
   uint64_t              histSeq;
+  uint64_t              syncedHistSeq;                 // the last history record on the disk (atomic)
   int                   histFd;                        // -1: no history
   unsigned int          histSegment;
   unsigned long long    histSegBytes;

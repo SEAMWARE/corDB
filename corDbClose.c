@@ -17,6 +17,7 @@
 #include "db/Tenant.h"                                   // tenant0, tenantList
 #include "corDB/corDbGeoMatch.h"          // corDbGeoClose
 #include "corDB/corDbHistory.h"                  // corDbHistoryFree
+#include "corDB/corDbHistoryWrite.h"             // corDbHistoryDrain
 #include "corDB/corDbPersist.h"                  // corDbPersistClose
 #include "corDB/corDbStore.h"        // CorDbStore
 #include "corDB/corDbClose.h"             // Own interface
@@ -65,8 +66,13 @@ static void corDbFreeTenantStore(Tenant* tenantP)
 void corDbClose(void)
 {
   //
-  // The logs first - written, synced, closed - while every store still exists (§ 5a)
+  // What history is still queued, applied - then the logs, written, synced, closed - while every store
+  // still exists (§ 5a)
   //
+  corDbHistoryDrain((CorDbStore*) tenant0.pluginData);
+  for (Tenant* tP = tenantList; tP != NULL; tP = tP->next)
+    corDbHistoryDrain((CorDbStore*) tP->pluginData);
+
   corDbPersistClose();
 
   corDbFreeTenantStore(&tenant0);
