@@ -19,6 +19,8 @@
 #include "corTree/corTreeBuilder.h"                    // corTreeObject, corTreeString, corTreeInteger, corTreeChildAdd
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
+#include "corAlloc/corAlloc.h"                        // corAlloc
+#include "corNgsild/LdVocab.h"                        // LD_VOCAB_SCOPE
 #include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
 #include "corNgsild/ldInstanceWritten.h"               // ldInstanceWritten
 #include "corNgsild/ldTermId.h"                        // ldTermId
@@ -403,6 +405,89 @@ static CorNode* tombstone(CorNode* deletedInstanceP, uint64_t atNs, CorAlloc* ka
 
 // -----------------------------------------------------------------------------
 //
+// scopeInstance - the Scope as its temporal evolution records it: a Property (§ 5.3.2.5) - in current
+// state it is a plain member, a string or an array, no instance. Its value member a shallow copy of
+// the Scope's node: only read, by the encoder, before the write lock is released.
+//
+static CorNode* scopeInstance(CorNode* scopeP, uint64_t atNs, bool created, CorAlloc* kaP)
+{
+  CorNode* iP = corTreeObject(kaP, NULL);
+  CorNode* vP = (CorNode*) corAlloc(kaP, sizeof(CorNode));
+
+  if ((iP == NULL) || (vP == NULL))
+    return NULL;
+
+  *vP      = *scopeP;
+  vP->name = (char*) "value";
+  vP->next = NULL;
+
+  corTreeChildAdd(iP, corTreeString(kaP, "type", "Property"));
+  corTreeChildAdd(iP, vP);
+  if (created)
+    corTreeChildAdd(iP, corTreeInteger(kaP, "createdAt", (long long) atNs));
+  corTreeChildAdd(iP, corTreeInteger(kaP, "modifiedAt", (long long) atNs));
+
+  return iP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// scopeEqual - the same Scope: the same string, or arrays of the same strings in the same order
+//
+static bool scopeEqual(CorNode* aP, CorNode* bP)
+{
+  if (aP->type != bP->type)
+    return false;
+
+  if (aP->type == CorString)
+    return strcmp(aP->value.s, bP->value.s) == 0;
+
+  if (aP->type != CorArray)
+    return false;
+
+  CorNode* xP = aP->value.head;
+  CorNode* yP = bP->value.head;
+
+  for (; (xP != NULL) && (yP != NULL); xP = xP->next, yP = yP->next)
+  {
+    if ((xP->type != CorString) || (yP->type != CorString) || (strcmp(xP->value.s, yP->value.s) != 0))
+      return false;
+  }
+
+  return (xP == NULL) && (yP == NULL);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// scopeRecord - the Scope's history for a write that took it from oldP to newP (either NULL: absent)
+//
+static void scopeRecord(CorDbStore* storeP, HistCtx* eP, CorNode* oldP, CorNode* newP, uint64_t atNs, CorAlloc* kaP)
+{
+  if ((newP != NULL) && ((oldP == NULL) || (scopeEqual(oldP, newP) == false)))
+  {
+    CorNode* iP = scopeInstance(newP, atNs, (oldP == NULL), kaP);
+
+    if (iP != NULL)
+      instanceAppend(storeP, eP, LD_VOCAB_SCOPE, NULL, iP, 0, kaP);
+  }
+  else if ((newP == NULL) && (oldP != NULL))
+  {
+    CorNode* iP = scopeInstance(oldP, atNs, false, kaP);
+    CorNode* tP = (iP != NULL) ? tombstone(iP, atNs, kaP) : NULL;
+
+    if (tP != NULL)
+      instanceAppend(storeP, eP, LD_VOCAB_SCOPE, NULL, tP, atNs, kaP);
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // datasetOf - an instance's datasetId as the store keys it (the member name), NULL for the default
 //
 static const char* datasetOf(CorNode* instanceP)
@@ -702,6 +787,8 @@ void corDbHistoryCreatedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ent
 
   for (int i = 0; i < preP->recs; i++)
     recordAppend(storeP, eP, &preP->recV[i]);
+
+  scopeRecord(storeP, eP, NULL, corTreeLookup(entityP, LD_VOCAB_SCOPE), preP->atNs, kaP);
 }
 
 
@@ -765,6 +852,8 @@ void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ne
     }
   }
 
+  scopeRecord(storeP, eP, (oldEntityP != NULL) ? corTreeLookup(oldEntityP, LD_VOCAB_SCOPE) : NULL, corTreeLookup(newEntityP, LD_VOCAB_SCOPE), atNs, kaP);
+
   if (oldEntityP == NULL)
     return;
 
@@ -800,6 +889,8 @@ void corDbHistoryCreated(CorDbStore* storeP, CorNode* entityP, CorAlloc* kaP)
     if (isAttribute(attrP))
       allInstances(storeP, eP, attrP, kaP);
   }
+
+  scopeRecord(storeP, eP, NULL, corTreeLookup(entityP, LD_VOCAB_SCOPE), timeOf(entityP), kaP);
 }
 
 
@@ -848,6 +939,8 @@ void corDbHistoryReplaced(CorDbStore* storeP, CorNode* newEntityP, CorNode* oldE
     }
   }
 
+  scopeRecord(storeP, eP, (oldEntityP != NULL) ? corTreeLookup(oldEntityP, LD_VOCAB_SCOPE) : NULL, corTreeLookup(newEntityP, LD_VOCAB_SCOPE), atNs, kaP);
+
   if (oldEntityP == NULL)
     return;
 
@@ -884,6 +977,20 @@ void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport*
       continue;
 
     const char* attrName = attrNameP->value.s;
+
+    if (strcmp(attrName, LD_VOCAB_SCOPE) == 0)       // a Scope's change: its new value, or its tombstone
+    {
+      //
+      // The report says the Scope changed, not what it was: a stand-in for the old one - never equal to
+      // the new one, and all a tombstone needs is that there was one
+      //
+      CorNode* newScopeP = corTreeLookup(liveEntityP, LD_VOCAB_SCOPE);
+      CorNode* wasP      = corTreeString(kaP, NULL, "");
+
+      scopeRecord(storeP, eP, wasP, newScopeP, atNs, kaP);
+      continue;
+    }
+
     CorNode*    preP     = corTreeLookup(changeP, "preValue");
     CorNode*    postP    = corTreeLookup(liveEntityP, attrName);
 
