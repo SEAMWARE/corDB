@@ -14,9 +14,12 @@
 //
 #include <stdbool.h>                                   // bool
 #include <stdint.h>                                    // uint64_t
+#include <regex.h>                                     // regcomp, regexec, regfree
 #include <stdlib.h>                                    // qsort
 #include <string.h>                                    // strcmp
 
+#include "corLog/corLog.h"                            // COR_E
+#include "corArgs/corArgs.h"                          // CorArg, CORARGS_END
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
 #include "corBase/corTimeIso.h"                        // corTimeIso
 #include "corTree/CorNode.h"                           // CorNode
@@ -38,9 +41,18 @@
 
 // -----------------------------------------------------------------------------
 //
-// INSTANCE_CAP - the per-attribute page when neither firstN nor lastN is given (timescale's too)
+// corDbTroeInstanceCap - the per-attribute page when neither firstN nor lastN is given: --troeInstanceCap,
+// the option and the default timescale's (§ 6.4.7.3)
 //
-enum { INSTANCE_CAP = 100 };
+static int corDbTroeInstanceCap = 1000000;
+
+#define _vp (void*)
+static CorArg corDbTroeArgV[] =
+{
+  { "--troeInstanceCap", "-troeCap", CorArgInt, _vp &corDbTroeInstanceCap, CorArgOpt, _vp 1000000, _vp 1, _vp 1000000, "Default per-attribute temporal page limit when ?firstN/?lastN absent (§ 6.4.7.3)" },
+  CORARGS_END
+};
+#undef _vp
 
 
 
@@ -349,7 +361,7 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
   int  lastN    = (fP != NULL) ? fP->lastN   : 0;
   int  firstN   = (fP != NULL) ? fP->firstN  : 0;
   int  offsetN  = (fP != NULL) ? fP->offsetN : 0;
-  int  cap      = ((fP != NULL) && (fP->instanceCap > 0)) ? fP->instanceCap : INSTANCE_CAP;
+  int  cap      = ((fP != NULL) && (fP->instanceCap > 0)) ? fP->instanceCap : corDbTroeInstanceCap;
   int  page     = (lastN > 0) ? lastN : ((firstN > 0) ? firstN : cap);
   bool backward = (lastN > 0);
   Axis axis     = axisOf(fP);
@@ -518,6 +530,184 @@ static int corDbTroeRetrieve(Tenant* tenantP, const char* entityId, TroeQueryFil
 
 // -----------------------------------------------------------------------------
 //
+// hasInstanceInWindow - does the entity have an instance the filters let through (attrs, datasetId,
+// timeproperty, timerel): an entity with none is not in a query's answer, as in timescale's
+//
+static bool hasInstanceInWindow(CorDbHistEntity* eP, TroeQueryFilter* fP)
+{
+  Axis   axis = axisOf(fP);
+  Window window;
+
+  windowOf(fP, &window);
+
+  for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = aP->next)
+  {
+    if (attrWanted(fP, aP->name) == false)
+      continue;
+
+    for (int i = 0; i < aP->instances; i++)
+    {
+      CorDbInstance* iP = &aP->instanceV[i];
+
+      if (datasetWanted(fP, iP->datasetId) && onAxis(iP, axis) && inWindow(&window, axisNs(iP, axis)))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// entitySelected - id (one of ?id), type (one of ?type, expanded), ?idPattern
+//
+static bool entitySelected(CorDbHistEntity* eP, TroeQueryFilter* fP, regex_t* patternP)
+{
+  if ((fP->idV != NULL) && (fP->idV[0] != NULL))
+  {
+    bool found = false;
+
+    for (char** idP = fP->idV; (*idP != NULL) && (found == false); idP++)
+      found = (strcmp(*idP, eP->id) == 0);
+
+    if (found == false)
+      return false;
+  }
+
+  if ((fP->typeV != NULL) && (fP->typeV[0] != NULL))
+  {
+    bool found = false;
+
+    for (char** tP = fP->typeV; (*tP != NULL) && (found == false); tP++)
+      found = (eP->type != NULL) && (strcmp(*tP, eP->type) == 0);
+
+    if (found == false)
+      return false;
+  }
+
+  if ((patternP != NULL) && (regexec(patternP, eP->id, 0, NULL, 0) != 0))
+    return false;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// idCompare - entities by id: the query's order, as timescale's
+//
+static int idCompare(const void* a, const void* b)
+{
+  return strcmp((*(CorDbHistEntity* const*) a)->id, (*(CorDbHistEntity* const*) b)->id);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// hasAttributes - does a temporal entity carry any attribute (not only id, type and timestamps)
+//
+static bool hasAttributes(CorNode* entityP)
+{
+  for (CorNode* nP = entityP->value.head; nP != NULL; nP = nP->next)
+  {
+    if (nP->type == CorArray)
+      return true;
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbTroeQuery - GET /temporal/entities, POST /temporal/entityOperations/query
+//
+// q and geoQ come in phase 3 of corDB's history: until then a query with either is refused (500,
+// logged) rather than answered as if it had none.
+//
+static int corDbTroeQuery(Tenant* tenantP, TroeQueryFilter* fP, CorNode** resultPP, TroeRangeInfo* rangeP)
+{
+  CorDbStore* storeP = corDbStoreOf(tenantP);
+  CorAlloc*   kaP    = corRest.kallocP;
+
+  *resultPP           = corTreeArray(kaP, NULL);
+  rangeP->entityCount = -1;
+
+  if ((fP->qSqlPredicate != NULL) || (fP->geoRelType != 0))
+  {
+    COR_E("corDB: a temporal query with %s is not supported yet", (fP->qSqlPredicate != NULL) ? "q" : "geoQ");
+    return TROE_ERR;
+  }
+
+  if ((storeP == NULL) || (storeP->historyP == NULL))
+  {
+    if (fP->count)
+      rangeP->entityCount = 0;
+    return TROE_OK;
+  }
+
+  regex_t  pattern;
+  regex_t* patternP = NULL;
+
+  if (fP->idPattern != NULL)
+  {
+    if (regcomp(&pattern, fP->idPattern, REG_EXTENDED | REG_NOSUB) != 0)
+    {
+      COR_E("corDB: idPattern '%s' does not compile", fP->idPattern);
+      return TROE_ERR;
+    }
+    patternP = &pattern;
+  }
+
+  corDbHistoryDrain(storeP);
+  pthread_mutex_lock(&storeP->histMutex);
+
+  CorDbHistory*     hP   = storeP->historyP;
+  CorDbHistEntity** selV = (hP->count > 0) ? (CorDbHistEntity**) corAlloc(kaP, hP->count * sizeof(CorDbHistEntity*)) : NULL;
+  int               sels = 0;
+
+  for (CorDbHistEntity* eP = hP->first; (eP != NULL) && (selV != NULL); eP = eP->next)
+  {
+    if (entitySelected(eP, fP, patternP) && hasInstanceInWindow(eP, fP))
+      selV[sels++] = eP;
+  }
+
+  if (sels > 1)
+    qsort(selV, sels, sizeof(CorDbHistEntity*), idCompare);
+
+  int limit  = fP->limitGiven ? fP->limit : 1000;
+  int offset = (fP->offset > 0) ? fP->offset : 0;
+
+  if (fP->count)
+    rangeP->entityCount = sels;
+
+  rangeP->moreEntities = (sels > offset + limit);
+
+  for (int i = offset; (i < sels) && (i < offset + limit); i++)
+  {
+    CorNode* entityP = temporalEntity(selV[i], fP, rangeP, kaP);
+
+    if (hasAttributes(entityP))
+      corTreeChildAdd(*resultPP, entityP);
+  }
+
+  pthread_mutex_unlock(&storeP->histMutex);
+
+  if (patternP != NULL)
+    regfree(patternP);
+
+  return TROE_OK;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbTroeInit / corDbTroeClose - the history lives and dies with the store (corDbInit, corDbClose)
 //
 static int  corDbTroeInit(void)  { return TROE_OK; }
@@ -540,4 +730,6 @@ void troeRegister(TroeDriver* driverP)
   driverP->init                   = corDbTroeInit;
   driverP->close                  = corDbTroeClose;
   driverP->entityTemporalRetrieve = corDbTroeRetrieve;
+  driverP->entityTemporalQuery    = corDbTroeQuery;
+  driverP->args                  = corDbTroeArgV;
 }
