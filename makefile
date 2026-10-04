@@ -91,7 +91,7 @@ TROE_OBJECTS  = $(OBJDIR)/troe/ramDbRegister.o
 # deployment that wants the fastest pub/sub and accepts that a restart starts empty.
 #
 RAM_OBJDIR    = $(OBJDIR)/ram
-RAM_SOURCES   = $(filter-out corDbTroe.c,$(SOURCES))
+RAM_SOURCES   = $(filter-out corDbTroe.c corDbTroeWrite.c,$(SOURCES))
 RAM_OBJECTS   = $(RAM_SOURCES:%.c=$(RAM_OBJDIR)/%.o) $(OBJDIR)/geoMatch.o
 
 DEPS          = $(OBJECTS:.o=.d) $(TROE_OBJECTS:.o=.d) $(RAM_SOURCES:%.c=$(RAM_OBJDIR)/%.d)
