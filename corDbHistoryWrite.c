@@ -456,6 +456,19 @@ static void removedInstances(CorDbStore* storeP, HistCtx* eP, const char* attrNa
 
 // -----------------------------------------------------------------------------
 //
+// modifiedAtOf - an instance's modifiedAt (0: none)
+//
+static uint64_t modifiedAtOf(CorNode* instanceP)
+{
+  CorNode* tP = corTreeLookup(instanceP, "modifiedAt");
+
+  return ((tP != NULL) && (tP->type == CorInt) && (tP->value.i > 0)) ? (uint64_t) tP->value.i : 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // sameModifiedAt - do two instances carry the same modifiedAt
 //
 static bool sameModifiedAt(CorNode* aP, CorNode* bP)
@@ -481,6 +494,14 @@ void corDbHistoryPrepare(CorDbHistPre* preP, CorNode* entityP, const char* entit
 
   const char* type = typeOf(entityP);
 
+  //
+  // A replace stores the whole entity, but the instances it did not write are carried over with their
+  // modifiedAt and recorded by nobody: encoding them here was 4/5 of a batch update's history cost.
+  // Only the instances stamped with the write's own time are prepared; corDbHistoryReplacedPre encodes
+  // any other instance that differs from the stored one under the lock.
+  //
+  bool onlyWritten = (strcmp(entityOp, "replaced") == 0);
+
   preP->entityOp = entityOp;
   preP->atNs     = timeOf(entityP);
   if (corDbHistoryEntityEventEncode(idP->value.s, type, entityOp, preP->atNs, kaP, &preP->event) == false)
@@ -498,6 +519,9 @@ void corDbHistoryPrepare(CorDbHistPre* preP, CorNode* entityP, const char* entit
     for (CorNode* instP = attrP->value.head; instP != NULL; instP = instP->next)
     {
       if (instP->type != CorObject)
+        continue;
+
+      if ((onlyWritten == true) && (modifiedAtOf(instP) != preP->atNs))
         continue;
 
       if (preP->recs == preP->size)
@@ -664,16 +688,36 @@ void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ne
 
   preparedEvent(storeP, eP, preP, kaP);
 
-  for (int i = 0; i < preP->recs; i++)
+  //
+  // The entity walked in the order corDbHistoryPrepare walked it: an instance it prepared is the next
+  // record; one it did not (not stamped with the write's time, or out of memory) is encoded here if it
+  // differs from the stored one
+  //
+  int k = 0;
+
+  for (CorNode* attrP = newEntityP->value.head; attrP != NULL; attrP = attrP->next)
   {
-    CorDbHistRecord* recP     = &preP->recV[i];
-    CorNode*         oldAttrP = (oldEntityP != NULL) ? corTreeLookup(oldEntityP, recP->attrName) : NULL;
-    CorNode*         oldInstP = ((oldAttrP != NULL) && (recP->instanceP->name != NULL)) ? corTreeLookup(oldAttrP, recP->instanceP->name) : NULL;
+    if (isAttribute(attrP) == false)
+      continue;
 
-    if ((oldInstP != NULL) && (sameModifiedAt(recP->instanceP, oldInstP) == true))
-      continue;                                      // carried over, not written - its body freed with the rest
+    CorNode* oldAttrP = (oldEntityP != NULL) ? corTreeLookup(oldEntityP, attrP->name) : NULL;
 
-    recordAppend(storeP, eP, recP);
+    for (CorNode* instP = attrP->value.head; instP != NULL; instP = instP->next)
+    {
+      if (instP->type != CorObject)
+        continue;
+
+      CorDbHistRecord* recP     = ((k < preP->recs) && (preP->recV[k].instanceP == instP)) ? &preP->recV[k++] : NULL;
+      CorNode*         oldInstP = ((oldAttrP != NULL) && (instP->name != NULL)) ? corTreeLookup(oldAttrP, instP->name) : NULL;
+
+      if ((oldInstP != NULL) && (sameModifiedAt(instP, oldInstP) == true))
+        continue;                                    // carried over, not written - a prepared body is freed with the rest
+
+      if (recP != NULL)
+        recordAppend(storeP, eP, recP);
+      else
+        instanceAppend(storeP, eP, attrP->name, datasetOf(instP), instP, 0, kaP);
+    }
   }
 
   if (oldEntityP == NULL)
