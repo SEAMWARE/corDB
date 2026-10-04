@@ -3,6 +3,52 @@
 How the persistence of [the design](../persistence.md) got to what it is: what measuring found, and
 what changed because of it. Newest first.
 
+## 2026-10-05 - the log segments memory-mapped: a dead broker loses nothing
+
+A write appended its record to a buffer of the process; the flusher `write()`s and `fdatasync`s it
+every 100 ms. A broker that died between two flushes - `kill -9`, a crash, an OOM kill - lost what the
+buffer held: up to 100 ms of writes it had acknowledged. `cordb_persist_kill_default_sync` (coraine)
+shows it: three writes and their history, then `kill -9` with `--dbSyncInterval 60000` - the store came
+back empty. MongoDB's default loses nothing on a process death, only on a machine death.
+
+Now the open segment is mapped and a write copies its record into the page cache under the lock: the
+same test finds all of it. What it costs - perfRun, corDB on disk with `--troe corDB`,
+8 cores, PGO, one run each, the buffered log (2026-10-04 22:57) against the mapped one (23:35):
+
+| | buffered | mapped | |
+|---|---:|---:|---:|
+| create | 86 027 | 81 754 | −5.0 % |
+| create, 1 connection | 23 004 | 22 418 | −2.5 % |
+| `PATCH` | 106 000 | 103 004 | −2.8 % |
+| `PATCH`, 1 connection | 35 110 | 35 271 | +0.5 % |
+| merge | 78 048 | 75 357 | −3.4 % |
+| batch update (20) | 19 931 | 18 237 | −8.5 % |
+| batch create (20) | 7 413 | 7 051 | −4.9 % |
+| `DELETE` | 180 645 | 179 772 | −0.5 % |
+| batch delete (20) | 45 250 | 47 745 | +5.5 % |
+| *reads, which do not touch the log* | | | −0.4 % to +3.0 % |
+
+The reads say what one run's noise is: ±3 %. The writes that append the most per request lose 5-8 %.
+
+**Tried and dropped: faulting the next pages in ahead of the writers.** The flusher, after its sync,
+`madvise`d the 16 MiB past the records (`MADV_POPULATE_READ` or `_WRITE`, Linux 5.14), so a write
+would copy into a page already mapped. `wrk`, 8 cores, plain `-O2`, two runs each, requests/s:
+
+| | none | `POPULATE_READ` | `POPULATE_WRITE` |
+|---|---:|---:|---:|
+| `PATCH` | 135 741 / 133 758 | 123 500 / 124 182 | 130 441 / 129 319 |
+| batch update (20) | 27 258 / 27 671 | 18 556 / 26 585 | 27 796 / 27 008 |
+| create | 152 597 / 153 960 | 116 651 / 130 233 | 161 272 / 155 395 |
+| batch create (20) | 21 461 / 22 745 | 20 043 / 22 723 | 20 728 / 17 815 |
+| bytes to the disk, `PATCH` run | 487 / 481 MB | 444 / 446 MB | 765 / 762 MB |
+
+`READ` slower everywhere; `WRITE` within the noise, and 58 % more to the disk - the zero pages made
+dirty ahead are synced, then written again with the records. So it is not the first touch of a page
+that the mapping costs; the likelier cost is the sync itself, which write-protects the pages it writes
+out - the next copy into a page the records only half filled faults again, and the protection change
+reaches every core the broker runs on. Not tried yet: one `write()` per record instead of the mapping
+(in the kernel before the response as well, without those faults, at a system call per write).
+
 ## 2026-10-04 - the id table grows in steps
 
 The entity-id table grew by rebuilding it, eight times larger, from the whole store, under the
