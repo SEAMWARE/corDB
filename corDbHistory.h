@@ -64,7 +64,10 @@ typedef struct CorDbHistAttr
 typedef struct CorDbHistEntity
 {
   char*                    id;
-  const char*              type;                       // expanded, interned; the newest type the entity was written with
+  const char*              type;                       // expanded, interned; the first of its types (typeV[0])
+  const char**             typeV;                      // its type names, interned, in the order given (§ 5.2.6.4.2)
+  int                      typeN;
+  int                      typeSize;
   uint64_t                 createdAtNs;
   uint64_t                 deletedAtNs;                // != 0: deleted from current state (its history stays)
   CorDbHistAttr*           attrs;
@@ -134,6 +137,15 @@ extern bool corDbHistoryOn;
 // corDbHistoryEntity - the entity's history, created when 'create' and it has none; NULL otherwise
 //
 extern CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityId, const char* entityType, bool create);
+
+//
+// An entity's types travel as ONE string - the names joined by '\n' when there are several - in the
+// write queue, the history records and their log. corDbHistoryEntity adds the names an entity does
+// not have yet (§ 11.2.3.4); corDbHistoryEntityTypes sets them exactly (a 'created' or 'replaced'
+// event: a replace may change them) or adds them (replace false).
+//
+extern void corDbHistoryEntityTypes(CorDbHistory* hP, CorDbHistEntity* eP, const char* types, bool replace);
+extern const char* corDbHistoryEntityTypesJoined(CorDbHistEntity* eP, CorAlloc* kaP);
 
 
 
@@ -222,8 +234,44 @@ extern CorNode* corDbHistoryInstanceDecode(CorDbInstance* iP, CorAlloc* kaP);
 
 // -----------------------------------------------------------------------------
 //
+// The temporal API's own writes (§ 5.6.12-16), on the index (corDbTroeWrite.c logs them):
+//
+//   corDbHistoryAttrLookup         the entity's history of one attribute, NULL: none
+//   corDbHistoryEntityRemove       an entity's whole history
+//   corDbHistoryAttrRemove         an attribute's instances: all, or one datasetId's (NULL: default) - how many went
+//   corDbHistoryInstanceIndex      the instance with this instanceId, -1: none
+//   corDbHistoryInstanceRemoveAt   one instance
+//   corDbHistoryInstanceReplaceAt  one instance's record replaced (a modification)
+//
+// An attribute left with no instance goes too.
+//
+extern CorDbHistAttr* corDbHistoryAttrLookup(CorDbHistEntity* eP, const char* attrName);
+extern void           corDbHistoryEntityRemove(CorDbHistory* hP, CorDbHistEntity* eP);
+extern int            corDbHistoryAttrRemove(CorDbHistEntity* eP, CorDbHistAttr* aP, const char* datasetId, bool deleteAll);
+extern int            corDbHistoryInstanceIndex(CorDbHistAttr* aP, const char* instanceId, CorAlloc* kaP);
+extern void           corDbHistoryInstanceRemoveAt(CorDbHistEntity* eP, CorDbHistAttr* aP, int ix);
+extern bool           corDbHistoryInstanceReplaceAt(CorDbHistory* hP, CorDbHistAttr* aP, int ix, CorDbHistRecord* recP);
+
+//
+// corDbHistoryOpApply - a temporal-API write's record { id, histOp, ... } applied: live after logging
+// it, and at recovery. 0 done, -2 no such entity / attribute / instance, -1 malformed.
+//
+extern int            corDbHistoryOpApply(CorDbHistory* hP, CorNode* opP, CorAlloc* kaP);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbHistoryFree - every entity, attribute and instance of a tenant's history
 //
 extern void corDbHistoryFree(CorDbHistory* hP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryScratchClose - the encode buffers' thread key, deleted (corDbClose)
+//
+extern void corDbHistoryScratchClose(void);
 
 #endif  // CORDB_CORDBHISTORY_H_

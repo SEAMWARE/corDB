@@ -84,9 +84,29 @@ answer is the one the timescale plugin gives - the same functional tests check b
   instance without it last; equal times in the order they were written.
 - **The entity** carries `createdAt` and `modifiedAt` (sysAttrs - the broker strips them unless asked)
   and `deletedAt` when it was deleted: its history stays.
-- **Not yet**: the temporal write endpoints (phase 5).
+## 6. Writing it - the temporal API's own writes
 
-## 6. What it costs
+The correction path: history otherwise comes in from current state (§ 1).
+
+| request | |
+|---|---|
+| `POST /temporal/entities` | create - or, the entity there already, append (§ 5.6.11.4: 204); its types the list given |
+| `POST /temporal/entities/{id}/attrs` | append; new type names added to the entity's (§ 11.2.3.4) |
+| `DELETE /temporal/entities/{id}` | the entity's whole history |
+| `DELETE /temporal/entities/{id}/attrs/{attr}` | the default instances, one `datasetId`'s, or all (`deleteAll`) |
+| `PATCH /temporal/entities/{id}/attrs/{attr}/{instanceId}` | the value replaced, `observedAt` if given, `modifiedAt` now; type, createdAt, instanceId kept |
+| `DELETE /temporal/entities/{id}/attrs/{attr}/{instanceId}` | one instance |
+
+- Appended instances are a millisecond apart (`createdAt` = `modifiedAt` = the request's time + n ms),
+  so the order given is the order written - as timescale does. A supplied instanceId is ignored: it is
+  the system's to give.
+- Every write is a record of the history log: an added instance like any other, a removal or a
+  modification `{ id, histOp, ... }` - applied by one function, live after logging it and at recovery.
+- A removed instance's record stays in the arena, unreferenced, until retention exists to reclaim it.
+- An entity's types: a list, in the order given; one renders as a string, several as an array
+  (§ 5.2.6.4.2); the query's `type` matches any of them.
+
+## 7. What it costs
 
 Broker CPU per history instance, `--troe corDB` against `--troe none` on the same workload (PGO
 release, broker pinned to 2 cores, AMD Ryzen 9 8940HX, 2026-10-04):

@@ -40,6 +40,7 @@
 
 #include "corDB/corDbHistory.h"                        // CorDbHistory, corDbHistoryOn, corDbHistoryEntity, corDbHistoryInstanceDecode
 #include "corDB/corDbHistoryWrite.h"                   // corDbHistoryDrain
+#include "corDB/corDbTroeWrite.h"                      // corDbTroeCreate, ...
 #include "corDB/corDbStore.h"                          // corDbStoreOf
 
 
@@ -360,8 +361,16 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
   CorNode* entityP = corTreeObject(kaP, NULL);
 
   corTreeChildAdd(entityP, corTreeString(kaP, "id", eP->id));
-  if (eP->type != NULL)
-    corTreeChildAdd(entityP, corTreeString(kaP, "type", eP->type));
+  if (eP->typeN == 1)
+    corTreeChildAdd(entityP, corTreeString(kaP, "type", eP->typeV[0]));
+  else if (eP->typeN > 1)                            // several: an array, in the order given (§ 5.2.6.4.2)
+  {
+    CorNode* typeP = corTreeArray(kaP, "type");
+
+    for (int i = 0; i < eP->typeN; i++)
+      corTreeChildAdd(typeP, corTreeString(kaP, NULL, eP->typeV[i]));
+    corTreeChildAdd(entityP, typeP);
+  }
 
   int  lastN    = (fP != NULL) ? fP->lastN   : 0;
   int  firstN   = (fP != NULL) ? fP->firstN  : 0;
@@ -743,8 +752,11 @@ static bool entitySelected(CorDbHistEntity* eP, TroeQueryFilter* fP, regex_t* pa
   {
     bool found = false;
 
-    for (char** tP = fP->typeV; (*tP != NULL) && (found == false); tP++)
-      found = (eP->type != NULL) && (strcmp(*tP, eP->type) == 0);
+    for (char** tP = fP->typeV; (*tP != NULL) && (found == false); tP++)       // any of the entity's types
+    {
+      for (int i = 0; (i < eP->typeN) && (found == false); i++)
+        found = (strcmp(*tP, eP->typeV[i]) == 0);
+    }
 
     if (found == false)
       return false;
@@ -897,4 +909,10 @@ void troeRegister(TroeDriver* driverP)
   driverP->entityTemporalRetrieve = corDbTroeRetrieve;
   driverP->entityTemporalQuery    = corDbTroeQuery;
   driverP->args                  = corDbTroeArgV;
+  driverP->entityTemporalCreate         = corDbTroeCreate;
+  driverP->entityTemporalAttrsAdd       = corDbTroeAttrsAdd;
+  driverP->entityTemporalDelete         = corDbTroeDelete;
+  driverP->entityTemporalAttrDelete     = corDbTroeAttrDelete;
+  driverP->entityTemporalInstanceModify = corDbTroeInstanceModify;
+  driverP->entityTemporalInstanceDelete = corDbTroeInstanceDelete;
 }

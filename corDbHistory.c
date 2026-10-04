@@ -6,6 +6,7 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
+#include <pthread.h>                                   // pthread_key_create, pthread_getspecific, pthread_once
 #include <stdbool.h>                                   // bool
 #include <stdint.h>                                    // uint64_t
 #include <stdlib.h>                                    // malloc, realloc, free
@@ -14,7 +15,7 @@
 #include "corLog/corLog.h"                             // COR_E
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
 #include "corAlloc/corAlloc.h"                         // corAlloc
-#include "corHash/corHash.h"                           // corHashTableCreate, corHashItemAdd, corHashItemLookup
+#include "corHash/corHash.h"                           // corHashTableCreate, corHashItemAdd, corHashItemLookup, corHashItemRemove
 #include "corTree/CorNode.h"                           // CorNode
 #include "corTree/corTreeBin.h"                        // corTreeBinEncode, corTreeBinDecode, CorBinBuffer
 #include "corTree/corTreeBuilder.h"                    // corTreeObject, corTreeString, corTreeInteger, corTreeChildAdd
@@ -144,8 +145,8 @@ CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityId, cons
 
   if (eP != NULL)
   {
-    if ((entityType != NULL) && ((eP->type == NULL) || (strcmp(eP->type, entityType) != 0)))
-      eP->type = intern(hP, entityType);               // the newest type the entity was written with
+    if (entityType != NULL)
+      corDbHistoryEntityTypes(hP, eP, entityType, false);
 
     return eP;
   }
@@ -160,15 +161,15 @@ CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityId, cons
   if (eP == NULL)
     return NULL;
 
-  eP->id   = strdup(entityId);
-  eP->type = intern(hP, entityType);
-
-  if ((eP->id == NULL) || ((entityType != NULL) && (eP->type == NULL)))
+  eP->id = strdup(entityId);
+  if (eP->id == NULL)
   {
-    free(eP->id);
     free(eP);
     return NULL;
   }
+
+  if (entityType != NULL)
+    corDbHistoryEntityTypes(hP, eP, entityType, true);
 
   if (hP->last != NULL)
     hP->last->next = eP;
@@ -180,6 +181,92 @@ CorDbHistEntity* corDbHistoryEntity(CorDbHistory* hP, const char* entityId, cons
   ++hP->count;
 
   return eP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryEntityTypesJoined - an entity's types as one string, the names joined by '\n'
+//
+const char* corDbHistoryEntityTypesJoined(CorDbHistEntity* eP, CorAlloc* kaP)
+{
+  if (eP->typeN <= 1)
+    return eP->type;
+
+  int len = 0;
+
+  for (int i = 0; i < eP->typeN; i++)
+    len += (int) strlen(eP->typeV[i]) + 1;
+
+  char* joined = (char*) corAlloc(kaP, len + 1);
+
+  if (joined == NULL)
+    return eP->type;
+
+  joined[0] = 0;
+  for (int i = 0; i < eP->typeN; i++)
+  {
+    if (i > 0)
+      strcat(joined, "\n");
+    strcat(joined, eP->typeV[i]);
+  }
+
+  return joined;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryEntityTypes -
+//
+void corDbHistoryEntityTypes(CorDbHistory* hP, CorDbHistEntity* eP, const char* types, bool replace)
+{
+  if (replace)
+    eP->typeN = 0;
+
+  const char* p = types;
+
+  while (*p != 0)
+  {
+    const char* end = strchr(p, '\n');
+    int         len = (end != NULL) ? (int) (end - p) : (int) strlen(p);
+    char        name[1024];
+
+    if ((len > 0) && (len < (int) sizeof(name)))
+    {
+      memcpy(name, p, len);
+      name[len] = 0;
+
+      const char* typeP = intern(hP, name);
+      bool        have  = false;
+
+      for (int i = 0; (i < eP->typeN) && (have == false); i++)
+        have = (eP->typeV[i] == typeP);              // interned: one pointer per name
+
+      if ((typeP != NULL) && (have == false))
+      {
+        if (eP->typeN == eP->typeSize)
+        {
+          int          size = (eP->typeSize == 0) ? 2 : eP->typeSize * 2;
+          const char** v    = (const char**) realloc(eP->typeV, size * sizeof(char*));
+
+          if (v == NULL)
+            break;
+          eP->typeV    = v;
+          eP->typeSize = size;
+        }
+        eP->typeV[eP->typeN++] = typeP;
+      }
+    }
+
+    if (end == NULL)
+      break;
+    p = end + 1;
+  }
+
+  eP->type = (eP->typeN > 0) ? eP->typeV[0] : NULL;
 }
 
 
@@ -262,23 +349,94 @@ static char* arenaCopy(CorDbHistory* hP, const void* src, size_t len)
 // its size: a record encoded into a fresh buffer grew it by realloc after realloc and shrank it with
 // one more - a quarter of a batch create was malloc
 //
-static __thread CorBinBuffer scratch = { NULL, 0, 0 };
+//
+// The buffer is the thread's, kept between calls - and freed when the thread ends (a key's destructor):
+// a plain __thread pointer was lost with every worker thread, 256 bytes each (valgrind).
+//
+static pthread_key_t  scratchKey;
+static pthread_once_t scratchOnce = PTHREAD_ONCE_INIT;
+
+static void scratchFree(void* p)
+{
+  CorBinBuffer* bP = (CorBinBuffer*) p;
+
+  free(bP->buf);
+  free(bP);
+}
+
+static bool scratchKeyMade = false;
+
+static void scratchKeyCreate(void)
+{
+  scratchKeyMade = (pthread_key_create(&scratchKey, scratchFree) == 0);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryScratchClose - at corDbClose: the calling thread's buffer freed, and the key deleted - a
+// worker that ends after the plugin is unloaded must not run a destructor that is gone with it
+//
+void corDbHistoryScratchClose(void)
+{
+  if (scratchKeyMade == false)
+    return;
+
+  CorBinBuffer* bP = (CorBinBuffer*) pthread_getspecific(scratchKey);
+
+  if (bP != NULL)
+  {
+    pthread_setspecific(scratchKey, NULL);
+    scratchFree(bP);
+  }
+
+  pthread_key_delete(scratchKey);
+  scratchKeyMade = false;
+}
+
+static CorBinBuffer* scratchGet(void)
+{
+  pthread_once(&scratchOnce, scratchKeyCreate);
+
+  if (scratchKeyMade == false)
+    return NULL;
+
+  CorBinBuffer* bP = (CorBinBuffer*) pthread_getspecific(scratchKey);
+
+  if (bP == NULL)
+  {
+    bP = (CorBinBuffer*) calloc(1, sizeof(CorBinBuffer));
+    if ((bP != NULL) && (pthread_setspecific(scratchKey, bP) != 0))
+    {
+      free(bP);
+      bP = NULL;
+    }
+  }
+
+  return bP;
+}
 
 static bool encodeExact(CorNode* treeP, char** bodyPP, int* lenP)
 {
-  scratch.len = 0;
+  CorBinBuffer* scratchP = scratchGet();
 
-  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, &scratch) == false)
+  if (scratchP == NULL)
     return false;
 
-  char* bodyP = (char*) malloc(scratch.len);
+  scratchP->len = 0;
+
+  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, scratchP) == false)
+    return false;
+
+  char* bodyP = (char*) malloc(scratchP->len);
 
   if (bodyP == NULL)
     return false;
 
-  memcpy(bodyP, scratch.buf, scratch.len);
+  memcpy(bodyP, scratchP->buf, scratchP->len);
   *bodyPP = bodyP;
-  *lenP   = scratch.len;
+  *lenP   = scratchP->len;
 
   return true;
 }
@@ -292,19 +450,24 @@ static bool encodeExact(CorNode* treeP, char** bodyPP, int* lenP)
 //
 static bool encodeInto(CorNode* treeP, CorAlloc* kaP, char** bodyPP, int* lenP)
 {
-  scratch.len = 0;
+  CorBinBuffer* scratchP = scratchGet();
 
-  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, &scratch) == false)
+  if (scratchP == NULL)
     return false;
 
-  char* bodyP = (char*) corAlloc(kaP, scratch.len);
+  scratchP->len = 0;
+
+  if (corTreeBinEncode(treeP, &ldBinCodec, NULL, scratchP) == false)
+    return false;
+
+  char* bodyP = (char*) corAlloc(kaP, scratchP->len);
 
   if (bodyP == NULL)
     return false;
 
-  memcpy(bodyP, scratch.buf, scratch.len);
+  memcpy(bodyP, scratchP->buf, scratchP->len);
   *bodyPP = bodyP;
-  *lenP   = scratch.len;
+  *lenP   = scratchP->len;
 
   return true;
 }
@@ -541,7 +704,7 @@ bool corDbHistoryEntityEventEncode(const char* entityId, const char* entityType,
 bool corDbHistoryEntityEvent(CorDbHistEntity* eP, const char* entityOp, uint64_t atNs, CorAlloc* kaP, CorBinBuffer* outP)
 {
   corDbHistoryEntityEventApply(eP, entityOp, atNs);
-  return corDbHistoryEntityEventEncode(eP->id, eP->type, entityOp, atNs, kaP, outP);
+  return corDbHistoryEntityEventEncode(eP->id, corDbHistoryEntityTypesJoined(eP, kaP), entityOp, atNs, kaP, outP);
 }
 
 
@@ -584,6 +747,259 @@ CorNode* corDbHistoryInstanceDecode(CorDbInstance* iP, CorAlloc* kaP)
 
 // -----------------------------------------------------------------------------
 //
+// corDbHistoryAttrLookup - the entity's history of one attribute; NULL: none
+//
+CorDbHistAttr* corDbHistoryAttrLookup(CorDbHistEntity* eP, const char* attrName)
+{
+  for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = aP->next)
+  {
+    if (strcmp(aP->name, attrName) == 0)
+      return aP;
+  }
+
+  return NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// attrFree / attrUnlink -
+//
+static void attrFree(CorDbHistAttr* aP)
+{
+  if (aP->instanceV != aP->inlineV)
+    free(aP->instanceV);
+  free(aP);                                          // its name is interned; the bodies are the arena's
+}
+
+static void attrUnlink(CorDbHistEntity* eP, CorDbHistAttr* aP)
+{
+  CorDbHistAttr* prevP = NULL;
+
+  for (CorDbHistAttr* xP = eP->attrs; xP != NULL; prevP = xP, xP = xP->next)
+  {
+    if (xP != aP)
+      continue;
+
+    if (prevP != NULL)
+      prevP->next = aP->next;
+    else
+      eP->attrs = aP->next;
+
+    if (eP->lastAttr == aP)
+      eP->lastAttr = prevP;
+
+    attrFree(aP);
+    return;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryEntityRemove - an entity's whole history gone from the index (the temporal API's
+// delete, § 5.6.16 - not a deletion of the entity, which history records)
+//
+void corDbHistoryEntityRemove(CorDbHistory* hP, CorDbHistEntity* eP)
+{
+  CorDbHistEntity* prevP = NULL;
+
+  for (CorDbHistEntity* xP = hP->first; xP != NULL; prevP = xP, xP = xP->next)
+  {
+    if (xP != eP)
+      continue;
+
+    if (prevP != NULL)
+      prevP->next = eP->next;
+    else
+      hP->first = eP->next;
+
+    if (hP->last == eP)
+      hP->last = prevP;
+    break;
+  }
+
+  if (hP->byId != NULL)
+    corHashItemRemove(hP->byId, eP->id);
+  --hP->count;
+
+  CorDbHistAttr* nextP;
+
+  for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = nextP)
+  {
+    nextP = aP->next;
+    attrFree(aP);
+  }
+
+  free(eP->typeV);
+  free(eP->id);
+  free(eP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryAttrRemove - the instances of an attribute: all of them (deleteAll), or those of one
+// datasetId (NULL: the default instance); the attribute goes when none is left. Returns how many went.
+//
+int corDbHistoryAttrRemove(CorDbHistEntity* eP, CorDbHistAttr* aP, const char* datasetId, bool deleteAll)
+{
+  int kept = 0;
+
+  for (int i = 0; i < aP->instances; i++)
+  {
+    CorDbInstance* iP   = &aP->instanceV[i];
+    bool           gone = deleteAll ||
+                          ((datasetId == NULL) && (iP->datasetId == NULL)) ||
+                          ((datasetId != NULL) && (iP->datasetId != NULL) && (strcmp(datasetId, iP->datasetId) == 0));
+
+    if (gone == false)
+      aP->instanceV[kept++] = *iP;
+  }
+
+  int removed = aP->instances - kept;
+
+  aP->instances = kept;
+  if (kept == 0)
+    attrUnlink(eP, aP);
+
+  return removed;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryInstanceIndex - where the instance with this instanceId is; -1: not there
+//
+// The instanceId is in the instance's record, not beside it in the index: found by decoding - the
+// temporal API's instance operations are rare, a reader's scan is not.
+//
+int corDbHistoryInstanceIndex(CorDbHistAttr* aP, const char* instanceId, CorAlloc* kaP)
+{
+  for (int i = 0; i < aP->instances; i++)
+  {
+    CorNode* instP = corDbHistoryInstanceDecode(&aP->instanceV[i], kaP);
+    CorNode* idP   = (instP != NULL) ? corTreeLookup(instP, "instanceId") : NULL;
+
+    if ((idP != NULL) && (idP->type == CorString) && (strcmp(idP->value.s, instanceId) == 0))
+      return i;
+  }
+
+  return -1;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryInstanceRemoveAt / corDbHistoryInstanceReplaceAt -
+//
+void corDbHistoryInstanceRemoveAt(CorDbHistEntity* eP, CorDbHistAttr* aP, int ix)
+{
+  memmove(&aP->instanceV[ix], &aP->instanceV[ix + 1], (aP->instances - ix - 1) * sizeof(CorDbInstance));
+  --aP->instances;
+
+  if (aP->instances == 0)
+    attrUnlink(eP, aP);
+}
+
+bool corDbHistoryInstanceReplaceAt(CorDbHistory* hP, CorDbHistAttr* aP, int ix, CorDbHistRecord* recP)
+{
+  CorDbInstance* iP   = &aP->instanceV[ix];
+  char*          body = arenaCopy(hP, recP->body, recP->bodyLen);
+
+  if (body == NULL)
+    return false;
+
+  iP->body         = body;                           // the old one stays in the arena, unreferenced
+  iP->bodyLen      = recP->bodyLen;
+  iP->observedAtNs = recP->observedAtNs;
+  iP->createdAtNs  = recP->createdAtNs;
+  iP->modifiedAtNs = recP->modifiedAtNs;
+  iP->deletedAtNs  = recP->deletedAtNs;
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryOpApply - a temporal-API write's record, applied to the index: what a live write does
+// after logging it, and what recovery does replaying it - one code for both
+//
+// { id, histOp, attr?, datasetId?, deleteAll?, instanceId?, instance? }, histOp one of entityRemoved,
+// attrRemoved, instanceRemoved, instanceModified. Returns TROE-style: 0 done, -2 nothing to apply it to.
+//
+int corDbHistoryOpApply(CorDbHistory* hP, CorNode* opP, CorAlloc* kaP)
+{
+  CorNode* idP   = corTreeLookup(opP, "id");
+  CorNode* hOpP  = corTreeLookup(opP, "histOp");
+  CorNode* attrP = corTreeLookup(opP, "attr");
+
+  if ((idP == NULL) || (idP->type != CorString) || (hOpP == NULL) || (hOpP->type != CorString))
+    return -1;
+
+  CorDbHistEntity* eP = corDbHistoryEntity(hP, idP->value.s, NULL, false);
+
+  if (eP == NULL)
+    return -2;
+
+  if (strcmp(hOpP->value.s, "entityRemoved") == 0)
+  {
+    corDbHistoryEntityRemove(hP, eP);
+    return 0;
+  }
+
+  CorDbHistAttr* aP = ((attrP != NULL) && (attrP->type == CorString)) ? corDbHistoryAttrLookup(eP, attrP->value.s) : NULL;
+
+  if (aP == NULL)
+    return -2;
+
+  if (strcmp(hOpP->value.s, "attrRemoved") == 0)
+  {
+    CorNode* dsP  = corTreeLookup(opP, "datasetId");
+    CorNode* allP = corTreeLookup(opP, "deleteAll");
+
+    corDbHistoryAttrRemove(eP, aP, ((dsP != NULL) && (dsP->type == CorString)) ? dsP->value.s : NULL,
+                           (allP != NULL) && (allP->type == CorBoolean) && allP->value.b);
+    return 0;
+  }
+
+  CorNode* instanceIdP = corTreeLookup(opP, "instanceId");
+  int      ix          = ((instanceIdP != NULL) && (instanceIdP->type == CorString)) ? corDbHistoryInstanceIndex(aP, instanceIdP->value.s, kaP) : -1;
+
+  if (ix < 0)
+    return -2;
+
+  if (strcmp(hOpP->value.s, "instanceRemoved") == 0)
+  {
+    corDbHistoryInstanceRemoveAt(eP, aP, ix);
+    return 0;
+  }
+
+  if (strcmp(hOpP->value.s, "instanceModified") == 0)
+  {
+    CorNode*        instP = corTreeLookup(opP, "instance");
+    CorDbHistRecord rec;
+
+    if ((instP == NULL) || (corDbHistoryRecordEncode(eP->id, eP->type, aP->name, aP->instanceV[ix].datasetId, instP, 0, kaP, &rec) == false))
+      return -1;
+
+    return corDbHistoryInstanceReplaceAt(hP, aP, ix, &rec) ? 0 : -1;
+  }
+
+  return -1;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbHistoryFree -
 //
 void corDbHistoryFree(CorDbHistory* hP)
@@ -605,6 +1021,7 @@ void corDbHistoryFree(CorDbHistory* hP)
       free(aP);                                      // its name is interned: freed below
     }
 
+    free(eP->typeV);
     free(eP->id);
     free(eP);
   }

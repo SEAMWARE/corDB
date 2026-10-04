@@ -61,7 +61,7 @@ endif
 
 LIBS          = -lgeos_c -lm
 
-SOURCES       = corDbGlobals.c corDbIndex.c corDbStore.c corDbLog.c corDbPersist.c corDbReplay.c corDbHistory.c corDbHistoryWrite.c corDbTroe.c corDbRegister.c corDbInit.c corDbClose.c \
+SOURCES       = corDbGlobals.c corDbIndex.c corDbStore.c corDbLog.c corDbPersist.c corDbReplay.c corDbHistory.c corDbHistoryWrite.c corDbTroe.c corDbTroeWrite.c corDbRegister.c corDbInit.c corDbClose.c \
                 corDbEntityCreate.c corDbEntityBulkCreate.c corDbEntityBulkUpdate.c corDbEntityBulkMerge.c \
                 corDbEntityBulkDelete.c corDbEntityRetrieve.c corDbEntityQuery.c corDbEntityDelete.c \
                 corDbEntityMerge.c corDbEntityReplace.c corDbEntityAttrsSet.c corDbTypeList.c corDbAttrList.c \

@@ -20,6 +20,7 @@
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
 #include "corAlloc/corAlloc.h"                        // corAlloc
+#include "corRest/CorRestState.h"                     // corRest
 #include "corNgsild/CorNgsild.h"                      // corNgsild
 #include "corNgsild/LdVocab.h"                        // LD_VOCAB_SCOPE
 #include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
@@ -63,7 +64,7 @@ static bool isAttribute(CorNode* memberP)
 
 // -----------------------------------------------------------------------------
 //
-// typeOf - the entity's type, as the history keeps it (the first one of several)
+// typeOf - the entity's type as the history carries it: the name, or the names joined by '\n'
 //
 static const char* typeOf(CorNode* entityP)
 {
@@ -73,9 +74,38 @@ static const char* typeOf(CorNode* entityP)
     return NULL;
   if (typeP->type == CorString)
     return typeP->value.s;
-  if ((typeP->type == CorArray) && (typeP->value.head != NULL) && (typeP->value.head->type == CorString))
-    return typeP->value.head->value.s;
-  return NULL;
+  if ((typeP->type != CorArray) || (typeP->value.head == NULL))
+    return NULL;
+  if (typeP->value.head->next == NULL)
+    return (typeP->value.head->type == CorString) ? typeP->value.head->value.s : NULL;
+
+  //
+  // Several: one string, the names joined by '\n' (corDbHistory.h)
+  //
+  int len = 0;
+
+  for (CorNode* tP = typeP->value.head; tP != NULL; tP = tP->next)
+  {
+    if (tP->type == CorString)
+      len += (int) strlen(tP->value.s) + 1;
+  }
+
+  char* joined = (char*) corAlloc(corRest.kallocP, len + 1);
+
+  if (joined == NULL)
+    return NULL;
+
+  joined[0] = 0;
+  for (CorNode* tP = typeP->value.head; tP != NULL; tP = tP->next)
+  {
+    if (tP->type != CorString)
+      continue;
+    if (joined[0] != 0)
+      strcat(joined, "\n");
+    strcat(joined, tP->value.s);
+  }
+
+  return joined;
 }
 
 
@@ -238,6 +268,8 @@ void corDbHistoryDrain(CorDbStore* storeP)
       COR_E("corDB: out of memory for the history of '%s'", itemP->entityId);
     else if (itemP->isEvent)
     {
+      if ((itemP->entityType != NULL) && (strcmp(itemP->entityOp, "deleted") != 0))
+        corDbHistoryEntityTypes(storeP->historyP, eP, itemP->entityType, true);   // created / replaced: exactly these
       corDbHistoryEntityEventApply(eP, itemP->entityOp, itemP->atNs);
       corDbPersistHistAppend(storeP->persistP, itemP->body, itemP->bodyLen);
     }

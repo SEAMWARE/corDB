@@ -2,6 +2,17 @@
 
 The design is [troe.md](../troe.md). This is what measuring found on the way. Newest first.
 
+## 2026-10-04 - phase 5: the temporal API's writes
+
+- Create, append, delete an entity's or an attribute's history, modify and delete one instance - the
+  timescale plugin's semantics (`timescaleHistoryWrite.c`). Removals and modifications are records of
+  their own in the history log, applied by the same function live and at recovery.
+- **Entity types** were one per entity in corDB's history (the newest); `troe_timescale_multi_type`
+  wanted the list (§ 5.2.6.4.2, § 11.2.3.4). Now a list, carried through the write queue, the records
+  and the log as one string, the names joined by '\n' - no format change for a single type.
+- One test fetched the instanceId with `[a-zA-Z0-9-]*`, which stops at corDB's colon; now `[a-zA-Z0-9:-]*`.
+- The oracle: **64 of 64** - every timescale TRoE test passes on corDB.
+
 ## 2026-10-04 - phase 3: q and geoQ
 
 - **q** reaches the store as the parsed tree too (`TroeQueryFilter.qTree`, beside timescale's SQL): a
@@ -33,7 +44,7 @@ How they were checked, and what that found:
   `corNgsild.troeEntityOnly` around that write.
 - **instanceIds** differ in form (timescale a UUID, corDB its hex:counter, as every id coraine
   generates); the tests take both.
-- **Measured** against timescale on the same history (doc/troe.md § 6): a retrieve 6×, a query of 100
+- **Measured** against timescale on the same history (doc/troe.md § 7): a retrieve 6×, a query of 100
   entities 43× - timescale answers a query with three SQL round trips per entity (the counts for the
   page, the instances, the entity's timestamps).
 

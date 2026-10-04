@@ -81,5 +81,6 @@ void corDbClose(void)
     corDbFreeTenantStore(tP);
 
   corDbGeoClose();
+  corDbHistoryScratchClose();
   COR_I("corDB: closed (all tenant stores freed)");
 }

@@ -942,6 +942,12 @@ static bool histReplay(CorDbStore* storeP, CorDbLogRecord* recP, CorAlloc* kaP)
   CorNode* delP   = corTreeLookup(recP->bodyP, "deletedAt");
   CorNode* instP  = corTreeLookup(recP->bodyP, "instance");
 
+  //
+  // A temporal-API write (corDbTroeWrite.c): applied by the same code that applied it live
+  //
+  if (corTreeLookup(recP->bodyP, "histOp") != NULL)
+    return corDbHistoryOpApply(storeP->historyP, recP->bodyP, kaP) != -1;
+
   CorNode* opP = corTreeLookup(recP->bodyP, "entityOp");
 
   if ((idP != NULL) && (idP->type == CorString) && (opP != NULL) && (opP->type == CorString))
@@ -955,6 +961,9 @@ static bool histReplay(CorDbStore* storeP, CorDbLogRecord* recP, CorAlloc* kaP)
 
     if (eP == NULL)
       return false;
+
+    if ((typeP != NULL) && (typeP->type == CorString) && (strcmp(opP->value.s, "deleted") != 0))
+      corDbHistoryEntityTypes(storeP->historyP, eP, typeP->value.s, true);   // created / replaced: exactly these
 
     bool ok = corDbHistoryEntityEvent(eP, opP->value.s, ((atP != NULL) && (atP->type == CorInt)) ? (uint64_t) atP->value.i : 0, kaP, &scratch);
     free(scratch.buf);                                 // replayed: it is on the disk already
