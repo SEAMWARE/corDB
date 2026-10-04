@@ -2,12 +2,13 @@
 
 The in-process database of the [coraine](https://github.com/SEAMWARE/coraine) NGSI-LD context broker:
 entities, subscriptions and registrations in the broker's own memory, one tree per tenant, no database
-server. Two plugins:
+server. Its plugins:
 
 | Plugin | Selected with | What it is |
 |---|---|---|
 | `corDB.so` | `--database corDB` | the current-state store - and with `--troe corDB` the temporal history (TRoE), in the same store |
-| `troe/corDB.so` | - | the former TRoE ring buffer: no longer loaded (`--troe corDB` takes its functions from `corDB.so`) |
+| `ramDB.so` | `--database ramDB` | corDB in RAM only: no `--dbDir`, no `--troe corDB` |
+| `troe/ramDB.so` | `--troe ramDB` | a ring of the broker's TRoE events in RAM (the most recent N, `/admin/troe/dump`) - dev/test today, the seed of a short-term history |
 
 What it measures against MongoDB is in coraine's
 [performance and footprint](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md).

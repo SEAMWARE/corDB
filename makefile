@@ -1,6 +1,6 @@
 #
-# corDB - the coraine NGSI-LD broker's in-process database: its current-state plugin (corDB.so) and its
-# temporal plugin (troe/corDB.so).
+# corDB - the coraine NGSI-LD broker's in-process database: its current-state plugins (corDB.so - with
+# --troe corDB its history too - and ramDB.so) and ramDB's temporal plugin (troe/ramDB.so, a ring in RAM).
 #
 # Built against its siblings, as every Cor-Lib is (sources use -I.. and include "corTree/CorNode.h"),
 # and against the broker's plugin interface - the DbDriver / TroeDriver headers - in the coraine
@@ -10,7 +10,7 @@
 #   make                 debug build (-DDEBUG -DCOR_T_ON), the same flags coraine's CMake gives a plugin
 #   make BUILD=release   release build (-O2 -g, no traces)
 #   make BUILD=coverage  instrumented (--coverage), as coraine's `make coverage` builds the broker
-#   make install         into $(PLUGIN_DIR)/db/currentState and $(PLUGIN_DIR)/troe/temporal
+#   make install         into $(PLUGIN_DIR)/db/currentState (corDB.so, ramDB.so) and $(PLUGIN_DIR)/troe/temporal
 #   make di / ci         install / clean + install
 #
 # The broker's feature switches the sources read - a plugin must be built as its broker was:
@@ -83,11 +83,22 @@ endif
 GEOMATCH      = $(CORAINE)/src/plugins/shared/geoMatch.c
 
 OBJECTS       = $(SOURCES:%.c=$(OBJDIR)/%.o) $(OBJDIR)/geoMatch.o
-TROE_OBJECTS  = $(OBJDIR)/troe/corDbRegister.o
-DEPS          = $(OBJECTS:.o=.d) $(TROE_OBJECTS:.o=.d)
+TROE_OBJECTS  = $(OBJDIR)/troe/ramDbRegister.o
+
+#
+# ramDB - corDB in RAM only: the same sources built with COR_DB_RAM_ONLY=1 - no disk options, no
+# history (corDbTroe.c left out: no troeRegister, so the broker refuses --troe corDB with it). For a
+# deployment that wants the fastest pub/sub and accepts that a restart starts empty.
+#
+RAM_OBJDIR    = $(OBJDIR)/ram
+RAM_SOURCES   = $(filter-out corDbTroe.c corDbTroeWrite.c,$(SOURCES))
+RAM_OBJECTS   = $(RAM_SOURCES:%.c=$(RAM_OBJDIR)/%.o) $(OBJDIR)/geoMatch.o
+
+DEPS          = $(OBJECTS:.o=.d) $(TROE_OBJECTS:.o=.d) $(RAM_SOURCES:%.c=$(RAM_OBJDIR)/%.d)
 
 PLUGIN        = $(OUT)/corDB.so
-TROE_PLUGIN   = $(OUT)/troe/corDB.so
+RAM_PLUGIN    = $(OUT)/ramDB.so
+TROE_PLUGIN   = $(OUT)/troe/ramDB.so
 
 ifeq ($(HAVE_CORAINE),)
 ifeq ($(COR_DB_REQUIRED),1)
@@ -100,7 +111,11 @@ clean:
 .PHONY: all install i di ci cdi debug clean
 else
 
-all: $(PLUGIN) $(TROE_PLUGIN)
+all: $(PLUGIN) $(TROE_PLUGIN) $(RAM_PLUGIN)
+
+$(RAM_PLUGIN): $(RAM_OBJECTS)
+	@mkdir -p $(dir $@)
+	$(CC) -shared $(RAM_OBJECTS) -o $@ $(LIBS) $(EXTRA_LDFLAGS)
 
 $(PLUGIN): $(OBJECTS)
 	@mkdir -p $(dir $@)
@@ -124,7 +139,11 @@ $(OBJDIR)/troe/%.o: troe/%.c $(OBJDIR)/.flags
 
 $(OBJDIR)/%.o: %.c $(OBJDIR)/.flags
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(VERSION_DEF) -c $< -o $@
+	$(CC) $(CFLAGS) $(VERSION_DEF) -DCOR_DB_RAM_ONLY=0 -c $< -o $@
+
+$(RAM_OBJDIR)/%.o: %.c $(OBJDIR)/.flags
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(VERSION_DEF) -DCOR_DB_RAM_ONLY=1 -c $< -o $@
 
 $(OBJDIR)/geoMatch.o: $(GEOMATCH) $(OBJDIR)/.flags
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -132,7 +151,9 @@ $(OBJDIR)/geoMatch.o: $(GEOMATCH) $(OBJDIR)/.flags
 install: all
 	mkdir -p $(PLUGIN_DIR)/db/currentState $(PLUGIN_DIR)/troe/temporal
 	cp -p $(PLUGIN)      $(PLUGIN_DIR)/db/currentState/corDB.so
-	cp -p $(TROE_PLUGIN) $(PLUGIN_DIR)/troe/temporal/corDB.so
+	cp -p $(TROE_PLUGIN) $(PLUGIN_DIR)/troe/temporal/ramDB.so
+	rm -f $(PLUGIN_DIR)/troe/temporal/corDB.so                  # the ring's old name: --troe corDB is corDB.so's own now
+	cp -p $(RAM_PLUGIN)  $(PLUGIN_DIR)/db/currentState/ramDB.so
 
 i:     install
 di:    install
