@@ -15,8 +15,19 @@
 
 // -----------------------------------------------------------------------------
 //
-// corDbArgV - no CLI args for the corDb plugin
+// corDbArgV - the plugin's options: persistence (doc/persistence.md § 8)
 //
-extern CorArg* corDbArgV;
+extern CorArg corDbArgV[];
+
+
+
+// -----------------------------------------------------------------------------
+//
+// --dbDir, --dbSync, --dbSyncInterval, --dbSnapshotEvery
+//
+extern char* corDbDir;                                 // NULL: no persistence - the in-RAM store
+extern char* corDbSync;                                // interval | request | none
+extern int   corDbSyncInterval;                        // ms
+extern int   corDbSnapshotEvery;                       // MiB of log
 
 #endif  // CORDB_CORDBGLOBALS_H_

@@ -19,6 +19,7 @@
 
 #include "db/DbDriver.h"                               // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"           // corDbEntities
 #include "corDB/corDbEntityReplace.h"   // Own interface
 
@@ -44,6 +45,12 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
     COR_E("corDB: corTreeClone failed for entity '%s'", entityId);
     return DB_ERR;
   }
+
+  //
+  // The record's body encoded now, before the lock (corDbPersist.h, CorDbPre) - only without --dbDir not at all
+  //
+  COR_DB_PRE(pre);
+  int preIx = corDbPersistOn() ? corDbPersistPreAdd(&pre, cloneP) : -1;
 
   {
     COR_DB_WRITE(tenantP);
@@ -76,6 +83,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
         // named the OLD node as its predecessor - see corDbIndex.c.
         //
         corDbIndexReplace(corDbStoreOf(tenantP), eP, cloneP);
+        corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
         oldP = eP;
         break;
       }

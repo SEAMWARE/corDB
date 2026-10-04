@@ -15,6 +15,7 @@
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"          // corDbRegistrations
 #include "corDB/corDbRegistrationCreate.h"  // Own interface
 
@@ -46,6 +47,7 @@ int corDbRegistrationCreate(Tenant* tenantP, const char* regId, CorNode* regP)
   }
 
   corTreeChildAdd(registrations, cloneP);
+  corDbPersistAppend(corDbLockedStore->persistP, CorDbLogRegPut, cloneP);
 
   return DB_OK;
 }

@@ -57,6 +57,20 @@ typedef struct CorDbStore
   struct CorHashTable*  idToPrevEntity;
   int                 idxSlots;
   int                 idxCount;
+
+  //
+  // The tenant's log (corDbPersist.h) - NULL without --dbDir. A write appends its effect to it before
+  // the lock goes: lock order is log order.
+  //
+  struct CorDbPersist*  persistP;
+
+  //
+  // A snapshot in progress (corDbPersist.c): the next entity it encodes. A snapshot reads the store
+  // in slices, under the READ lock, and writers run between them - so a writer that takes this entity
+  // out of the list or swaps it moves the cursor on (corDbIndexUnlink, corDbIndexReplace), under the
+  // write lock. NULL: no snapshot.
+  //
+  CorNode*            snapCursor;
 } CorDbStore;
 
 
@@ -75,6 +89,9 @@ extern CorDbStore* corDbStoreOf(Tenant* tenantP);
 //
 // Take the lock and hand back the store. The macros below are what callers use;
 // these exist because __attribute__((cleanup)) needs a function to call.
+//
+// corDbStoreUnlock is also where a write with --dbSync request waits for its records to be on the
+// disk - after the lock is released, so no other writer waits for the disk with it.
 //
 extern CorDbStore* corDbStoreRead(Tenant* tenantP);
 extern CorDbStore* corDbStoreWrite(Tenant* tenantP);

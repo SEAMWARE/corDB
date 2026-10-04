@@ -16,6 +16,7 @@
 
 #include "db/Tenant.h"                                   // tenant0, tenantList
 #include "corDB/corDbGeoMatch.h"          // corDbGeoClose
+#include "corDB/corDbPersist.h"                  // corDbPersistClose
 #include "corDB/corDbStore.h"        // CorDbStore
 #include "corDB/corDbClose.h"             // Own interface
 
@@ -55,6 +56,11 @@ static void corDbFreeTenantStore(Tenant* tenantP)
 //
 void corDbClose(void)
 {
+  //
+  // The logs first - written, synced, closed - while every store still exists (§ 5a)
+  //
+  corDbPersistClose();
+
   corDbFreeTenantStore(&tenant0);
 
   for (Tenant* tP = tenantList; tP != NULL; tP = tP->next)

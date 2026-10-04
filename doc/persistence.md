@@ -1,5 +1,7 @@
 # corDB persistence - design
 
+How it got here - what measuring found, and what changed: [the history](history/persistence.md).
+
 *Draft, 2026-10-02 (moved here from coraine#219 with corDB). The concrete form of coraine's [`ToDo.md`](https://github.com/SEAMWARE/coraine/blob/main/ToDo.md) § 15 steps 1-2 - the record format, and log +
 snapshot + recovery. History (the selector, retention, the temporal index) builds on it later and is
 only constrained here, not designed.*
@@ -64,8 +66,14 @@ semantics at all: "these attributes now are exactly this".
 a 20-attribute entity logs one attribute (~100 bytes), not the entity (~2 KB) - at 100 000 PATCH/s that
 is the difference between 10 MB/s and 200 MB/s of log.
 
-The 17 places that take `COR_DB_WRITE` are the places that append: each knows exactly what it
+The 16 places that take `COR_DB_WRITE` are the places that append: each knows exactly what it
 changed, and appends it before the lock goes. Lock order is log order.
+
+**Today** (step 2) every entity write logs `ENTITY_PUT` - the whole entity after the change, for an
+update or a merge too - and a batch logs one record per entity, with no `BATCH_BEGIN`/`BATCH_END`:
+an NGSI-LD batch is not atomic (each entity has its own outcome), so a replay that stops inside one
+is a state the broker could have been in. `ATTRS_PUT` comes when the measurement (step 5) says the
+log's size or the encoding under the lock costs.
 
 ## 4. The record format
 
@@ -75,7 +83,7 @@ changed, and appends it before the lock goes. Lock order is log order.
   4       4     body length (bytes)
   8       8     sequence (per tenant, monotonic - the snapshot's name is one)
   16      8     system time, ns   (= createdAt/modifiedAt/deletedAt of what it wrote: § 4.10a of coraine's cor-protocol-details.md)
-  24      4     CRC-32C of bytes 0-23 + the body
+  24      4     CRC-32C of the body, continued over bytes 0-23
   28      n     body: the cor binary tree (corTree corTreeBin, coraine's doc/cor-protocol-details.md § 4)
 ```
 
@@ -89,7 +97,9 @@ changed, and appends it before the lock goes. Lock order is log order.
   stamped under the write lock, kept beside the node and not as tree members. History's other axis
   (`observedAt`) is in the attributes themselves.
 - **CRC-32C** (SSE4.2 / ARMv8 CRC instructions; a table where neither) - a torn or rotten record is
-  detected, never applied.
+  detected, never applied. Body first, header second: a write whose entity exists before the write
+  lock (create, replace, batch create and update) encodes the body and takes its CRC before the lock;
+  under it only the header (sequence, time, the CRC finished over 24 bytes) and a copy of the body.
 
 ## 5. Writing: group commit on a timer
 
@@ -123,18 +133,38 @@ writes since the last sync (§ 5).
 
 ## 6. Snapshots and recovery
 
-**Snapshot** (every `--dbSnapshotEvery` records or bytes of log, and at a clean shutdown): under the
-tenant's **write lock** - the store as one cor tree, written to `snap-N.tmp`, `fdatasync`, `rename`
-to `snap-N.cor`, `fsync` the directory; a new `log-N.cor` begins. At ~350 MiB per 100 000 entities
-that holds the writers for well under a second, and it is obviously correct, which a copy-on-write
-scheme is not. Older snapshots and logs are deleted once the new snapshot is durable (history, later,
-keeps them: § 7).
+**Snapshot** - on a thread of its own (`corDbSnapshot`), after `--dbSnapshotEvery` MiB of log and at
+least as much log as the last snapshot was big (so the snapshots of a growing store cost in proportion
+to what is written), and at a clean shutdown:
+
+1. **the start**, under the tenant's write lock and touching no disk: the buffered records swapped out,
+   the sequence taken, a cursor set on the first entity. After the lock, the swapped-out records are
+   written and synced into the current `log-M.cor`, and the log switches to `log-N.cor` (N = M + 1)
+2. **the store**, in slices of 1000 entities, each under the **read lock** - readers run beside it,
+   writers between the slices (a writer that takes or swaps the cursor's entity moves it). Every
+   entity, subscription and registration as a PUT record, so a snapshot replays with the same loop as
+   a log, into buffers of 64 MiB
+3. **the file**: `snap-N.tmp`, `fdatasync`, `rename` to `snap-N.cor`, `fsync` the directory; then the
+   files before N are deleted
+
+The snapshot is not the store at one instant, and does not need to be: the records are effects (an
+entity put, an id deleted), and recovery replays `log-N` - every write since the start - on top of it.
+A write a slice saw replays to the same state, one it missed to its state, an entity deleted after a
+slice took it is deleted again; the creation order holds, because a slice walks the list in its order.
+The longest a writer waits on a snapshot: ~8 ms (measured).
+
+**A log segment rolls at 1 GiB** on its own, without a snapshot: no file reaches the 2 GiB the reader's
+offsets allow, whatever the snapshots do. Recovery replays every segment from the snapshot's on.
+Older snapshots and logs are deleted once the new snapshot is durable (history, later, keeps them:
+§ 7). Sizes, measured: 100 000 entities of four attributes are 38 MB, as a log or as a snapshot.
 
 **Recovery**, at start, per tenant directory:
 
-1. the newest `snap-N.cor` that decodes in full (a `.tmp` is an interrupted snapshot: deleted)
+1. the newest `snap-N.cor` (a `.tmp` is an interrupted snapshot: deleted). A snapshot that does not
+   decode in full stops the broker: the files before it are gone
 2. `log-N.cor`, `log-N+1.cor` ... in order, record by record, until a record that is short or fails
-   its CRC: **the torn tail** - the file is truncated there (`ftruncate`) and writing continues after it
+   its CRC: **the torn tail** - the file is truncated there (`truncate`) and writing continues after
+   it. Only the newest segment can have one; a bad record anywhere else stops the broker
 3. the indexes (`corDbIndex`) are rebuilt from the tree, as at any load
 
 Measured target: recovery at memory-bandwidth speed - decoding cor binary, no JSON parse.
@@ -167,7 +197,7 @@ No `--dbDir`, no change: a corDB without a directory is the in-RAM store of toda
 
 1. **The record writer and reader** in corDB, unit-tested: encode every op, decode it back; a torn
    tail and a flipped bit are found and stop the replay.
-2. **The 17 write sites append**; the flusher; `--dbDir`, `--dbSync`.
+2. **The 16 write sites append**; the flusher; `--dbDir`, `--dbSync`.
 3. **Recovery**: snapshot load + replay. Functests, two kinds that assert different things:
    - **a clean stop loses nothing** - write, stop (SIGTERM), restart, read it ALL back, the last write
      before the stop included, with `--dbSync interval` (the default - so a stop that skipped § 5a's
@@ -223,12 +253,16 @@ each measured before it stays:
 - **geo** - an R-tree over a GeoProperty, for `georel`
 
 An index is a **declaration** kept in the tenant's directory (a record in the log, `INDEX_PUT`), built
-when declared - under the write lock, a full pass - and at every load; the 17 write sites keep it
+when declared - under the write lock, a full pass - and at every load; the 16 write sites keep it
 current. Not in the snapshot: rebuilt from the data, so it can never disagree with it.
 
 ## 11. Open
 
 - Snapshot trigger: log bytes only, or also a time?
-- The CRC: CRC-32C (hardware on x86-64 and ARMv8) or xxHash3 (faster in software, no tables)?
-- Hosted `@context`s and other per-tenant state that is not in the store tree today - persisted
-  through the same log, or out of scope? (A list is the first job of step 2.)
+- With `--dbSync request`, a failed write or sync is logged, and the request still answers its
+  success: the wait happens as the write lock is released, after the operation has returned. The
+  503 of § 5 needs the outcome carried back to the operation.
+
+Decided: the CRC is CRC-32C (corBase's `corCrc32c`, hardware on x86-64 and ARMv8). Hosted
+`@context`s are not corDB's - the plugin implements none of the driver's context functions - so the
+log holds the store tree and nothing else.

@@ -29,6 +29,7 @@
 #include "corNgsild/ldEntityMerge.h"                       // LdMergeReport
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_ERR, Tenant
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"              // corDbEntities
 #include "corDB/corDbEntityMerge.h"        // corDbApplyReportToLive
 #include "corDB/corDbEntityBulkMerge.h"    // Own interface
@@ -150,6 +151,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
     if (live != NULL)
     {
       corDbApplyReportToLive(live, mergedTargetsV[i], &reportsV[i]);
+      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, live);
       anyOk = true;
     }
   }

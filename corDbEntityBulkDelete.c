@@ -24,6 +24,7 @@
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink, corDbEntityId
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"              // corDbEntities
 #include "corDB/corDbEntityBulkDelete.h"   // Own interface
 
@@ -83,6 +84,7 @@ int corDbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
       }
 
       corDbIndexUnlink(storeP, match);
+      corDbPersistAppendId(corDbLockedStore->persistP, CorDbLogEntityDelete, idV[i]);
       goneV[i]    = match;
       resultsV[i] = DB_OK;
       anyOk       = true;

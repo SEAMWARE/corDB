@@ -24,6 +24,7 @@
 
 #include "db/DbDriver.h"                                 // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
+#include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbStore.h"             // corDbEntities
 #include "corDB/corDbEntityBulkUpdate.h"  // Own interface
 
@@ -64,6 +65,17 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
   }
 
   bool anyOk = false;
+
+  //
+  // Every record's body encoded now, before the lock (corDbPersist.h, CorDbPre) - index ix is entity ix
+  //
+  COR_DB_PRE(pre);
+
+  if (corDbPersistOn())
+  {
+    for (int i = 0; i < count; i++)
+      corDbPersistPreAdd(&pre, cloneV[i]);
+  }
 
   {
     COR_DB_WRITE(tenantP);
@@ -126,6 +138,7 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
       // named `existing` as its predecessor - see corDbIndex.c.
       //
       corDbIndexReplace(idxStoreP, existing, cloneP);
+      corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, ix, cloneP);
       cloneV[ix]   = existing;   // stored clone out, replaced entity in - freed below, unlocked
       resultsV[ix] = DB_OK;
       anyOk        = true;

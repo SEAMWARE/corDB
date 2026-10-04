@@ -17,7 +17,20 @@
 
 #include "db/Tenant.h"                               // Tenant
 
+#include "corDB/corDbPersist.h"                      // corDbPersistOpen, corDbPersistSyncWait
 #include "corDB/corDbStore.h"         // Own interface
+
+
+
+// -----------------------------------------------------------------------------
+//
+// createMutex - one store is built at a time
+//
+// Building a store is rare (once per tenant) and, with --dbDir, opens the tenant's log - which two
+// builders racing for one tenant must not both do. The first request on a tenant takes it; every
+// later one finds the store published and never comes here.
+//
+static pthread_mutex_t createMutex = PTHREAD_MUTEX_INITIALIZER;
 
 
 
@@ -35,6 +48,15 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   if (existingP != NULL)
     return existingP;
 
+  pthread_mutex_lock(&createMutex);
+
+  existingP = (CorDbStore*) __atomic_load_n(&tenantP->pluginData, __ATOMIC_ACQUIRE);
+  if (existingP != NULL)                             // built while this thread waited for the mutex
+  {
+    pthread_mutex_unlock(&createMutex);
+    return existingP;
+  }
+
   //
   // First access for this tenant - build the store using malloc (NULL
   // allocator): it outlives every request, so it cannot come from a per-request
@@ -43,7 +65,10 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   CorDbStore* storeP = (CorDbStore*) malloc(sizeof(CorDbStore));
 
   if (storeP == NULL)
+  {
+    pthread_mutex_unlock(&createMutex);
     return NULL;
+  }
 
   CorNode* store        = corTreeObject(NULL, NULL);
   CorNode* entities     = corTreeArray(NULL, "entities");
@@ -59,24 +84,18 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->idToPrevEntity = NULL;                     // built on the first entity
   storeP->idxSlots = 0;
   storeP->idxCount = 0;
+  storeP->snapCursor = NULL;
   pthread_rwlock_init(&storeP->lock, NULL);
+  storeP->persistP = corDbPersistOpen(tenantP, storeP);   // the log replayed into it - NULL without --dbDir
 
   //
-  // Published with a compare-and-swap. Two requests arriving together for a tenant with no
-  // store yet - the first requests after startup, on ANY tenant, the default one included -
-  // each built one, and the second assignment replaced the first: the entities already put in
-  // it were gone, while their requests had answered 201. Now the first store in wins; a thread
-  // that loses the race frees its own and uses the winner's.
+  // Published complete, under the mutex. Two requests arriving together for a tenant with no store
+  // yet - the first requests after startup, on ANY tenant, the default one included - each built one,
+  // and the second assignment replaced the first: the entities already put in it were gone, while
+  // their requests had answered 201. Now the second waits for the mutex and finds the first's.
   //
-  void* expected = NULL;
-
-  if (__atomic_compare_exchange_n(&tenantP->pluginData, &expected, storeP, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) == false)
-  {
-    pthread_rwlock_destroy(&storeP->lock);
-    corTreeFree(storeP->tree);
-    free(storeP);
-    return (CorDbStore*) expected;
-  }
+  __atomic_store_n(&tenantP->pluginData, storeP, __ATOMIC_RELEASE);
+  pthread_mutex_unlock(&createMutex);
 
   return storeP;
 }
@@ -126,7 +145,10 @@ CorDbStore* corDbStoreWrite(Tenant* tenantP)
 void corDbStoreUnlock(CorDbStore** storePP)
 {
   if ((storePP != NULL) && (*storePP != NULL))
+  {
     pthread_rwlock_unlock(&(*storePP)->lock);
+    corDbPersistSyncWait();                          // --dbSync request only, and only after a write
+  }
 }
 
 
