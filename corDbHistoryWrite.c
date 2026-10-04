@@ -20,6 +20,7 @@
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
 #include "corAlloc/corAlloc.h"                        // corAlloc
+#include "corNgsild/CorNgsild.h"                      // corNgsild
 #include "corNgsild/LdVocab.h"                        // LD_VOCAB_SCOPE
 #include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
 #include "corNgsild/ldInstanceWritten.h"               // ldInstanceWritten
@@ -635,6 +636,9 @@ void corDbHistoryPrepare(CorDbHistPre* preP, CorNode* entityP, const char* entit
     preP->event.len = 0;
   }
 
+  if (corNgsild.troeEntityOnly == true)             // the entity's event only (CorNgsild.h)
+    return;
+
   for (CorNode* attrP = entityP->value.head; attrP != NULL; attrP = attrP->next)
   {
     if (isAttribute(attrP) == false)
@@ -788,7 +792,8 @@ void corDbHistoryCreatedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ent
   for (int i = 0; i < preP->recs; i++)
     recordAppend(storeP, eP, &preP->recV[i]);
 
-  scopeRecord(storeP, eP, NULL, corTreeLookup(entityP, LD_VOCAB_SCOPE), preP->atNs, kaP);
+  if (corNgsild.troeEntityOnly == false)
+    scopeRecord(storeP, eP, NULL, corTreeLookup(entityP, LD_VOCAB_SCOPE), preP->atNs, kaP);
 }
 
 
@@ -884,6 +889,9 @@ void corDbHistoryCreated(CorDbStore* storeP, CorNode* entityP, CorAlloc* kaP)
 
   entityEvent(storeP, eP, "created", timeOf(entityP), kaP);
 
+  if (corNgsild.troeEntityOnly == true)             // the entity's event only (CorNgsild.h)
+    return;
+
   for (CorNode* attrP = entityP->value.head; attrP != NULL; attrP = attrP->next)
   {
     if (isAttribute(attrP))
@@ -960,6 +968,9 @@ void corDbHistoryReplaced(CorDbStore* storeP, CorNode* newEntityP, CorNode* oldE
 void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport* reportP, CorAlloc* kaP)
 {
   if ((storeP == NULL) || (storeP->historyP == NULL) || (liveEntityP == NULL) || (reportP == NULL) || (reportP->changes == NULL))
+    return;
+
+  if (corNgsild.troeEntityOnly == true)             // no instances; a merge has no entity event (CorNgsild.h)
     return;
 
   HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, liveEntityP);
