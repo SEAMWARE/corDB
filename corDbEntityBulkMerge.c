@@ -156,6 +156,8 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
       anyOk = true;
     }
+    else
+      resultsV[i] = DB_NOT_FOUND;                      // gone between the broker's read and this write
   }
 
   return anyOk ? DB_OK : DB_ERR;
