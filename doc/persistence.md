@@ -216,9 +216,24 @@ into being after. A segment is compressed into `<segment>.ztmp`, synced, and ren
 - The newest segment compressed (finished, and the next one never written) - the log goes on in a new one.
 - A start with the option compresses the finished segments a run without it left.
 
-Measured on perfRun's fixture (2026-10-05, a fixture that favours a compressor: every entity has the
-same 200-character description): 100 000 entities 74.4 MB → 1.36 MB (MongoDB's files: 11.3 MB); their
-history, ten updates each, 426 MB → 52 MB (TimescaleDB: 1.73 GB).
+Measured on perfRun's fixture (2026-10-05): five attributes, ~550 bytes of JSON an entity, created in
+batches of 500; the history, every entity's `speed` then updated ten times. Bytes on disk - corDB its
+files after a clean stop, MongoDB 8.2 `storageSize` + `indexSize`, PostgreSQL 16 + TimescaleDB (coraine's
+`--troe timescale`) the database's growth:
+
+| | corDB | corDB `--dbCompress` | MongoDB | PostgreSQL + TimescaleDB |
+|---|---:|---:|---:|---:|
+| current state, 1 000 entities | 740 172 | **12 282** | 196 608 | - |
+| current state, 100 000 entities | 74 418 601 | **1 360 203** | 11 329 536 | - |
+| history, 1 000 entities × 10 updates | 4 225 466 | 4 225 466 ¹ | - | 28 088 840 |
+| history, 100 000 entities × 10 updates | 425 960 175 | **52 081 577** ² | - | 1 727 322 632 |
+
+¹ all of it in the open segment (under 64 MiB), which is never compressed
+² six finished segments compressed, the open one not
+
+The fixture favours any compressor - every entity carries the same 200-character description - and
+MongoDB's (WiredTiger, snappy) as much as corDB's. TimescaleDB's own compression (a policy per
+hypertable) is off, as coraine creates the tables.
 
 ## 7. What history adds later, and why nothing here stops it
 
