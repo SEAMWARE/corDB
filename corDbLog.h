@@ -37,7 +37,9 @@ typedef enum CorDbLogOp
   CorDbLogRegDelete    = 8,
   CorDbLogBatchBegin   = 9,     // { "count": n } - replayed all or nothing
   CorDbLogBatchEnd     = 10,
-  CorDbLogHistInstance = 11      // a history record (corDbHistory.h): { id, type, attr, datasetId?, deletedAt?, instance } - hist-N.cor only
+  CorDbLogHistInstance = 11,     // a history record (corDbHistory.h): { id, type, attr, datasetId?, deletedAt?, instance } - hist-N.cor only
+  CorDbLogDocPut       = 12,     // { "id": ..., "collection": ..., "doc": the whole document } - DbDriver docCreate/docReplace
+  CorDbLogDocDelete    = 13      // { "id": ..., "collection": ... }
 } CorDbLogOp;
 
 

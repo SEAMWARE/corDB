@@ -65,7 +65,7 @@ SOURCES       = corDbGlobals.c corDbIndex.c corDbStore.c corDbLog.c corDbPersist
                 corDbEntityCreate.c corDbEntityBulkCreate.c corDbEntityBulkUpdate.c corDbEntityBulkMerge.c \
                 corDbEntityBulkDelete.c corDbEntityRetrieve.c corDbEntityQuery.c corDbEntityDelete.c \
                 corDbEntityMerge.c corDbEntityReplace.c corDbEntityAttrsSet.c corDbTypeList.c corDbAttrList.c \
-                corDbGeoMatch.c
+                corDbGeoMatch.c corDbDoc.c
 
 ifeq ($(COR_FEATURE_SUBSCRIPTIONS),1)
 SOURCES      += corDbSubscriptionCreate.c corDbSubscriptionRetrieve.c corDbSubscriptionQuery.c \
