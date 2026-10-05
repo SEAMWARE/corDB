@@ -59,6 +59,13 @@ typedef struct CorDbStore
   int                 idxCount;
 
   //
+  // A growth in progress: the table before it, and how many of its slots have been moved into
+  // idToPrevEntity. Moved a few slots per write (corDbIndex.c, indexMigrate), never all at once.
+  //
+  struct CorHashTable*  idxOld;
+  int                 idxOldMoved;
+
+  //
   // The tenant's log (corDbPersist.h) - NULL without --dbDir. A write appends its effect to it before
   // the lock goes: lock order is log order.
   //

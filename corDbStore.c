@@ -86,6 +86,8 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->idToPrevEntity = NULL;                     // built on the first entity
   storeP->idxSlots = 0;
   storeP->idxCount = 0;
+  storeP->idxOld = NULL;
+  storeP->idxOldMoved = 0;
   storeP->snapCursor = NULL;
   storeP->historyP   = corDbHistoryOn ? (struct CorDbHistory*) calloc(1, sizeof(CorDbHistory)) : NULL;
   storeP->histQHead  = NULL;

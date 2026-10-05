@@ -3,6 +3,38 @@
 How the persistence of [the design](../persistence.md) got to what it is: what measuring found, and
 what changed because of it. Newest first.
 
+## 2026-10-04 - the id table grows in steps
+
+The entity-id table grew by rebuilding it, eight times larger, from the whole store, under the
+tenant's write lock. Timed with a probe around the rebuild (release build, batch create, 20 per request):
+
+| entities | rebuild |
+|---|---|
+| 4 097 | 0.3 ms |
+| 32 769 | 4.5 ms |
+| 262 145 | 40-44 ms |
+| 2 097 153 | 313 ms |
+
+Every request of the tenant waited for it. `wrk`, batch create of 20, 50 connections, 8 cores, 2 s
+warmup + 5 s, PGO release broker, plain `-O2` plugins, two runs each:
+
+| ramDB | p50 | p90 | p99 | max | requests/s |
+|---|---|---|---|---|---|
+| main | 0.95-0.96 ms | 1.42-1.52 ms | 152-217 ms | 208 ms | 47 500-47 581 |
+| slots moved 32 per write | 0.83-0.85 ms | 1.26-1.31 ms | 2.53-2.70 ms | 6.8 ms | 52 542-52 874 |
+
+corDB on disk with `--troe corDB`, same runs: p99 11.8-13.4 ms and 18 800-19 300 requests/s on both -
+at ~19 000 requests/s the store stays under 2.1 million entities in 7 s, so the 313 ms rebuild never
+came, and the 40 ms one fell in the warmup.
+
+The rebuild also left the entry count at what it was before, so a table built from a loaded store
+counted 0 and grew late; it is sized to the store and counted now.
+
+A debug build (whose `indexCheck` aborts on a wrong lookup) took 50 000 creates in batches of 20 with
+deletes, replaces and retrieves of earlier entities mixed in across the 4 096 and 32 768 growths, on
+ramDB, on corDB with `--dbDir`, and after its restart: every live entity found with its value, every
+deleted one 404.
+
 ## 2026-10-03 - measured, and what it found
 
 Measured with coraine's `test/perf/perfRun.sh` (PGO release, one tenant, 50 connections unless said)

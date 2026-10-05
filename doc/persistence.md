@@ -243,6 +243,9 @@ does not move to the end. Otherwise every restart would reorder query results.
 
 **Indexes.** corDB has two today: the **entity id** (a hash, to the entity's predecessor in the store
 - lookup and unlink O(1)) and, in effect, **`createdAt`**: the store list itself, in creation order.
+The id table grows 8x at 4 entities per slot; the old table's slots move into the new one 32 at a
+time, at every link, unlink and replace - no write holds the lock for a whole rebuild (lookups try
+the new table, then the old). A table built from a loaded store is sized to it.
 A query by type walks every entity of the tenant; so do a `q` and a geo-query. Indexes worth having,
 each measured before it stays:
 

@@ -42,6 +42,9 @@ static void corDbFreeTenantStore(Tenant* tenantP)
     if (storeP->idToPrevEntity != NULL)
       corHashRelease(storeP->idToPrevEntity);
 
+    if (storeP->idxOld != NULL)
+      corHashRelease(storeP->idxOld);
+
     corTreeFree(storeP->tree);
 
     if (storeP->historyP != NULL)
