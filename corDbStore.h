@@ -10,6 +10,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <pthread.h>                                 // pthread_rwlock_t
+#include <stdbool.h>                                 // bool
 
 #include "corTree/CorNode.h"                         // CorNode
 
@@ -168,5 +169,15 @@ extern CorNode* corDbTenantStore(Tenant* tenantP);
 extern CorNode* corDbEntities(Tenant* tenantP);
 extern CorNode* corDbSubscriptions(Tenant* tenantP);
 extern CorNode* corDbRegistrations(Tenant* tenantP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreDocs - a collection of the document store (DbDriver doc*), made on its first use if 'create'
+//
+// The caller holds the store's lock - a write lock to create. NULL: no such collection yet.
+//
+extern CorNode* corDbStoreDocs(CorDbStore* storeP, const char* collection, bool create);
 
 #endif  // CORDB_CORDBSTORE_H_

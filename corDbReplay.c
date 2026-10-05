@@ -211,6 +211,40 @@ bool corDbReplay(CorDbStore* storeP, CorDbLogRecord* recP)
   case CorDbLogRegPut:     return put(regsP, id, recP->bodyP);
   case CorDbLogRegDelete:  drop(regsP, id); return true;
 
+  case CorDbLogDocPut:
+  case CorDbLogDocDelete:
+  {
+    CorNode* collNameP = corTreeLookup(recP->bodyP, "collection");
+
+    if ((collNameP == NULL) || (collNameP->type != CorString))
+    {
+      COR_E("corDB: log record %llu: a document record without its collection", (unsigned long long) recP->seq);
+      return false;
+    }
+
+    CorNode* collP = corDbStoreDocs(storeP, collNameP->value.s, true);
+
+    if (collP == NULL)
+      return false;
+
+    if (recP->op == CorDbLogDocDelete)
+    {
+      drop(collP, id);
+      return true;
+    }
+
+    CorNode* docP = corTreeLookup(recP->bodyP, "doc");
+
+    if ((docP == NULL) || (docP->type != CorObject))
+    {
+      COR_E("corDB: log record %llu: a document record without its document", (unsigned long long) recP->seq);
+      return false;
+    }
+
+    docP->name = NULL;                                // an element of the collection's array, as the write stored it
+    return put(collP, id, docP);
+  }
+
   default:
     COR_E("corDB: log record %llu: op %d is not one this broker writes", (unsigned long long) recP->seq, recP->op);
     return false;

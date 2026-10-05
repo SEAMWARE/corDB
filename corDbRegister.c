@@ -40,6 +40,7 @@
 #include "corDB/corDbSubscriptionReplace.h"   // corDbSubscriptionReplace
 #include "corDB/corDbSubscriptionDelete.h"    // corDbSubscriptionDelete
 #endif
+#include "corDB/corDbDoc.h"                           // corDbDocCreate, ...
 #if COR_FEATURE_REGISTRATIONS
 #include "corDB/corDbRegistrationCreate.h"    // corDbRegistrationCreate
 #include "corDB/corDbRegistrationRetrieve.h"  // corDbRegistrationRetrieve
@@ -141,6 +142,12 @@ void dbRegister(DbDriver* driverP)
   driverP->registrationDelete   = corDbRegistrationDelete;
   driverP->registrationList     = corDbRegistrations;
 #endif
+  driverP->docCreate       = corDbDocCreate;
+  driverP->docRetrieve     = corDbDocRetrieve;
+  driverP->docQuery        = corDbDocQuery;
+  driverP->docReplace      = corDbDocReplace;
+  driverP->docDelete       = corDbDocDelete;
+
   driverP->tenantSetup     = corDbTenantSetup;
   driverP->geoMatchFunc    = corDbGeoMatchCb;
   driverP->csrGeoMatchFunc      = csrGeoMatchOverlap;

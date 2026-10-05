@@ -76,10 +76,12 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   CorNode* entities     = corTreeArray(NULL, "entities");
   CorNode* subscriptions = corTreeArray(NULL, "subscriptions");
   CorNode* registrations = corTreeArray(NULL, "registrations");
+  CorNode* docs          = corTreeObject(NULL, "docs");    // the document store: one array per collection
 
   corTreeChildAdd(store, entities);
   corTreeChildAdd(store, subscriptions);
   corTreeChildAdd(store, registrations);
+  corTreeChildAdd(store, docs);
 
   storeP->tree           = store;
   storeP->entities       = entities;
@@ -201,6 +203,30 @@ CorNode* corDbSubscriptions(Tenant* tenantP)
   CorNode* store = corDbTenantStore(tenantP);
 
   return corTreeLookup(store, "subscriptions");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreDocs - a collection of the document store, made on its first use if 'create'
+//
+// The caller holds the store's lock (a write lock to create).
+//
+CorNode* corDbStoreDocs(CorDbStore* storeP, const char* collection, bool create)
+{
+  CorNode* docsP = corTreeLookup(storeP->tree, "docs");
+  CorNode* collP = corTreeLookup(docsP, collection);
+
+  if ((collP == NULL) && (create == true))
+  {
+    collP = corTreeArray(NULL, collection);
+
+    if (collP != NULL)
+      corTreeChildAdd(docsP, collP);
+  }
+
+  return collP;
 }
 
 

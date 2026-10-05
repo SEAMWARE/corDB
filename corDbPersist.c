@@ -937,6 +937,49 @@ static bool encodeArray(CorNode* arrayP, CorDbLogOp op, Chunks* cP, uint64_t seq
 
 // -----------------------------------------------------------------------------
 //
+// encodeDocs - every document of every collection as a CorDbLogDocPut record: { id, collection, doc }
+//
+static bool encodeDocs(CorNode* docsP, Chunks* cP, uint64_t seq, uint64_t t)
+{
+  for (CorNode* collP = (docsP != NULL) ? docsP->value.head : NULL; collP != NULL; collP = collP->next)
+  {
+    for (CorNode* dP = collP->value.head; dP != NULL; dP = dP->next)
+    {
+      CorNode* idP = corTreeLookup(dP, "id");
+
+      if ((idP == NULL) || (idP->type != CorString))
+        continue;
+
+      CorNode  rec  = { 0 };
+      CorNode  id   = { 0 };
+      CorNode  coll = { 0 };
+      CorNode  doc  = *dP;                            // shallow: the store's node is never relinked
+
+      rec.type  = CorObject;
+      id.type   = CorString;  id.name   = (char*) "id";          id.value.s   = idP->value.s;
+      coll.type = CorString;  coll.name = (char*) "collection";  coll.value.s = collP->name;
+      doc.name  = (char*) "doc";
+      doc.next  = NULL;
+
+      rec.value.head = &id;
+      id.next        = &coll;
+      coll.next      = &doc;
+      rec.value.tail = &doc;
+
+      CorBinBuffer* bP = chunkCurrent(cP);
+
+      if ((bP == NULL) || (corDbLogEncode(bP, CorDbLogDocPut, seq, t, &rec) == false))
+        return false;
+    }
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // SNAPSHOT_SLICE - entities encoded per hold of the read lock: about a millisecond
 //
 enum { SNAPSHOT_SLICE = 1000 };
@@ -1056,7 +1099,8 @@ static void snapshot(CorDbPersist* pP)
       //
       ok = ok &&
            encodeArray(corTreeLookup(storeP->tree, "subscriptions"), CorDbLogSubPut, &snap, seq, t) &&
-           encodeArray(corTreeLookup(storeP->tree, "registrations"), CorDbLogRegPut, &snap, seq, t);
+           encodeArray(corTreeLookup(storeP->tree, "registrations"), CorDbLogRegPut, &snap, seq, t) &&
+           encodeDocs(corTreeLookup(storeP->tree, "docs"), &snap, seq, t);
       storeP->snapCursor = NULL;
       done               = true;
     }
