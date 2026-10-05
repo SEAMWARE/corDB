@@ -18,6 +18,7 @@
 
 #include "db/DbDriver.h"                              // DB_OK, DB_ALREADY_EXISTS, DB_ERR, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistory.h"                      // corDbHistoryOn
@@ -43,7 +44,7 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
   // The geometry check stays under the lock: the GEOS context (shared/geoMatch.c) is ONE for the
   // process, and GEOS wants one per thread for concurrent use.
   //
-  CorNode* cloneP = corTreeClone(NULL, entityP);   // malloc, not a buffer allocator: store lifetime
+  CorNode* cloneP = corDbTreeIn(entityP, 0);       // malloc, not a buffer allocator: store lifetime
   int      rc     = DB_OK;
 
   //
@@ -54,7 +55,7 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
 
   COR_DB_HIST_PRE(hist);                             // its history records too (--troe corDB)
   if ((cloneP != NULL) && corDbHistoryOn)
-    corDbHistoryPrepare(&hist, cloneP, "created", corRest.kallocP);
+    corDbHistoryPrepare(&hist, entityP, "created", corRest.kallocP);   // the request's: every time in place
 
   {
     COR_DB_WRITE(tenantP);
@@ -105,7 +106,7 @@ int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
       {
         corDbIndexLink(corDbStoreOf(tenantP), cloneP);
         corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
-        corDbHistoryCreatedPre(corDbLockedStore, &hist, cloneP, corRest.kallocP);
+        corDbHistoryCreatedPre(corDbLockedStore, &hist, corDbFullView(cloneP, corRest.kallocP), corRest.kallocP);
         return DB_OK;
       }
     }

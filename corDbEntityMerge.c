@@ -34,6 +34,7 @@
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
@@ -53,7 +54,11 @@ static void replaceOrAdd(CorNode* live, const char* name, CorNode* srcNode)
   if (srcNode == NULL)
     return;
 
-  CorNode* clone = corTreeClone(NULL, srcNode); // NULL allocator == malloc == store lifetime
+  //
+  // NULL allocator == malloc == store lifetime. An attribute in the store's form: what its instances
+  // inherit from the entity left out (corDbSysTimes.h)
+  //
+  CorNode* clone = corDbTreeIn(srcNode, corDbCreatedAt(live, 0));
   CorNode* old  = corTreeLookup(live, name);
 
   if (old != NULL)
@@ -215,7 +220,7 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
     {
       corDbApplyReportToLive(eP, mergedEntity, reportP);
       corDbPersistMerged(corDbLockedStore->persistP, eP, reportP);
-      corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
+      corDbHistoryMerged(corDbLockedStore, corDbFullView(eP, corRest.kallocP), reportP, corRest.kallocP);
       return DB_OK;
     }
   }

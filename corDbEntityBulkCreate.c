@@ -17,6 +17,7 @@
 #include <string.h>                                    // strcmp
 
 #include "corLog/corLog.h"                             // COR_E
+#include "corAlloc/corAlloc.h"                        // corAlloc
 #include "corTree/CorNode.h"                           // CorNode
 #include "corTree/corTreeClone.h"                      // corTreeClone
 #include "corTree/corTreeFree.h"                       // corTreeFree
@@ -24,6 +25,7 @@
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
 #include "db/DbDriver.h"                               // DB_OK, DB_ALREADY_EXISTS, DB_ERR, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLink, corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistory.h"                      // corDbHistoryOn
@@ -60,6 +62,7 @@ int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
     ++count;
 
   CorNode** cloneV = (count > 0) ? (CorNode**) malloc(count * sizeof(CorNode*)) : NULL;
+  CorNode** origV  = (count > 0) ? (CorNode**) corAlloc(&corRest.kalloc, count * sizeof(CorNode*)) : NULL;
 
   if ((count > 0) && (cloneV == NULL))
     return DB_ERR;
@@ -70,7 +73,8 @@ int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
   {
     CorNode* idP = corTreeLookup(inP, "id");
 
-    cloneV[ix] = ((idP != NULL) && (idP->type == CorString)) ? corTreeClone(NULL, inP) : NULL;
+    cloneV[ix] = ((idP != NULL) && (idP->type == CorString)) ? corDbTreeIn(inP, 0) : NULL;
+    origV[ix]  = inP;                                // the request's: every time in place - for history
   }
 
   //
@@ -86,7 +90,7 @@ int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
 
   COR_DB_HIST_PREV(hist);                            // their history records too (--troe corDB)
   if (corDbHistoryOn)
-    corDbHistoryPrepareV(&hist, cloneV, count, "created", corRest.kallocP);
+    corDbHistoryPrepareV(&hist, origV, count, "created", corRest.kallocP);
 
   COR_DB_WRITE(tenantP);
 
@@ -159,9 +163,9 @@ int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
     corDbIndexLink(corDbStoreOf(tenantP), cloneP);
     corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, ix, cloneP);
     if (ix < hist.n)
-      corDbHistoryCreatedPre(corDbLockedStore, &hist.v[ix], cloneP, corRest.kallocP);
+      corDbHistoryCreatedPre(corDbLockedStore, &hist.v[ix], corDbFullView(cloneP, corRest.kallocP), corRest.kallocP);
     else
-      corDbHistoryCreated(corDbLockedStore, cloneP, corRest.kallocP);
+      corDbHistoryCreated(corDbLockedStore, corDbFullView(cloneP, corRest.kallocP), corRest.kallocP);
     resultsV[ix] = DB_OK;
     anyOk        = true;
   }

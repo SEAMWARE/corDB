@@ -23,6 +23,7 @@
 #include "corNgsild/ldEntityMatch.h"                    // ldEntityMatchType, ldEntityMatchScope, ldEntityMatchQ
 
 #include "db/DbDriver.h"                              // DB_OK, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbGeoMatch.h"       // corDbGeoMatch
 #include "corDB/corDbEntityQuery.h"    // Own interface
@@ -99,10 +100,45 @@ static int distCandCmp(const void* a, const void* b)
 
 // -----------------------------------------------------------------------------
 //
+// qSubTimesUsed - does the q name an attribute's (or sub-attribute's) createdAt or modifiedAt?
+//
+static bool qSubTimesUsed(LdQNode* nodeP)
+{
+  if ((COR_DB_SYS_TIMES == 0) || (nodeP == NULL))
+    return false;
+
+  if (nodeP->type == LdQTermNode)
+  {
+    for (int ix = 0; ix < nodeP->term.subPathN; ix++)
+    {
+      if ((strcmp(nodeP->term.subPathV[ix], "createdAt") == 0) || (strcmp(nodeP->term.subPathV[ix], "modifiedAt") == 0))
+        return true;
+    }
+
+    return false;
+  }
+
+  if ((nodeP->type == LdQAndNode) || (nodeP->type == LdQOrNode))
+  {
+    for (int ix = 0; ix < nodeP->group.count; ix++)
+    {
+      if (qSubTimesUsed(nodeP->group.childV[ix]))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbEntityQuery -
 //
 int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
 {
+  bool qSubTimes = (filterP != NULL) && qSubTimesUsed(filterP->qExpr);   // once per query
+
   COR_DB_READ(tenantP);
 
   CorNode* entities = corDbEntities(tenantP);
@@ -254,7 +290,13 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
     //
     if (filterP != NULL && filterP->qExpr != NULL)
     {
-      if (!ldEntityMatchQ(eP, filterP->qExpr))
+      //
+      // A q on an attribute's own createdAt / modifiedAt reads what the store may leave out - it is
+      // matched against the entity with every time in place (corDbSysTimes.h). Rare: a copy each.
+      //
+      CorNode* matchP = (qSubTimes == true) ? corDbTreeOut(corRest.kallocP, eP, 0) : eP;
+
+      if (!ldEntityMatchQ(matchP, filterP->qExpr))
         continue;
     }
 
@@ -310,7 +352,7 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
   {
     for (int i = unpaged ? 0 : offset; i < nCand && (unpaged || (i - offset) < limit); i++)
     {
-      CorNode* cloneP = corTreeClone(corRest.kallocP, cands[i].eP);
+      CorNode* cloneP = corDbTreeOut(corRest.kallocP, cands[i].eP, 0);
 
       if (cands[i].dist >= 0)
         corTreeChildAdd(cloneP, corTreeFloat(corRest.kallocP, "geoDistance", cands[i].dist));

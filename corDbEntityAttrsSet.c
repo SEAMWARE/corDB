@@ -10,6 +10,8 @@
 #include <stdbool.h>                                 // bool
 #include <string.h>                                   // strcmp
 
+#include "corTree/corTreeFree.h"                      // corTreeFree
+#include "corTree/corTreeChildReplace.h"              // corTreeChildReplace
 #include "corTree/CorNode.h"                          // CorNode
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 
@@ -17,12 +19,44 @@
 #include "corNgsild/LdVocab.h"                         // LD_VOCAB_MODIFIED_AT, LD_VOCAB_SCOPE
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
 #include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityAttrsSet.h" // Own interface
+
+
+
+#if COR_DB_SYS_TIMES
+// -----------------------------------------------------------------------------
+//
+// attrsReform - the fragment's attributes of a live entity swapped for another form of themselves:
+// complete (toFull, every inherited time in place - what ldEntityAttrsSet reads and writes) or the
+// store's (what the store keeps - corDbSysTimes.h)
+//
+static void attrsReform(CorNode* eP, CorNode* fragmentDb, bool toFull)
+{
+  int64_t entityCreatedAt = corDbCreatedAt(eP, 0);
+
+  for (CorNode* fP = (fragmentDb != NULL) ? fragmentDb->value.head : NULL; fP != NULL; fP = fP->next)
+  {
+    CorNode* oldP = corTreeLookup(eP, fP->name);
+
+    if ((oldP == NULL) || (oldP->type != CorObject))
+      continue;
+
+    CorNode* newP = (toFull == true) ? corDbTreeOut(NULL, oldP, entityCreatedAt) : corDbTreeIn(oldP, entityCreatedAt);
+
+    if (newP == NULL)
+      continue;
+
+    corTreeChildReplace(eP, oldP, newP);
+    corTreeFree(oldP);
+  }
+}
+#endif
 
 
 
@@ -58,7 +92,13 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
     if (idP != NULL && idP->type == CorString && strcmp(idP->value.s, entityId) == 0)
     {
       // NULL allocator → malloc heap (tenant store lifetime)
+#if COR_DB_SYS_TIMES
+      attrsReform(eP, fragmentDb, true);             // what the attributes inherit, in place - ldEntityAttrsSet reads it
       ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
+      attrsReform(eP, fragmentDb, false);            // and the store's form again
+#else
+      ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
+#endif
 
       //
       // The log record: the members the fragment names, as the entity has them now, and what the
@@ -87,7 +127,7 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
         names[n++] = LD_VOCAB_SCOPE;
         corDbPersistAppendAttrs(corDbLockedStore->persistP, eP, names, n);
       }
-      corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
+      corDbHistoryMerged(corDbLockedStore, corDbFullView(eP, corRest.kallocP), reportP, corRest.kallocP);
       return DB_OK;
     }
   }

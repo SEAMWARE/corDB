@@ -16,6 +16,7 @@
 #include <string.h>                                      // strcmp
 
 #include "corLog/corLog.h"                               // COR_E
+#include "corAlloc/corAlloc.h"                        // corAlloc
 #include "corTree/CorNode.h"                             // CorNode
 #include "corTree/corTreeClone.h"                        // corTreeClone
 #include "corTree/corTreeFree.h"                         // corTreeFree
@@ -23,6 +24,7 @@
 #include "corTree/corTreeLookup.h"                       // corTreeLookup
 
 #include "db/DbDriver.h"                                 // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistory.h"                      // corDbHistoryOn
@@ -54,6 +56,7 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
     ++count;
 
   CorNode** cloneV = (count > 0) ? (CorNode**) malloc(count * sizeof(CorNode*)) : NULL;
+  CorNode** origV  = (count > 0) ? (CorNode**) corAlloc(&corRest.kalloc, count * sizeof(CorNode*)) : NULL;
 
   if ((count > 0) && (cloneV == NULL))
     return DB_ERR;
@@ -64,7 +67,8 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
   {
     CorNode* idP = corTreeLookup(inP, "id");
 
-    cloneV[ix] = ((idP != NULL) && (idP->type == CorString)) ? corTreeClone(NULL, inP) : NULL;
+    cloneV[ix] = ((idP != NULL) && (idP->type == CorString)) ? corDbTreeIn(inP, 0) : NULL;
+    origV[ix]  = inP;                                // the request's: every time in place - for history
   }
 
   bool anyOk = false;
@@ -82,7 +86,7 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
 
   COR_DB_HIST_PREV(hist);                            // their history records too (--troe corDB)
   if (corDbHistoryOn)
-    corDbHistoryPrepareV(&hist, cloneV, count, "replaced", corRest.kallocP);
+    corDbHistoryPrepareV(&hist, origV, count, "replaced", corRest.kallocP);
 
   {
     COR_DB_WRITE(tenantP);
@@ -147,9 +151,9 @@ int corDbEntityBulkUpdate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
       corDbIndexReplace(idxStoreP, existing, cloneP);
       corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, ix, cloneP);
       if (ix < hist.n)
-        corDbHistoryReplacedPre(corDbLockedStore, &hist.v[ix], cloneP, existing, corRest.kallocP);
+        corDbHistoryReplacedPre(corDbLockedStore, &hist.v[ix], corDbFullView(cloneP, corRest.kallocP), corDbFullView(existing, corRest.kallocP), corRest.kallocP);
       else
-        corDbHistoryReplaced(corDbLockedStore, cloneP, existing, corRest.kallocP);
+        corDbHistoryReplaced(corDbLockedStore, corDbFullView(cloneP, corRest.kallocP), corDbFullView(existing, corRest.kallocP), corRest.kallocP);
       cloneV[ix]   = existing;   // stored clone out, replaced entity in - freed below, unlocked
       resultsV[ix] = DB_OK;
       anyOk        = true;

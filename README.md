@@ -31,6 +31,32 @@ A plugin is built with the broker's feature switches: `COR_FEATURE_SUBSCRIPTIONS
 `COR_FEATURE_REGISTRATIONS=0` for a broker built without them. `OBJDIR` and `OUT` build a variant
 elsewhere. Needs `libgeos_c` (geo-queries).
 
+### `COR_DB_SYS_TIMES=1` - system timestamps by inheritance (off by default)
+
+corNgsild gives the entity, every attribute instance and every sub-attribute a `createdAt` and a
+`modifiedAt`. With `COR_DB_SYS_TIMES=1` the store keeps only those it cannot inherit
+(`corDbSysTimes.h`):
+
+- an instance's `createdAt` only where it differs from the entity's, a sub-attribute's only where it
+  differs from its instance's - the entity keeps its own
+- `modifiedAt` only where it differs from the object's own `createdAt`
+
+An entity is created whole and its attributes' values change, so a stored entity keeps two timestamps,
+plus a `modifiedAt` on each object changed since. Every tree that leaves the store has them all, in
+the place corNgsild puts them; the log and the snapshot are written in either form and read by either
+build - except that a store written with the flag on and read by a build without it shows the
+inherited timestamps as absent.
+
+| 100k entities, 10 Property attributes each, `--database corDB` in RAM | broker RSS |
+|---|---|
+| `COR_DB_SYS_TIMES=0` | 562 MiB |
+| `COR_DB_SYS_TIMES=1` | 440 MiB (-22 %) |
+
+The cost: an append (`POST /attrs`, `PUT /attrs/{attr}`) puts the named attributes' inherited times
+back for corNgsild's in-place update and takes them out after; history (`--troe corDB`) encodes from a
+copy with every time in place; a `q` on an attribute's own `createdAt` / `modifiedAt` matches each
+candidate on such a copy.
+
 The NGSI-LD and Cor-Lib functions the plugins call are resolved from the broker at `dlopen` (it is
 linked `-rdynamic`), so a plugin links none of them - and is the same for both of coraine's HTTP
 servers.

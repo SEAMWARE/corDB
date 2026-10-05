@@ -14,6 +14,7 @@
 #include "corRest/CorRestState.h"                       // corRest
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityRetrieve.h" // Own interface
@@ -40,7 +41,7 @@ int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityP
 
     if (hitP != NULL)
     {
-      *entityPP = corTreeClone(corRest.kallocP, hitP);
+      *entityPP = corDbTreeOut(corRest.kallocP, hitP, 0);
       return DB_OK;
     }
 
@@ -57,7 +58,7 @@ int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityP
       // Clone into the request arena (freed at request end), matching mongoc's
       // retrieve. A NULL (malloc) clone would leak — no caller frees the result;
       // they all consume it within the request (render / merge / replace-copy).
-      *entityPP = corTreeClone(corRest.kallocP, eP);
+      *entityPP = corDbTreeOut(corRest.kallocP, eP, 0);
       return DB_OK;
     }
   }
