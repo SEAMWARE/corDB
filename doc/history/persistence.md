@@ -3,6 +3,23 @@
 How the persistence of [the design](../persistence.md) got to what it is: what measuring found, and
 what changed because of it. Newest first.
 
+## 2026-10-05 - an attribute update logs the attributes (`ATTRS_PUT`)
+
+Every write logged the whole entity (`ENTITY_PUT`), a PATCH of one attribute too: encoded under the
+write lock and copied into the log, the whole entity each time. Now PATCH of an attribute, merge,
+update and append of attributes, `PUT` of an attribute, purge and batch merge log `ATTRS_PUT`: the
+members the write named, each whole after it, and those it removed. Built from the entity's own member
+nodes, nothing cloned. Measured with coraine's perfRun, PGO, against the build before it:
+
+- `PATCH`: +11-13 % on disk (8 cores 127 762 → 144 465; with `--troe corDB` 107 860 → 119 962;
+  nothing pinned 99 571 → 111 438); merge +4-9 %; in RAM, untouched, within ±3 %
+- the log: twenty PATCHes of a small attribute of an entity with a 2 KB one - 47 194 bytes before,
+  under 20 KB now
+
+Batch update and upsert still log the entity: the broker hands the driver whole merged entities, and
+the driver never sees which attributes changed. So does the attribute delete (a retrieve and a
+replace in the broker) - `ATTRS_DELETE` is written by nobody yet.
+
 ## 2026-10-05 - the log segments memory-mapped: a dead broker loses nothing
 
 A write appended its record to a buffer of the process; the flusher `write()`s and `fdatasync`s it

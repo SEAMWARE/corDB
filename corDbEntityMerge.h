@@ -14,6 +14,8 @@
 
 #include "db/Tenant.h"                                 // Tenant
 
+struct CorDbPersist;
+
 
 
 // -----------------------------------------------------------------------------
@@ -35,5 +37,21 @@ extern void corDbApplyReportToLive(CorNode* live, CorNode* merged, LdMergeReport
 //
 extern int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
                                    CorNode* mergedEntity, LdMergeReport* reportP);
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistMerged - the log record of a merge applied to 'live' (CorDbLogAttrsPut: the attributes
+// the report names, not the entity); under the write lock, after corDbApplyReportToLive
+//
+extern void corDbPersistMerged(struct CorDbPersist* persistP, CorNode* live, LdMergeReport* reportP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbMergedNames - the members a merge report says changed, plus modifiedAt, type and scope; -1 if
+// more than 'max'
+//
+extern int corDbMergedNames(LdMergeReport* reportP, const char** names, int max);
 
 #endif  // CORDB_CORDBENTITYMERGE_H_

@@ -14,6 +14,7 @@
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 
 #include "corNgsild/ldEntityAttrsSet.h"                // ldEntityAttrsSet
+#include "corNgsild/LdVocab.h"                         // LD_VOCAB_MODIFIED_AT, LD_VOCAB_SCOPE
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
@@ -58,7 +59,34 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
     {
       // NULL allocator → malloc heap (tenant store lifetime)
       ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
-      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, eP);
+
+      //
+      // The log record: the members the fragment names, as the entity has them now, and what the
+      // write refreshes beside them - not the entity (corDbPersistAppendAttrs)
+      //
+      const char* names[64];
+      int         n    = 0;
+      bool        many = false;
+
+      for (CorNode* mP = (fragmentDb != NULL) ? fragmentDb->value.head : NULL; mP != NULL; mP = mP->next)
+      {
+        if (n == 61)
+        {
+          many = true;
+          break;
+        }
+        names[n++] = mP->name;
+      }
+
+      if (many)                                      // that many attributes: the entity
+        corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, eP);
+      else
+      {
+        names[n++] = LD_VOCAB_MODIFIED_AT;
+        names[n++] = "type";
+        names[n++] = LD_VOCAB_SCOPE;
+        corDbPersistAppendAttrs(corDbLockedStore->persistP, eP, names, n);
+      }
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }

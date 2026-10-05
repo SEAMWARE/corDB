@@ -28,7 +28,7 @@
 typedef enum CorDbLogOp
 {
   CorDbLogEntityPut    = 1,     // the whole entity, as stored
-  CorDbLogAttrsPut     = 2,     // { "id": ..., "attrs": { the attributes it touched, each whole, after the change } }
+  CorDbLogAttrsPut     = 2,     // { "id": ..., "attrs": { the members it touched, each whole, after the change }, "deleted": [ names ]? }
   CorDbLogAttrsDelete  = 3,     // { "id": ..., "attrs": [ names ] }
   CorDbLogEntityDelete = 4,     // { "id": ... }
   CorDbLogSubPut       = 5,

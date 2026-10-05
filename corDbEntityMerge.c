@@ -122,6 +122,62 @@ void corDbApplyReportToLive(CorNode* live, CorNode* merged, LdMergeReport* repor
 
 // -----------------------------------------------------------------------------
 //
+// corDbMergedNames - the members a merge report says changed, and what a change refreshes beside them
+// (corDbApplyReportToLive: modifiedAt, type, scope); -1 when there are more than 'max'
+//
+int corDbMergedNames(LdMergeReport* reportP, const char** names, int max)
+{
+  int n = 0;
+
+  if ((reportP != NULL) && (reportP->changes != NULL))
+  {
+    for (CorNode* change = reportP->changes->value.head; change != NULL; change = change->next)
+    {
+      CorNode* attrNameP = corTreeLookup(change, "attr");
+
+      if ((attrNameP == NULL) || (attrNameP->type != CorString))
+        continue;
+
+      if (n == max - 3)
+        return -1;
+
+      names[n++] = attrNameP->value.s;
+    }
+  }
+
+  names[n++] = LD_VOCAB_MODIFIED_AT;
+  names[n++] = "type";
+  names[n++] = LD_VOCAB_SCOPE;
+
+  return n;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistMerged - the log record of a merge applied to 'live': the attributes the report
+// names, and what a change refreshes beside them (corDbApplyReportToLive) - not the entity
+//
+void corDbPersistMerged(CorDbPersist* persistP, CorNode* live, LdMergeReport* reportP)
+{
+  const char* names[64];
+
+  if (persistP == NULL)
+    return;
+
+  int n = corDbMergedNames(reportP, names, 64);
+
+  if (n < 0)
+    corDbPersistAppend(persistP, CorDbLogEntityPut, live);   // that many attributes: the entity
+  else
+    corDbPersistAppendAttrs(persistP, live, names, n);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbEntityChangesApply - persist a merged single entity (DB driver entry)
 //
 int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
@@ -158,7 +214,7 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
     if (idP != NULL && idP->type == CorString && strcmp(idP->value.s, entityId) == 0)
     {
       corDbApplyReportToLive(eP, mergedEntity, reportP);
-      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, eP);
+      corDbPersistMerged(corDbLockedStore->persistP, eP, reportP);
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }
