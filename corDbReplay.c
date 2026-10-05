@@ -144,6 +144,55 @@ bool corDbReplay(CorDbStore* storeP, CorDbLogRecord* recP)
     return true;
   }
 
+  case CorDbLogAttrsPut:
+  {
+    //
+    // Some members of an entity, each whole, and the members it no longer has (corDbPersistAppendAttrs):
+    // a member it already has is replaced where it is, a new one goes to the end - where the write put it
+    //
+    CorNode* entityP = corDbIndexLookup(storeP, id);
+
+    if (entityP == NULL)
+    {
+      COR_E("corDB: log record %llu changes attributes of '%s', which is not in the store", (unsigned long long) recP->seq, id);
+      return false;
+    }
+
+    CorNode* attrsP   = corTreeLookup(recP->bodyP, "attrs");
+    CorNode* deletedP = corTreeLookup(recP->bodyP, "deleted");
+
+    for (CorNode* mP = (attrsP != NULL) ? attrsP->value.head : NULL; mP != NULL; mP = mP->next)
+    {
+      CorNode* cloneP = corTreeClone(NULL, mP);
+
+      if (cloneP == NULL)
+        return false;
+
+      CorNode* oldP = corTreeLookup(entityP, mP->name);
+
+      if (oldP != NULL)
+      {
+        corTreeChildReplace(entityP, oldP, cloneP);
+        corTreeFree(oldP);
+      }
+      else
+        corTreeChildAdd(entityP, cloneP);
+    }
+
+    for (CorNode* nP = (deletedP != NULL) ? deletedP->value.head : NULL; nP != NULL; nP = nP->next)
+    {
+      CorNode* oldP = (nP->type == CorString) ? corTreeLookup(entityP, nP->value.s) : NULL;
+
+      if (oldP != NULL)
+      {
+        corTreeChildRemove(entityP, oldP);
+        corTreeFree(oldP);
+      }
+    }
+
+    return true;
+  }
+
   case CorDbLogEntityDelete:
   {
     CorNode* oldP = corDbIndexLookup(storeP, id);

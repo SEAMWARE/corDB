@@ -152,7 +152,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
     if (live != NULL)
     {
       corDbApplyReportToLive(live, mergedTargetsV[i], &reportsV[i]);
-      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, live);
+      corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
       corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
       anyOk = true;
     }

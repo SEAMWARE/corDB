@@ -48,6 +48,7 @@
 
 #include "db/Tenant.h"                                 // Tenant, tenantGetOrCreate
 
+#include "corDB/corDbIndex.h"                         // corDbEntityId
 #include "corDB/corDbGlobals.h"                        // corDbDir, corDbSync, corDbSyncInterval
 #include "corDB/corDbLog.h"                            // corDbLogEncode
 #include "corDB/corDbHistory.h"                        // corDbHistoryEntity, corDbHistoryInstanceAdd
@@ -1626,6 +1627,110 @@ void corDbPersistAppendId(CorDbPersist* pP, CorDbLogOp op, const char* id)
   idNode.value.s = (char*) id;
 
   corDbPersistAppend(pP, op, &idNode);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistAppendAttrs -
+//
+// The body is built of COPIES of the entity's member nodes - the node struct only: its children are
+// the entity's own, read by the encoder and touched by nobody while the write lock is held. Nothing
+// is cloned for the record.
+//
+#define ATTRS_MAX  64
+
+static bool named(const char* name, const char** names, int n)
+{
+  for (int i = 0; i < n; i++)
+  {
+    if ((names[i] != NULL) && (strcmp(names[i], name) == 0))
+      return true;
+  }
+
+  return false;
+}
+
+void corDbPersistAppendAttrs(CorDbPersist* pP, CorNode* entityP, const char** names, int n)
+{
+  if (pP == NULL)
+    return;
+
+  const char* id = corDbEntityId(entityP);
+
+  if ((n > ATTRS_MAX) || (id == NULL))
+  {
+    corDbPersistAppend(pP, CorDbLogEntityPut, entityP);
+    return;
+  }
+
+  CorNode setV[ATTRS_MAX];
+  CorNode delV[ATTRS_MAX];
+  int     nSet = 0;
+  int     nDel = 0;
+  CorNode idN      = { 0 };
+  CorNode attrsN   = { 0 };
+  CorNode deletedN = { 0 };
+  CorNode bodyN    = { 0 };
+
+  //
+  // The members, in the entity's order: one the write added is at its end, and replay appends it
+  // there too
+  //
+  for (CorNode* mP = entityP->value.head; mP != NULL; mP = mP->next)
+  {
+    if ((mP->name == NULL) || (strcmp(mP->name, "id") == 0) || (named(mP->name, names, n) == false))
+      continue;
+
+    setV[nSet]      = *mP;
+    setV[nSet].next = NULL;
+    if (nSet > 0)
+      setV[nSet - 1].next = &setV[nSet];
+    ++nSet;
+  }
+
+  //
+  // The names the entity no longer has: deleted by the write (an attribute set to null in a merge)
+  //
+  for (int i = 0; i < n; i++)
+  {
+    if ((names[i] == NULL) || (strcmp(names[i], "id") == 0) || (corTreeLookup(entityP, names[i]) != NULL) || named(names[i], names, i))
+      continue;
+
+    delV[nDel].name    = (char*) "";
+    delV[nDel].type    = CorString;
+    delV[nDel].value.s = (char*) names[i];
+    delV[nDel].next    = NULL;
+    if (nDel > 0)
+      delV[nDel - 1].next = &delV[nDel];
+    ++nDel;
+  }
+
+  idN.name    = (char*) "id";
+  idN.type    = CorString;
+  idN.value.s = (char*) id;
+
+  attrsN.name       = (char*) "attrs";
+  attrsN.type       = CorObject;
+  attrsN.value.head = (nSet > 0) ? &setV[0] : NULL;
+  attrsN.value.tail = (nSet > 0) ? &setV[nSet - 1] : NULL;
+  idN.next          = &attrsN;
+
+  if (nDel > 0)
+  {
+    deletedN.name       = (char*) "deleted";
+    deletedN.type       = CorArray;
+    deletedN.value.head = &delV[0];
+    deletedN.value.tail = &delV[nDel - 1];
+    attrsN.next         = &deletedN;
+  }
+
+  bodyN.type       = CorObject;
+  bodyN.value.head = &idN;
+  bodyN.value.tail = (nDel > 0) ? &deletedN : &attrsN;
+
+  corDbPersistAppend(pP, CorDbLogAttrsPut, &bodyN);
 }
 
 

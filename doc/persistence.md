@@ -56,8 +56,8 @@ semantics at all: "these attributes now are exactly this".
 | op | body | written by |
 |---|---|---|
 | `ENTITY_PUT` | the whole entity, as stored | create, replace |
-| `ATTRS_PUT` | entity id + the attributes it touched, each **whole, after the change** | update, merge, PATCH, attribute append - and each entity of a batch update/upsert/merge |
-| `ATTRS_DELETE` | entity id + attribute names (+ datasetId) | attribute delete |
+| `ATTRS_PUT` | entity id + the members it touched, each **whole, after the change** (`attrs`), and those it removed (`deleted`) | PATCH of an attribute, merge, update and append of attributes, `PUT` of an attribute, purge - and each entity of a batch merge |
+| `ATTRS_DELETE` | entity id + attribute names (+ datasetId) | attribute delete (not written yet: the entity, `ENTITY_PUT`) |
 | `ENTITY_DELETE` | entity id | delete, batch delete |
 | `SUB_PUT` / `SUB_DELETE` | the subscription / its id | subscription create, update, replace, delete |
 | `REG_PUT` / `REG_DELETE` | the registration / its id | registration create, update, delete |
@@ -70,11 +70,18 @@ is the difference between 10 MB/s and 200 MB/s of log.
 The 16 places that take `COR_DB_WRITE` are the places that append: each knows exactly what it
 changed, and appends it before the lock goes. Lock order is log order.
 
-**Today** (step 2) every entity write logs `ENTITY_PUT` - the whole entity after the change, for an
-update or a merge too - and a batch logs one record per entity, with no `BATCH_BEGIN`/`BATCH_END`:
+A write that updates attributes logs `ATTRS_PUT`: `{ "id", "attrs": { ... }, "deleted": [ ... ] }` -
+the members the request named (and `modifiedAt`, `type`, `scope`, which a change refreshes), as the
+entity has them after the write, and of those the ones it no longer has. Encoded from the entity's own
+member nodes under the write lock - nothing is cloned for it. Replay replaces a member the entity has
+where it is and appends a new one at the end, where the write put it; then removes the deleted ones.
+A write naming more than 61 members logs the entity (`ENTITY_PUT`).
+
+Batch update and batch upsert replace whole entities the broker has already merged - the driver never
+sees what changed - and log `ENTITY_PUT`, encoded before the lock. Create, replace and the attribute
+delete log `ENTITY_PUT` too. A batch logs one record per entity, with no `BATCH_BEGIN`/`BATCH_END`:
 an NGSI-LD batch is not atomic (each entity has its own outcome), so a replay that stops inside one
-is a state the broker could have been in. `ATTRS_PUT` comes when the measurement (step 5) says the
-log's size or the encoding under the lock costs.
+is a state the broker could have been in.
 
 ## 4. The record format
 

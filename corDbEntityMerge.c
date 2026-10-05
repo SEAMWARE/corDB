@@ -122,6 +122,47 @@ void corDbApplyReportToLive(CorNode* live, CorNode* merged, LdMergeReport* repor
 
 // -----------------------------------------------------------------------------
 //
+// corDbPersistMerged - the log record of a merge applied to 'live': the attributes the report
+// names, and what a change refreshes beside them (corDbApplyReportToLive) - not the entity
+//
+void corDbPersistMerged(CorDbPersist* persistP, CorNode* live, LdMergeReport* reportP)
+{
+  const char* names[64];
+  int         n = 0;
+
+  if (persistP == NULL)
+    return;
+
+  if ((reportP != NULL) && (reportP->changes != NULL))
+  {
+    for (CorNode* change = reportP->changes->value.head; change != NULL; change = change->next)
+    {
+      CorNode* attrNameP = corTreeLookup(change, "attr");
+
+      if ((attrNameP == NULL) || (attrNameP->type != CorString))
+        continue;
+
+      if (n == (int) (sizeof(names) / sizeof(names[0])) - 3)
+      {
+        corDbPersistAppend(persistP, CorDbLogEntityPut, live);   // that many attributes: the entity
+        return;
+      }
+
+      names[n++] = attrNameP->value.s;
+    }
+  }
+
+  names[n++] = LD_VOCAB_MODIFIED_AT;
+  names[n++] = "type";
+  names[n++] = LD_VOCAB_SCOPE;
+
+  corDbPersistAppendAttrs(persistP, live, names, n);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbEntityChangesApply - persist a merged single entity (DB driver entry)
 //
 int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
@@ -158,7 +199,7 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
     if (idP != NULL && idP->type == CorString && strcmp(idP->value.s, entityId) == 0)
     {
       corDbApplyReportToLive(eP, mergedEntity, reportP);
-      corDbPersistAppend(corDbLockedStore->persistP, CorDbLogEntityPut, eP);
+      corDbPersistMerged(corDbLockedStore->persistP, eP, reportP);
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }

@@ -154,6 +154,17 @@ extern void corDbPersistAppendId(CorDbPersist* persistP, CorDbLogOp op, const ch
 
 // -----------------------------------------------------------------------------
 //
+// corDbPersistAppendAttrs - the record of a write that changed some members of an entity (an
+// attribute update): CorDbLogAttrsPut, the members 'names' names as the entity has them now, each
+// whole, and those of them it no longer has. Under the write lock, after the change. A PATCH of one
+// attribute logs that attribute, not the entity. Too many names: the whole entity (CorDbLogEntityPut).
+//
+extern void corDbPersistAppendAttrs(CorDbPersist* persistP, CorNode* entityP, const char** names, int n);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // CorDbPre - record bodies encoded BEFORE the write lock
 //
 // Where the entity a write stores exists before the lock - the clone of a create, a replace, a batch
