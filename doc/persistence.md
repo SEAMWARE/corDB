@@ -13,12 +13,13 @@ tenant (`corDbStore.h`). A restart loses all of it. After this step:
 
 - a broker **stopped cleanly** (SIGTERM, SIGINT) loses nothing: everything in RAM is on disk before
   it exits (§ 5a)
-- a broker that **dies** - `kill -9`, a crash, a power cut - comes back with what it had, less at
-  most the last ~100 ms of writes (the default; MongoDB's journal makes the same promise) - nothing,
-  with `--dbSync request`
+- a broker that **dies** - `kill -9`, a crash, an OOM kill - loses nothing it acknowledged: a write's
+  record is in the kernel's page cache before the response (§ 5)
+- a **machine** that dies - a power cut, a kernel panic - loses at most the last ~100 ms of writes
+  (the default; MongoDB's journal makes the same promise) - nothing, with `--dbSync request`
 - recovery time is bounded by a snapshot, not by the age of the broker
-- **no new library**: `open`, `write`, `fdatasync`, `rename`, `ftruncate` - and the cor:// codec the
-  broker already has
+- **no new library**: `open`, `mmap`, `posix_fallocate`, `fdatasync`, `rename`, `ftruncate` - and the
+  cor:// codec the broker already has
 
 Not in this step: history retention, the selector, the temporal index, a standalone corDB server.
 Each needs the log; none changes its format (§ 7).
@@ -30,8 +31,8 @@ Each needs the log; none changes its format (§ 7).
   request ─► corDB mutates the tree ─► appends the EFFECT as a record ─► unlock ─► response
                                                   │
                                                   ▼
-                               per-tenant log buffer ──► flusher thread: write + fdatasync
-                                                                         every 100 ms
+                               the log segment, mapped ──► flusher thread: fdatasync
+                               (a copy into the page cache)              every 100 ms
   recovery:  newest valid snapshot  ─►  replay the log after it  ─►  serve
 ```
 
@@ -101,14 +102,23 @@ log's size or the encoding under the lock costs.
   lock (create, replace, batch create and update) encodes the body and takes its CRC before the lock;
   under it only the header (sequence, time, the CRC finished over 24 bytes) and a copy of the body.
 
-## 5. Writing: group commit on a timer
+## 5. Writing: a copy into the page cache, group commit on a timer
 
-A write appends its record to the tenant's **log buffer** under the write lock (memcpy - no system
-call under the lock). One **flusher thread** per broker, every `--dbSyncInterval` ms (default 100):
-for each tenant with something buffered, swap the buffer out, `write()` it, `fdatasync()`.
+The open log segment is **mapped** (`mmap`, `MAP_SHARED`) over 1.25 GiB of address space, and the file
+is allocated ahead of its records 4 MiB at a time (`posix_fallocate`). A write copies its record into
+the mapping under the tenant's write lock (memcpy - no system call, but the allocation every 4 MiB).
+The pages are the kernel's page cache: once the copy is done, the record outlives the process. One
+**flusher thread** per broker, every `--dbSyncInterval` ms (default 100): for each tenant,
+`fdatasync()` - the history log, then the log.
 
-- the response does not wait for the disk: what a power cut can lose is the last interval, as with
-  MongoDB's default journal
+- the response does not wait for the disk. A broker that dies (`kill -9`, a crash, an OOM kill) has
+  lost nothing it acknowledged; a machine that dies, at most the last interval, as with MongoDB's
+  default journal
+- `posix_fallocate`, not a sparse file: a page of a sparse file the file system cannot back when it is
+  first written kills the process (SIGBUS) - a full disk would. Allocated ahead, a full disk is an
+  error at the allocation, below
+- while open, a segment is longer than its records: the rest is zeros, which recovery reads as the end
+  (§ 6). A finished segment - rolled, or at a clean stop - is cut to its records (`ftruncate`)
 - `--dbSync request`: the response waits for its record's `fdatasync` - group commit: every writer
   that arrived during one sync shares the next (the coroutines yield on it; a worker waits on a
   condition). Per-request durability, paid for by whoever asks
@@ -122,14 +132,13 @@ On SIGTERM or SIGINT, in this order:
 
 1. **no new requests** - the servers stop taking them; the requests in flight finish. A write appends
    its record under the tenant's write lock, so once the locks are free every acknowledged write is
-   in a log buffer
-2. **every tenant's log buffer written and `fdatasync`ed** - nothing that was only in RAM is left
+   in a log segment
+2. **every tenant's log segments `fdatasync`ed** and cut to their records
 3. **a snapshot per tenant** (§ 6) - the next start loads it and has no log to replay
 
 Only then does the broker exit. A stop that takes too long is still a clean stop: step 2 does not
 depend on step 3, so a broker killed during its snapshots has lost nothing either - it replays the
-log on the next start. Only an end without a stop - `kill -9`, a crash, a power cut - can lose the
-writes since the last sync (§ 5).
+log on the next start. Only the machine dying can lose the writes since the last sync (§ 5).
 
 ## 6. Snapshots and recovery
 
@@ -137,9 +146,9 @@ writes since the last sync (§ 5).
 least as much log as the last snapshot was big (so the snapshots of a growing store cost in proportion
 to what is written), and at a clean shutdown:
 
-1. **the start**, under the tenant's write lock and touching no disk: the buffered records swapped out,
-   the sequence taken, a cursor set on the first entity. After the lock, the swapped-out records are
-   written and synced into the current `log-M.cor`, and the log switches to `log-N.cor` (N = M + 1)
+1. **the start**, under the tenant's write lock and syncing nothing: the log switched to `log-N.cor`
+   (N = M + 1, opened and mapped), the sequence taken, a cursor set on the first entity. After the
+   lock, `log-M.cor` is synced and cut to its records
 2. **the store**, in slices of 1000 entities, each under the **read lock** - readers run beside it,
    writers between the slices (a writer that takes or swaps the cursor's entity moves it). Every
    entity, subscription and registration as a PUT record, so a snapshot replays with the same loop as
@@ -163,8 +172,17 @@ Older snapshots and logs are deleted once the new snapshot is durable (history, 
 1. the newest `snap-N.cor` (a `.tmp` is an interrupted snapshot: deleted). A snapshot that does not
    decode in full stops the broker: the files before it are gone
 2. `log-N.cor`, `log-N+1.cor` ... in order, record by record, until a record that is short or fails
-   its CRC: **the torn tail** - the file is truncated there (`truncate`) and writing continues after
-   it. Only the newest segment can have one; a bad record anywhere else stops the broker
+   its CRC:
+   - **zeros** from there to the end: the space allocated ahead of the records (§ 5) - the end of the
+     segment, cut to its records
+   - anything else: **the torn tail** - the file is truncated there (`truncate`) and writing continues
+     after it. Only the newest segment can have one; a bad record anywhere else stops the broker
+   - a record whose **sequence** does not follow the last one replayed is after a **gap**: pages the
+     machine wrote out of order before it died, past the last sync. The log ends before it - replaying
+     past a gap would build a store no write made. The rest of that segment is cut; a segment that
+     starts after the gap, and every one after it, is renamed `<segment>.torn` - kept, not replayed.
+     A write that cannot be logged (a full disk) uses no sequence number, so the log has no gap of
+     its own
 3. the indexes (`corDbIndex`) are rebuilt from the tree, as at any load
 
 Measured target: recovery at memory-bandwidth speed - decoding cor binary, no JSON parse.

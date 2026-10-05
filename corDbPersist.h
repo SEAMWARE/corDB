@@ -33,47 +33,68 @@ struct CorDbStore;
 
 // -----------------------------------------------------------------------------
 //
-// CorDbPersist - one tenant's log: what is buffered, and the file it goes to
+// CorDbSeg - one open log segment, mapped (corDbPersist.c, "The segments")
 //
-// Lock order: the tenant's write lock, then 'ioMutex', then 'mutex'. A write takes the tenant's lock
-// and 'mutex'; the flusher 'ioMutex' for a flush and 'mutex' only to swap the buffer out, so a write
-// never waits for the disk; a snapshot all three.
+// An append is a copy into 'map': the bytes are the kernel's the moment the copy is done, so a broker
+// that dies loses none of them - only the machine dying loses what the last sync had not reached.
+//
+typedef struct CorDbSeg
+{
+  int                   fd;                            // -1: none
+  char*                 map;                           // MAP_SHARED over the file, 'mapLen' bytes of address space
+  unsigned long long    mapLen;
+  unsigned long long    len;                           // the records in it
+  unsigned long long    alloc;                         // the file's size: allocated ahead of 'len' (posix_fallocate)
+  unsigned int          n;                             // its number, <kind>-<n>.cor
+  char                  path[600];                     // for the errors
+} CorDbSeg;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// CorDbPersist - one tenant's logs
+//
+// Lock order: 'ioMutex', then the tenant's write lock, then 'mutex'. A write takes the tenant's lock
+// and 'mutex' - its record goes into the segment there, and it never waits for the disk; the flusher
+// takes 'ioMutex' for a flush and 'mutex' only to read where the segments are; a snapshot all three.
 //
 typedef struct CorDbPersist
 {
-  pthread_mutex_t       mutex;                         // guards buf and seq
-  CorBinBuffer          buf;                           // the records not yet written
-  CorBinBuffer          spare;                         // the flusher's: written out, emptied, swapped back in
+  pthread_mutex_t       mutex;                         // guards buf, seq, the segments' appends, 'retired'
+  CorBinBuffer          buf;                           // a record being encoded - copied into the segment and emptied
   uint64_t              seq;                           // the last sequence number given out
   uint64_t              syncedSeq;                     // the last one on the disk (atomic)
   bool                  failed;                        // a write or a sync failed: what is buffered is not on the disk
 
-  pthread_mutex_t       ioMutex;                       // the file: a flush's write + sync, a snapshot's switch of segment
-  int                   fd;                            // the open log segment, log-<segment>.cor
-  unsigned int          segment;
-  unsigned long long    segBytes;                      // written to it - the segment rolls at 1 GiB
+  pthread_mutex_t       ioMutex;                       // the syncs: a flush, a snapshot's switch of segment
+  CorDbSeg              log;                           // the open log segment, log-<n>.cor
+  unsigned long long    appended;                      // bytes appended to the log, ever (under 'mutex')
+  unsigned long long    flushedAppended;               // 'appended' at the last flush (ioMutex)
   unsigned long long    sinceSnapBytes;                // log written since the last snapshot
   unsigned long long    lastSnapBytes;                 // the size of that snapshot
   bool                  snapshotDue;
   bool                  snapshotting;                  // one is being taken: the flusher arms no other
-  char                  path[600];                     // the segment's path, for the errors
   char                  dir[512];                      // the tenant's directory
   char                  tenant[64];                    // the tenant's name, for the log lines
   struct CorDbStore*    storeP;                        // the store the snapshots are taken of
 
   //
+  // Segments an append or a snapshot has moved on from: the flusher syncs them, cuts them to their
+  // length and closes them, before it syncs the open ones (under 'mutex' to add, ioMutex to finish)
+  //
+  CorDbSeg              retired[8];
+  int                   retiredN;
+
+  //
   // The history log (`--troe corDB`): its own segments, hist-<n>.cor, appended to and flushed with the
   // current-state log but never dropped by a snapshot - history is not a store's state at one instant.
-  // Guarded as the log is: 'mutex' for histBuf/histSeq, 'ioMutex' for the file.
+  // Guarded as the log is.
   //
   CorBinBuffer          histBuf;
-  CorBinBuffer          histSpare;
   uint64_t              histSeq;
   uint64_t              syncedHistSeq;                 // the last history record on the disk (atomic)
-  int                   histFd;                        // -1: no history
-  unsigned int          histSegment;
-  unsigned long long    histSegBytes;
-  char                  histPath[600];
+  CorDbSeg              hist;                          // hist.fd -1: no history
 
   struct CorDbPersist*  next;                          // every tenant's, for the flusher
 } CorDbPersist;

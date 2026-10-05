@@ -30,6 +30,7 @@
 #include <stdlib.h>                                    // free
 #include <string.h>                                    // strcmp, strerror, strlen
 #include <dirent.h>                                    // opendir, readdir
+#include <sys/mman.h>                                  // mmap, munmap
 #include <sys/stat.h>                                  // mkdir
 #include <time.h>                                      // clock_gettime
 #include <unistd.h>                                    // write, fdatasync, close
@@ -184,30 +185,134 @@ static void filePath(CorDbPersist* pP, const char* kind, unsigned int n, const c
 
 // -----------------------------------------------------------------------------
 //
-// segmentNext - the log continues in log-<segment + 1>; false if that file cannot be opened
+// The segments - mapped, appended to by a copy
 //
-// Under ioMutex. The old segment is complete: everything in it is written (and synced, by the
-// flush that called this or the snapshot that did).
+// A segment is mapped once, MAP_SHARED, over more address space than it will ever hold (it rolls at
+// 1 GiB), and the file is allocated ahead of its records, SEG_STEP at a time. An append copies the
+// record in, under the tenant's write lock: the page is the kernel's page cache, so a broker that dies
+// after the copy has lost nothing - the kernel writes it out. The flusher's fdatasync (every
+// --dbSyncInterval ms, or at once for a --dbSync request writer) is what survives the MACHINE dying.
+// Before, records waited in a buffer of the process for the flusher's write(): a crash, kill -9 or
+// an OOM kill lost up to --dbSyncInterval ms of acknowledged writes.
 //
-static bool segmentNext(CorDbPersist* pP)
+// posix_fallocate, not ftruncate: a page of a sparse file that the file system cannot back when it is
+// first written kills the process (SIGBUS) - a full disk would. Allocated ahead, a full disk is an
+// error at the allocation: the write is reported as not persistent, and the broker goes on.
+//
+// While open, the file is longer than its records and the rest is zeros; recovery reads a header of
+// zeros as the end (loadFile). A finished segment is cut to its length.
+//
+#define SEG_ROLL      (1024ULL * 1024 * 1024)          // the reader's offsets are ints: no file may reach 2 GiB
+#define SEG_HEADROOM  (256ULL * 1024 * 1024)           // address space past the roll, for the record that crosses it
+#define SEG_STEP      (4ULL * 1024 * 1024)
+
+
+
+// -----------------------------------------------------------------------------
+//
+// segOpen - <kind>-<n>.cor opened (created if need be) and mapped, its records' length its size;
+// 'need': the record it is opened for
+//
+static bool segOpen(CorDbPersist* pP, const char* kind, unsigned int n, CorDbSeg* sP, unsigned long long need)
 {
-  char path[600];
+  CorDbSeg    seg = { -1, NULL, 0, 0, 0, n, "" };
+  struct stat st;
 
-  filePath(pP, "log", pP->segment + 1, "cor", path, sizeof(path));
+  filePath(pP, kind, n, "cor", seg.path, sizeof(seg.path));
 
-  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-
-  if (fd < 0)
+  seg.fd = open(seg.path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  if (seg.fd < 0)
   {
-    COR_E("corDB: the next log segment '%s': %s - '%s' goes on", path, strerror(errno), pP->path);
+    COR_E("corDB: log segment '%s': %s", seg.path, strerror(errno));
     return false;
   }
 
-  close(pP->fd);
-  pP->fd       = fd;
-  pP->segment += 1;
-  pP->segBytes = 0;
-  strcpy(pP->path, path);
+  if (fstat(seg.fd, &st) != 0)
+  {
+    COR_E("corDB: log segment '%s': %s", seg.path, strerror(errno));
+    close(seg.fd);
+    return false;
+  }
+
+  seg.len    = (unsigned long long) st.st_size;
+  seg.alloc  = seg.len;
+  seg.mapLen = SEG_ROLL + SEG_HEADROOM;
+
+  if (seg.len + need + SEG_STEP > seg.mapLen)
+    seg.mapLen = seg.len + need + SEG_STEP;
+
+  seg.map = (char*) mmap(NULL, seg.mapLen, PROT_READ | PROT_WRITE, MAP_SHARED, seg.fd, 0);
+  if (seg.map == MAP_FAILED)
+  {
+    COR_E("corDB: mapping the log segment '%s': %s", seg.path, strerror(errno));
+    close(seg.fd);
+    return false;
+  }
+
+  *sP = seg;
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// segFinish - unmapped, cut to its records, synced (unless --dbSync none) and closed
+//
+static bool segFinish(CorDbSeg* sP, bool sync)
+{
+  bool ok = true;
+
+  if (sP->fd < 0)
+    return true;
+
+  if (sP->map != NULL)
+    munmap(sP->map, sP->mapLen);
+
+  if ((sP->alloc != sP->len) && (ftruncate(sP->fd, (off_t) sP->len) != 0))
+  {
+    COR_E("corDB: cutting the log segment '%s' to its %llu bytes: %s", sP->path, sP->len, strerror(errno));
+    ok = false;
+  }
+
+  if (sync && (fdatasync(sP->fd) != 0))
+  {
+    COR_E("corDB: fdatasync of the log segment '%s': %s - its last records may NOT be on the disk", sP->path, strerror(errno));
+    ok = false;
+  }
+
+  close(sP->fd);
+  sP->fd  = -1;
+  sP->map = NULL;
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// segRoll - the next segment takes over; the open one goes to 'retired', for the flusher. Under
+// 'mutex'. False: no next segment, the open one goes on.
+//
+static bool segRoll(CorDbPersist* pP, CorDbSeg* sP, const char* kind, unsigned long long need)
+{
+  CorDbSeg next;
+
+  if (pP->retiredN == (int) (sizeof(pP->retired) / sizeof(pP->retired[0])))
+  {
+    COR_E("corDB: '%s': %d segments wait for the flusher - '%s' goes on", pP->tenant, pP->retiredN, sP->path);
+    return false;
+  }
+
+  if (segOpen(pP, kind, sP->n + 1, &next, need) == false)
+  {
+    COR_E("corDB: no next log segment - '%s' goes on", sP->path);
+    return false;
+  }
+
+  pP->retired[pP->retiredN++] = *sP;
+  *sP = next;
 
   return true;
 }
@@ -216,27 +321,39 @@ static bool segmentNext(CorDbPersist* pP)
 
 // -----------------------------------------------------------------------------
 //
-// histSegmentNext - the history log continues in hist-<histSegment + 1> (under ioMutex)
+// segAppend - one record copied into the open segment, which rolls at 1 GiB. Under 'mutex'.
 //
-static bool histSegmentNext(CorDbPersist* pP)
+static bool segAppend(CorDbPersist* pP, CorDbSeg* sP, const char* kind, const char* rec, int n)
 {
-  char path[600];
+  if ((sP->len >= SEG_ROLL) || (sP->len + (unsigned long long) n > sP->mapLen))
+    segRoll(pP, sP, kind, (unsigned long long) n);
 
-  filePath(pP, "hist", pP->histSegment + 1, "cor", path, sizeof(path));
-
-  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-
-  if (fd < 0)
+  if (sP->len + (unsigned long long) n > sP->mapLen)
   {
-    COR_E("corDB: the next history segment '%s': %s - '%s' goes on", path, strerror(errno), pP->histPath);
+    COR_E("corDB: a record of %d bytes does not fit in '%s'", n, sP->path);
     return false;
   }
 
-  close(pP->histFd);
-  pP->histFd       = fd;
-  pP->histSegment += 1;
-  pP->histSegBytes = 0;
-  strcpy(pP->histPath, path);
+  if (sP->len + (unsigned long long) n > sP->alloc)
+  {
+    unsigned long long want = sP->len + (unsigned long long) n + SEG_STEP;
+
+    if (want > sP->mapLen)
+      want = sP->mapLen;
+
+    int e = posix_fallocate(sP->fd, (off_t) sP->alloc, (off_t) (want - sP->alloc));
+
+    if (e != 0)
+    {
+      COR_E("corDB: allocating log segment '%s' to %llu bytes: %s", sP->path, want, strerror(e));
+      return false;
+    }
+
+    sP->alloc = want;
+  }
+
+  memcpy(&sP->map[sP->len], rec, n);
+  sP->len += (unsigned long long) n;
 
   return true;
 }
@@ -245,87 +362,71 @@ static bool histSegmentNext(CorDbPersist* pP)
 
 // -----------------------------------------------------------------------------
 //
-// flushLocked - the buffer swapped out under 'mutex', written and synced with only 'ioMutex' held
+// flushLocked - the retired segments finished, the open ones synced; under 'ioMutex'
+//
+// The records are in the segments already (segAppend): what a flush adds is the sync. 'mutex' only to
+// read how far the logs go - the fds stay valid without it: only this function and a snapshot (both
+// under ioMutex) close a segment.
 //
 static void flushLocked(CorDbPersist* pP)
 {
+  CorDbSeg retired[sizeof(pP->retired) / sizeof(pP->retired[0])];
+
   pthread_mutex_lock(&pP->mutex);
 
-  CorBinBuffer out  = pP->buf;
-  uint64_t     last = pP->seq;
-  CorBinBuffer hist     = pP->histBuf;
-  uint64_t     histLast = pP->histSeq;
+  uint64_t           last     = pP->seq;
+  uint64_t           histLast = pP->histSeq;
+  int                logFd    = pP->log.fd;
+  int                histFd   = pP->hist.fd;
+  unsigned long long appended = pP->appended;
+  int                retiredN = pP->retiredN;
 
-  pP->buf          = pP->spare;
-  pP->buf.len      = 0;
-  pP->histBuf      = pP->histSpare;
-  pP->histBuf.len  = 0;
+  memcpy(retired, pP->retired, retiredN * sizeof(CorDbSeg));
+  pP->retiredN = 0;
   pthread_mutex_unlock(&pP->mutex);
 
-  bool ok = true;
+  bool sync   = (syncMode != SyncNone);
+  bool ok     = true;
+  bool histOk = true;
 
   //
-  // History first: a write's history and its current state reach the disk in the same round, before
-  // syncedSeq says the write is there - so --dbSync request covers both
+  // The retired segments first - they hold the older records - then the history, then the log: a
+  // write's history and its current state reach the disk in the same round, before syncedSeq says the
+  // write is there, so --dbSync request covers both
   //
-  if (hist.len > 0)
+  for (int i = 0; i < retiredN; i++)
+    ok = segFinish(&retired[i], sync) && ok;
+
+  if (sync && (histFd >= 0) && (fdatasync(histFd) != 0))
   {
-    if ((writeAll(pP->histFd, hist.buf, hist.len) == false) || ((syncMode != SyncNone) && (fdatasync(pP->histFd) != 0)))
-    {
-      COR_E("corDB: writing the history log '%s': %s - what was buffered may NOT be on the disk", pP->histPath, strerror(errno));
-      ok = false;
-    }
-
-    pP->histSegBytes += (unsigned long long) hist.len;
-    if (pP->histSegBytes >= 1024ULL * 1024 * 1024)
-      histSegmentNext(pP);
+    COR_E("corDB: fdatasync of the history log '%s': %s - what was appended may NOT be on the disk", pP->hist.path, strerror(errno));
+    histOk = false;
   }
 
-  if (ok)
+  if (ok && histOk)
     __atomic_store_n(&pP->syncedHistSeq, histLast, __ATOMIC_RELEASE);
 
-  hist.len      = 0;
-  pP->histSpare = hist;
-
-  if (out.len > 0)
+  if (sync && (logFd >= 0) && (fdatasync(logFd) != 0))
   {
-    if (writeAll(pP->fd, out.buf, out.len) == false)
-    {
-      COR_E("corDB: writing the log '%s': %s - what was buffered is NOT on the disk", pP->path, strerror(errno));
-      ok = false;
-    }
-    else if ((syncMode != SyncNone) && (fdatasync(pP->fd) != 0))
-    {
-      COR_E("corDB: fdatasync of the log '%s': %s - what was buffered may NOT be on the disk", pP->path, strerror(errno));
-      ok = false;
-    }
-
-    pP->segBytes       += (unsigned long long) out.len;
-    pP->sinceSnapBytes += (unsigned long long) out.len;
-
-    //
-    // A snapshot is due after --dbSnapshotEvery MiB of log AND at least as much log as the last
-    // snapshot was big. Every 64 MiB alone, a growing store was snapshotted whole, under its write
-    // lock, again and again - 8 times in 10 s of creates, the work growing with the square of the
-    // store. Tied to the snapshot's size, the snapshots cost in proportion to what is written.
-    //
-    unsigned long long every = (unsigned long long) corDbSnapshotEvery * 1024 * 1024;
-
-    if ((pP->snapshotting == false) && (pP->sinceSnapBytes >= every) && (pP->sinceSnapBytes >= pP->lastSnapBytes))
-      pP->snapshotDue = true;
-
-    //
-    // And the segment rolls at 1 GiB whatever the snapshots do: the reader's offsets are ints, so no
-    // file may reach 2 GiB - a log that did (snapshots rare, or failing) could not be replayed
-    //
-    if (pP->segBytes >= 1024ULL * 1024 * 1024)
-      segmentNext(pP);
+    COR_E("corDB: fdatasync of the log '%s': %s - what was appended may NOT be on the disk", pP->log.path, strerror(errno));
+    ok = false;
   }
 
-  out.len   = 0;
-  pP->spare = out;                                     // only under ioMutex: one flush at a time
+  pP->sinceSnapBytes  += appended - pP->flushedAppended;
+  pP->flushedAppended  = appended;
 
-  if (ok)
+  //
+  // A snapshot is due after --dbSnapshotEvery MiB of log AND at least as much log as the last
+  // snapshot was big. Every 64 MiB alone, a growing store was snapshotted whole, under its write
+  // lock, again and again - 8 times in 10 s of creates, the work growing with the square of the
+  // store. Tied to the snapshot's size, the snapshots cost in proportion to what is written.
+  //
+  unsigned long long every = (unsigned long long) corDbSnapshotEvery * 1024 * 1024;
+
+  if ((pP->snapshotting == false) && (pP->sinceSnapBytes >= every) && (pP->sinceSnapBytes >= pP->lastSnapBytes))
+    pP->snapshotDue = true;
+
+  if (ok && histOk)
     __atomic_store_n(&pP->syncedSeq, last, __ATOMIC_RELEASE);
   else
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
@@ -538,11 +639,10 @@ static void snapshot(CorDbPersist* pP)
   long            maxUs  = 0;                          // the longest any writer could have waited on it
 
   //
-  // The start. ioMutex first - the flusher waits, so whatever is appended from here on stays in the
-  // buffer for the NEW segment - then, under the tenant's write lock, only what touches no disk: the
-  // buffered records (the old segment's) swapped out, the sequence, the cursor. They are written and
-  // synced into the old segment after the lock: a writer never waits for the disk here (syncing under
-  // the lock was a create's p99 of 123 ms).
+  // The start. ioMutex first - the flusher waits - then, under the tenant's write lock, only what
+  // touches no disk but an open: the sequence, the cursor, and the log switched to a new segment, the
+  // one this snapshot's log will be. The old segment is synced and cut after the lock (flushLocked):
+  // a writer never waits for the disk here (syncing under the lock was a create's p99 of 123 ms).
   //
   // Lock order: ioMutex, then the tenant's lock, then 'mutex' - as everywhere: a writer takes the
   // tenant's lock and 'mutex', the flusher ioMutex and 'mutex'.
@@ -553,53 +653,30 @@ static void snapshot(CorDbPersist* pP)
   pthread_rwlock_wrlock(&storeP->lock);
   pthread_mutex_lock(&pP->mutex);
 
-  CorBinBuffer old     = pP->buf;
-  uint64_t     oldLast = pP->seq;
-
-  pP->buf             = pP->spare;
-  pP->buf.len         = 0;
-  pP->spare           = (CorBinBuffer) { NULL, 0, 0 };
+  ok                  = segRoll(pP, &pP->log, "log", 0);
+  n                   = pP->log.n;
   seq                 = pP->seq;
-  storeP->snapCursor  = storeP->entities->value.head;
   pP->snapshotDue     = false;
-  pP->snapshotting    = true;
-  pP->sinceSnapBytes  = 0;                             // the new segment is what this snapshot's log will be
+
+  if (ok)
+  {
+    storeP->snapCursor  = storeP->entities->value.head;
+    pP->snapshotting    = true;
+    pP->sinceSnapBytes  = 0;                           // the new segment is what this snapshot's log will be
+    pP->flushedAppended = pP->appended;                // and what went before it is not
+  }
 
   pthread_mutex_unlock(&pP->mutex);
   pthread_rwlock_unlock(&storeP->lock);
   clock_gettime(CLOCK_MONOTONIC, &t1);
   maxUs = (t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_nsec - t0.tv_nsec) / 1000;
 
-  //
-  // The old segment completed, the log switched - still under ioMutex, outside the tenant's lock
-  //
-  ok = true;
-  if (old.len > 0)
-  {
-    if ((writeAll(pP->fd, old.buf, old.len) == false) || ((syncMode != SyncNone) && (fdatasync(pP->fd) != 0)))
-    {
-      COR_E("corDB: writing the log '%s': %s - what was buffered may NOT be on the disk", pP->path, strerror(errno));
-      __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
-      ok = false;
-    }
-    else
-      __atomic_store_n(&pP->syncedSeq, oldLast, __ATOMIC_RELEASE);
+  bool rolled = ok;
 
-    pP->segBytes += (unsigned long long) old.len;
-  }
-  else
-    __atomic_store_n(&pP->syncedSeq, oldLast, __ATOMIC_RELEASE);
-
-  old.len   = 0;
-  pP->spare = old;                                     // the buffer goes on as the flusher's spare
-
-  if (ok && (segmentNext(pP) == false))
-  {
+  if (ok == false)
     COR_E("corDB: snapshot of '%s': no new log segment - no snapshot", pP->tenant);
-    ok = false;
-  }
 
-  n = pP->segment;
+  flushLocked(pP);                                     // the old segment synced and cut
   pthread_mutex_unlock(&pP->ioMutex);
 
   if (ok == false)                                     // the cursor goes: no slices to walk it
@@ -670,7 +747,8 @@ static void snapshot(CorDbPersist* pP)
 
   if (ok == false)
   {
-    COR_E("corDB: snapshot of '%s': out of memory - no snapshot", pP->tenant);
+    if (rolled)                                        // else said already
+      COR_E("corDB: snapshot of '%s': out of memory - no snapshot", pP->tenant);
     chunksFree(&snap);
     pthread_mutex_lock(&pP->ioMutex);
     pP->snapshotting = false;
@@ -1003,6 +1081,24 @@ static bool histReplay(CorDbStore* storeP, CorDbLogRecord* recP, CorAlloc* kaP)
 
 // -----------------------------------------------------------------------------
 //
+// setAside - a segment after a gap: renamed <name>.torn, out of every later replay but kept
+//
+static void setAside(const char* path)
+{
+  char torn[700];
+
+  snprintf(torn, sizeof(torn), "%s.torn", path);
+
+  if (rename(path, torn) == 0)
+    COR_W("corDB: '%s' comes after a gap in the log - set aside as '%s', not replayed", path, torn);
+  else
+    COR_E("corDB: setting '%s' aside: %s", path, strerror(errno));
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // loadFile - one snapshot or log segment replayed into the store (§ 6); false if it cannot be trusted
 //
 // Record by record until the end or the first record that is short or fails its CRC - what a death
@@ -1013,14 +1109,21 @@ static bool histReplay(CorDbStore* storeP, CorDbLogRecord* recP, CorAlloc* kaP)
 // Each record decodes into a scratch arena and is cloned into the store, as a request's tree is.
 // The arena is emptied every 1000 records: memory stays bounded whatever the file's length.
 //
-static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, bool tornIsTail, int* recordsP, bool history)
+typedef enum LoadResult
+{
+  LoadOk,                                              // read to its end (a tail of zeros or a torn record cut)
+  LoadGap,                                             // the sequence jumped: the log ends there, and so do the segments after it
+  LoadFail
+} LoadResult;
+
+static LoadResult loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, bool tornIsTail, int* recordsP, bool history, uint64_t* expectP)
 {
   int fd = open(path, O_RDONLY | O_CLOEXEC);
 
   if (fd < 0)
   {
     COR_E("corDB: '%s': %s", path, strerror(errno));
-    return false;
+    return LoadFail;
   }
 
   struct stat st;
@@ -1029,20 +1132,20 @@ static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, boo
   {
     COR_E("corDB: '%s': %s", path, strerror(errno));
     close(fd);
-    return false;
+    return LoadFail;
   }
 
   if (st.st_size == 0)
   {
     close(fd);
-    return true;
+    return LoadOk;
   }
 
   if (st.st_size > 0x7FFFFFFF)                         // the reader's offsets are ints
   {
     COR_E("corDB: '%s' is %lld bytes - more than one file can be", path, (long long) st.st_size);
     close(fd);
-    return false;
+    return LoadFail;
   }
 
   int   len = (int) st.st_size;
@@ -1066,7 +1169,7 @@ static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, boo
   {
     COR_E("corDB: reading '%s': %s", path, (buf == NULL) ? "out of memory" : strerror(errno));
     free(buf);
-    return false;
+    return LoadFail;
   }
 
   enum { ARENA_INIT = 64 * 1024 };
@@ -1080,13 +1183,34 @@ static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, boo
   if (arenaBuf == NULL)
   {
     free(buf);
-    return false;
+    return LoadFail;
   }
 
   corAllocBufferInit(&arena, arenaBuf, ARENA_INIT, 1024 * 1024, NULL, "corDB replay");
 
-  while ((status = corDbLogNext(buf, len, &off, &arena, &rec)) == CorDbLogOk)
+  int  recOff = 0;
+  bool gap    = false;
+
+  //
+  // The sequence: a log segment's records follow each other, +1 each (the first one of a replay
+  // follows whatever came before - a snapshot, possibly empty). A record that does not is after a
+  // gap - pages the machine wrote out of order before it died, past the last sync - and the log ends
+  // before it: replaying past a gap would build a store no write ever made.
+  //
+  while ((recOff = off, status = corDbLogNext(buf, len, &off, &arena, &rec)) == CorDbLogOk)
   {
+    if (expectP != NULL)
+    {
+      if ((*expectP != 0) && (rec.seq != *expectP))
+      {
+        gap = true;
+        off = recOff;
+        break;
+      }
+
+      *expectP = rec.seq + 1;
+    }
+
     if (history == true)
     {
       if (histReplay(storeP, &rec, &arena) == false)
@@ -1104,6 +1228,15 @@ static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, boo
       corAllocBufferReset(&arena, true);
   }
 
+  //
+  // Zeros from a torn record to the end: the space allocated ahead of a segment's records
+  // (segAppend) - not damage, the end
+  //
+  bool zeros = (status == CorDbLogTorn) && (gap == false);
+
+  for (int i = off; zeros && (i < len); i++)
+    zeros = (buf[i] == 0);
+
   corAllocBufferReset(&arena, false);
   free(arenaBuf);
   free(buf);
@@ -1111,13 +1244,41 @@ static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, boo
   if (failed != 0)
     COR_W("corDB: '%s': %d records did not apply - see above", path, failed);
 
+  if (gap && (off == 0))
+  {
+    setAside(path);                                    // all of it after the gap: kept, not replayed
+    return LoadGap;
+  }
+
+  if (gap)
+  {
+    COR_W("corDB: '%s': record %llu at byte %d, after %llu - a gap; the log ends before it, and the %d bytes from there are cut",
+          path, (unsigned long long) rec.seq, off, (unsigned long long) (*expectP - 1), len - off);
+    if (truncate(path, off) != 0)
+    {
+      COR_E("corDB: cutting '%s' at its gap: %s", path, strerror(errno));
+      return LoadFail;
+    }
+    return LoadGap;
+  }
+
   if (status != CorDbLogTorn)
-    return true;
+    return LoadOk;
+
+  if (zeros)                                           // cut, so the file is its records
+  {
+    if (truncate(path, off) != 0)
+    {
+      COR_E("corDB: cutting the allocated tail of '%s': %s", path, strerror(errno));
+      return LoadFail;
+    }
+    return LoadOk;
+  }
 
   if (tornIsTail == false)
   {
     COR_E("corDB: '%s': a damaged record at byte %d of %d", path, off, len);
-    return false;
+    return LoadFail;
   }
 
   COR_W("corDB: '%s': a torn record at byte %d of %d - the %d bytes after the last good record are cut", path, off, len, len - off);
@@ -1125,10 +1286,10 @@ static bool loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* path, boo
   if (truncate(path, off) != 0)
   {
     COR_E("corDB: cutting the torn tail of '%s': %s", path, strerror(errno));
-    return false;
+    return LoadFail;
   }
 
-  return true;
+  return LoadOk;
 }
 
 
@@ -1236,18 +1397,21 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
 
   clock_gettime(CLOCK_MONOTONIC, &t0);
 
-  pP->segment = haveSnap ? snapN : 0;
+  pP->log.n = haveSnap ? snapN : 0;
 
   struct stat st;
 
   if (haveSnap)
   {
     filePath(pP, "snap", snapN, "cor", path, sizeof(path));
-    ok = loadFile(pP, storeP, path, false, &records, false);
+    ok = (loadFile(pP, storeP, path, false, &records, false, NULL) == LoadOk);
 
     if (stat(path, &st) == 0)
       pP->lastSnapBytes = (unsigned long long) st.st_size;
   }
+
+  uint64_t expect = 0;
+  bool     gap    = false;
 
   for (int i = 0; (ok == true) && (i < logs); i++)
   {
@@ -1255,8 +1419,18 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
       continue;
 
     filePath(pP, "log", logV[i], "cor", path, sizeof(path));
-    ok          = loadFile(pP, storeP, path, (i == logs - 1), &records, false);
-    pP->segment = logV[i];
+
+    if (gap)
+    {
+      setAside(path);
+      continue;
+    }
+
+    LoadResult r = loadFile(pP, storeP, path, (i == logs - 1), &records, false, &expect);
+
+    ok        = (r != LoadFail);
+    gap       = (r == LoadGap);
+    pP->log.n = logV[i];
 
     if (stat(path, &st) == 0)                          // after a torn tail's cut
       pP->sinceSnapBytes += (unsigned long long) st.st_size;
@@ -1273,14 +1447,24 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
   if ((ok == true) && (hists > 0) && (storeP->historyP == NULL))
     COR_W("corDB: tenant '%s' has a history (%d segments) and this broker runs without --troe corDB - left as it is", pP->tenant, hists);
 
+  expect = 0;
+  gap    = false;
+
   for (int i = 0; (ok == true) && (storeP->historyP != NULL) && (i < hists); i++)
   {
     filePath(pP, "hist", histV[i], "cor", path, sizeof(path));
-    ok              = loadFile(pP, storeP, path, (i == hists - 1), &records, true);
-    pP->histSegment = histV[i];
 
-    if ((i == hists - 1) && (stat(path, &st) == 0))
-      pP->histSegBytes = (unsigned long long) st.st_size;
+    if (gap)
+    {
+      setAside(path);
+      continue;
+    }
+
+    LoadResult r = loadFile(pP, storeP, path, (i == hists - 1), &records, true, &expect);
+
+    ok         = (r != LoadFail);
+    gap        = (r == LoadGap);
+    pP->hist.n = histV[i];
   }
 
   free(histV);
@@ -1345,28 +1529,18 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
     exit(1);
   }
 
-  filePath(pP, "log", pP->segment, "cor", pP->path, sizeof(pP->path));
-
-  pP->fd = open(pP->path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-  if (pP->fd < 0)
+  if (segOpen(pP, "log", pP->log.n, &pP->log, 0) == false)
   {
-    COR_E("corDB: log '%s': %s - the tenant is NOT persistent", pP->path, strerror(errno));
+    COR_E("corDB: tenant '%s' is NOT persistent", tenantP->name);
     free(pP);
     return NULL;
   }
 
-  struct stat st;
-  if (fstat(pP->fd, &st) == 0)
-    pP->segBytes = (unsigned long long) st.st_size;
-
-  pP->histFd = -1;
-  if (storeP->historyP != NULL)
+  pP->hist.fd = -1;
+  if ((storeP->historyP != NULL) && (segOpen(pP, "hist", pP->hist.n, &pP->hist, 0) == false))
   {
-    filePath(pP, "hist", pP->histSegment, "cor", pP->histPath, sizeof(pP->histPath));
-
-    pP->histFd = open(pP->histPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-    if (pP->histFd < 0)
-      COR_E("corDB: history log '%s': %s - the tenant's history is NOT persistent", pP->histPath, strerror(errno));
+    COR_E("corDB: tenant '%s': its history is NOT persistent", tenantP->name);
+    pP->hist.fd = -1;
   }
 
   pthread_mutex_init(&pP->mutex, NULL);
@@ -1378,6 +1552,26 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
   pthread_mutex_unlock(&flushMutex);
 
   return pP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// logPut - the record in pP->buf into the log's segment; under 'mutex'. False: not persistent (said
+// why), and the sequence number is not used - a log's numbers have no gap (loadFile reads one as the
+// end of the log)
+//
+static bool logPut(CorDbPersist* pP)
+{
+  if (segAppend(pP, &pP->log, "log", pP->buf.buf, pP->buf.len) == false)
+  {
+    __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+    return false;
+  }
+
+  pP->appended += (unsigned long long) pP->buf.len;
+  return true;
 }
 
 
@@ -1397,13 +1591,17 @@ void corDbPersistAppend(CorDbPersist* pP, CorDbLogOp op, CorNode* bodyP)
 
   uint64_t seq = pP->seq + 1;
 
-  if (corDbLogEncode(&pP->buf, op, seq, t, bodyP) == true)
-    pP->seq = seq;
-  else
+  pP->buf.len = 0;
+  if (corDbLogEncode(&pP->buf, op, seq, t, bodyP) == false)
   {
-    COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->path);
+    COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+    seq = pP->seq;
   }
+  else if (logPut(pP) == false)
+    seq = pP->seq;
+  else
+    pP->seq = seq;
 
   pthread_mutex_unlock(&pP->mutex);
 
@@ -1438,7 +1636,7 @@ void corDbPersistAppendId(CorDbPersist* pP, CorDbLogOp op, const char* id)
 //
 void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
 {
-  if ((pP == NULL) || (pP->histFd < 0))
+  if ((pP == NULL) || (pP->hist.fd < 0))
     return;
 
   uint32_t crc = corCrc32c(0, body, bodyLen);
@@ -1446,13 +1644,16 @@ void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
 
   pthread_mutex_lock(&pP->mutex);
 
-  if (corDbLogAppendEncoded(&pP->histBuf, CorDbLogHistInstance, pP->histSeq + 1, t, body, bodyLen, crc) == true)
-    ++pP->histSeq;
-  else
+  pP->histBuf.len = 0;
+  if (corDbLogAppendEncoded(&pP->histBuf, CorDbLogHistInstance, pP->histSeq + 1, t, body, bodyLen, crc) == false)
   {
     COR_E("corDB: out of memory for the history log of '%s' - a history record is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
   }
+  else if (segAppend(pP, &pP->hist, "hist", pP->histBuf.buf, pP->histBuf.len) == true)
+    ++pP->histSeq;
+  else
+    __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
 
   pthread_mutex_unlock(&pP->mutex);
 }
@@ -1526,13 +1727,17 @@ void corDbPersistAppendPre(CorDbPersist* pP, CorDbLogOp op, CorDbPre* preP, int 
 
   uint64_t seq = pP->seq + 1;
 
-  if (corDbLogAppendEncoded(&pP->buf, op, seq, t, &preP->buf.buf[preP->offV[ix]], preP->lenV[ix], preP->crcV[ix]) == true)
-    pP->seq = seq;
-  else
+  pP->buf.len = 0;
+  if (corDbLogAppendEncoded(&pP->buf, op, seq, t, &preP->buf.buf[preP->offV[ix]], preP->lenV[ix], preP->crcV[ix]) == false)
   {
-    COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->path);
+    COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+    seq = pP->seq;
   }
+  else if (logPut(pP) == false)
+    seq = pP->seq;
+  else
+    pP->seq = seq;
 
   pthread_mutex_unlock(&pP->mutex);
 
@@ -1745,24 +1950,14 @@ void corDbPersistClose(void)
   {
     nextP = pP->next;
 
-    if (fsync(pP->fd) != 0)
-      COR_E("corDB: fsync of the log '%s': %s", pP->path, strerror(errno));
-    close(pP->fd);
-
-    if (pP->histFd >= 0)
-    {
-      if (fsync(pP->histFd) != 0)
-        COR_E("corDB: fsync of the history log '%s': %s", pP->histPath, strerror(errno));
-      close(pP->histFd);
-    }
+    segFinish(&pP->log, true);                         // cut to its records, synced whatever --dbSync says
+    segFinish(&pP->hist, true);
     free(pP->histBuf.buf);
-    free(pP->histSpare.buf);
 
     if (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true)
-      COR_E("corDB: the log '%s' had a write error - what it lost is in the errors above", pP->path);
+      COR_E("corDB: the log of '%s' had a write error - what it lost is in the errors above", pP->tenant);
 
     free(pP->buf.buf);
-    free(pP->spare.buf);
     pthread_mutex_destroy(&pP->mutex);
     pthread_mutex_destroy(&pP->ioMutex);
     free(pP);

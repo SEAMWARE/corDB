@@ -42,9 +42,11 @@ Through the broker: coraine's functional suite run with `-db corDB` (`corTest`),
 ## Persistence
 
 In RAM by default. With `--dbDir <directory>` the store survives a restart: every write appends its
-effect to a log (per tenant), synced every 100 ms, with a snapshot as the log grows - taken in
-slices, so a writer waits for it a few milliseconds at most. A clean stop loses nothing; `kill -9` at
-most the last 100 ms (`--dbSync request`: nothing acknowledged). 100 000 entities are back in 0.2 s.
+effect to a log (per tenant, memory-mapped: the record is in the kernel's page cache before the
+response), synced every 100 ms, with a snapshot as the log grows - taken in slices, so a writer waits
+for it a few milliseconds at most. A clean stop loses nothing, and neither does `kill -9`, a crash or
+an OOM kill; a machine that dies, at most the last 100 ms (`--dbSync request`: nothing acknowledged).
+100 000 entities are back in 0.2 s.
 
 ```console
 coraine --database corDB --dbDir /var/lib/coraine
