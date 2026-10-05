@@ -13,18 +13,18 @@
 // COR_DB_SYS_TIMES (0 by default).
 //
 // corNgsild gives the entity, every attribute instance and every sub-attribute a createdAt and a
-// modifiedAt member. Nearly all of them say the same thing: an entity is created whole, so its objects'
-// createdAt is the entity's, and an object nobody changed has modifiedAt == createdAt. With
-// COR_DB_SYS_TIMES=1 the store keeps only what an object cannot inherit:
+// modifiedAt member. An entity is created whole, with one time. With COR_DB_SYS_TIMES=1 the store keeps
+// that one time - the entity's createdAt - and, below the entity, only the times that differ from it:
 //
-//   createdAt   kept only where it differs from the parent's (the entity's for an instance, the
-//               instance's for a sub-attribute) - the entity always keeps its own
-//   modifiedAt  kept only where it differs from the object's own createdAt
+//   created entity       the entity's createdAt; its modifiedAt only once it differs
+//   modified attribute   its own modifiedAt (its createdAt still the entity's)
+//   added attribute      its own createdAt and modifiedAt
 //
-// A tree is converted at the store's edges only - corDbTreeIn drops what is inherited, corDbTreeOut puts
-// it back (last, where corNgsild puts it). Everything outside corDB sees the members as ever, and the
-// store is plain CorNodes, freed as ever. A reader of a STORE object asks corDbCreatedAt / corDbModifiedAt
-// with the object's parent chain. Never inside a value: a Property's JSON value is the user's.
+// A tree is converted at the store's edges only, in one pass - corDbTreeIn leaves out every createdAt /
+// modifiedAt equal to the entity's createdAt, corDbTreeOut puts them back (a createdAt right before its
+// object's modifiedAt, both last when neither is there - where corNgsild puts them). Everything outside
+// corDB sees the members as ever; the store, the log and the snapshot keep the short form, plain
+// CorNodes. Never inside a value: a Property's JSON value is the user's.
 //
 // With COR_DB_SYS_TIMES=0 corDbTreeIn / corDbTreeOut are corTreeClone, the accessors member lookups.
 //
@@ -44,26 +44,26 @@
 
 // -----------------------------------------------------------------------------
 //
-// corDbTreeIn - an ENTITY (or an attribute of one: 'parentCreatedAt' its entity's createdAt) into the
-// store, malloc, what is inherited left out
+// corDbTreeIn - an ENTITY (entityCreatedAt 0), or one of its attributes (entityCreatedAt its entity's),
+// into the store, malloc, what it inherits left out
 //
-extern CorNode* corDbTreeIn(CorNode* srcP, int64_t parentCreatedAt);
+extern CorNode* corDbTreeIn(CorNode* srcP, int64_t entityCreatedAt);
 
 
 
 // -----------------------------------------------------------------------------
 //
-// corDbTreeOut - a store ENTITY (or attribute: 'parentCreatedAt' as above) out of it, its times complete
+// corDbTreeOut - a store ENTITY (entityCreatedAt 0), or one of its attributes (entityCreatedAt its
+// entity's), out of it, every time in place
 //
-extern CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt);
+extern CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt);
 
 
 
 // -----------------------------------------------------------------------------
 //
-// corDbCreatedAt / corDbModifiedAt - an object's times as they are: its member, else inherited
-//
-// parentCreatedAt: the parent's createdAt (0 for the entity itself)
+// corDbCreatedAt / corDbModifiedAt - an object's times as they are: its member, else the entity's
+// createdAt - parentCreatedAt (0 for the entity itself, whose modifiedAt is then its createdAt)
 //
 extern int64_t corDbCreatedAt(CorNode* nodeP, int64_t parentCreatedAt);
 extern int64_t corDbModifiedAt(CorNode* nodeP, int64_t parentCreatedAt);

@@ -33,8 +33,8 @@
 // -----------------------------------------------------------------------------
 //
 // attrsReform - the fragment's attributes of a live entity swapped for another form of themselves:
-// complete (toFull, every inherited time in place - what ldEntityAttrsSet reads and writes) or the
-// store's (what the store keeps - corDbSysTimes.h)
+// whole (toFull, every inherited time in place - what ldEntityAttrsSet reads and keeps) or the store's
+// (corDbSysTimes.h)
 //
 static void attrsReform(CorNode* eP, CorNode* fragmentDb, bool toFull)
 {
@@ -93,11 +93,11 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
     {
       // NULL allocator → malloc heap (tenant store lifetime)
 #if COR_DB_SYS_TIMES
-      attrsReform(eP, fragmentDb, true);             // what the attributes inherit, in place - ldEntityAttrsSet reads it
+      attrsReform(eP, fragmentDb, true);              // what the attributes inherit, in place - ldEntityAttrsSet keeps it
+#endif
       ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
-      attrsReform(eP, fragmentDb, false);            // and the store's form again
-#else
-      ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
+#if COR_DB_SYS_TIMES
+      attrsReform(eP, fragmentDb, false);             // and the store's form again: only the new times stay
 #endif
 
       //

@@ -55,8 +55,8 @@ static void replaceOrAdd(CorNode* live, const char* name, CorNode* srcNode)
     return;
 
   //
-  // NULL allocator == malloc == store lifetime. An attribute in the store's form: what its instances
-  // inherit from the entity left out (corDbSysTimes.h)
+  // NULL allocator == malloc == store lifetime. In the store's form: the times its entity's createdAt
+  // gives left out (corDbSysTimes.h)
   //
   CorNode* clone = corDbTreeIn(srcNode, corDbCreatedAt(live, 0));
   CorNode* old  = corTreeLookup(live, name);

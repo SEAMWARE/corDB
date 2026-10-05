@@ -34,11 +34,44 @@ static int64_t memberTime(CorNode* nodeP, const char* name)
 
 // -----------------------------------------------------------------------------
 //
+// isCreatedAt / isModifiedAt - the system timestamp members (integers)
+//
+static inline bool isCreatedAt(CorNode* mP)
+{
+  return (mP->type == CorInt) && (mP->name != NULL) && (mP->name[0] == 'c') && (strcmp(mP->name, "createdAt") == 0);
+}
+
+static inline bool isModifiedAt(CorNode* mP)
+{
+  return (mP->type == CorInt) && (mP->name != NULL) && (mP->name[0] == 'm') && (strcmp(mP->name, "modifiedAt") == 0);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// headCreatedAt - a store entity's createdAt: its FIRST member (corDbTreeIn puts it there - one hop),
+// else looked up (an entity stored whole)
+//
+static inline int64_t headCreatedAt(CorNode* nodeP)
+{
+  if ((nodeP == NULL) || (nodeP->type != CorObject))
+    return 0;
+
+  CorNode* hP = nodeP->value.head;
+
+  return ((hP != NULL) && isCreatedAt(hP)) ? (int64_t) hP->value.i : memberTime(nodeP, "createdAt");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbCreatedAt / corDbModifiedAt -
 //
 int64_t corDbCreatedAt(CorNode* nodeP, int64_t parentCreatedAt)
 {
-  int64_t t = memberTime(nodeP, "createdAt");
+  int64_t t = (COR_DB_SYS_TIMES == 1) ? headCreatedAt(nodeP) : memberTime(nodeP, "createdAt");
 
   return ((t == 0) && (COR_DB_SYS_TIMES == 1)) ? parentCreatedAt : t;
 }
@@ -64,21 +97,18 @@ static bool opaque(const char* name)
                             (strcmp(name, "valueList") == 0) || (strcmp(name, "objectList") == 0));
 }
 
-static bool isTime(CorNode* mP, const char* name)
-{
-  return (mP->type == CorInt) && (mP->name != NULL) && (strcmp(mP->name, name) == 0);
-}
+
+
 
 
 
 // -----------------------------------------------------------------------------
 //
-// treeIn - the object's own createdAt (0: none) is 'createdAt'; its children's parent is it
+// treeIn - a tree into the store, one pass, the clone's own: every createdAt / modifiedAt below the entity
+// equal to the entity's createdAt left out (the entity is created whole, with one time - an object written
+// since keeps its own), and the entity's modifiedAt while it is its createdAt
 //
-// 'level': 0 the entity (keeps both), 1 an attribute's dataset wrapper (no times), 2+ an instance, a
-// sub-attribute - an object with times.
-//
-static CorNode* treeIn(CorNode* srcP, int64_t parentCreatedAt, bool inValue, int level)
+static CorNode* treeIn(CorNode* srcP, int64_t entityCreatedAt, bool inValue, int level)
 {
   if ((srcP->type != CorObject) && (srcP->type != CorArray))
     return corTreeClone(NULL, srcP);
@@ -91,26 +121,31 @@ static CorNode* treeIn(CorNode* srcP, int64_t parentCreatedAt, bool inValue, int
   nodeP->flags  = srcP->flags;
   nodeP->termId = srcP->termId;
 
-  //
-  // This object's times: what it inherits, what it keeps
-  //
-  int64_t createdAt  = memberTime(srcP, "createdAt");
-  int64_t modifiedAt = memberTime(srcP, "modifiedAt");
-  bool    timed      = (srcP->type == CorObject) && (inValue == false) && ((createdAt != 0) || (modifiedAt != 0));
-  bool    dropC      = timed && (level > 0) && (createdAt == parentCreatedAt);
-  int64_t ownC       = (createdAt != 0) ? createdAt : parentCreatedAt;
-  bool    dropM      = timed && (level > 0) && (modifiedAt == ownC);
+  bool timed = (srcP->type == CorObject) && (inValue == false) && ((level == 0) || (level >= 2));
+
+  if (level == 0)                                     // the entity's createdAt FIRST: found in one hop
+  {
+    CorNode* tP = corTreeInteger(NULL, "createdAt", entityCreatedAt);
+
+    if (tP == NULL)
+    {
+      corTreeFree(nodeP);
+      return NULL;
+    }
+
+    tP->termId = CorTermCreatedAt;
+    corTreeChildAdd(nodeP, tP);
+  }
 
   for (CorNode* mP = srcP->value.head; mP != NULL; mP = mP->next)
   {
-    if (timed && dropC && isTime(mP, "createdAt"))
-      continue;
-    if (timed && dropM && isTime(mP, "modifiedAt"))
+    if ((level == 0) && isCreatedAt(mP))
       continue;
 
-    bool     childInValue = inValue || ((srcP->type == CorObject) && opaque(mP->name));
-    int64_t  childParent  = (timed == true) ? ownC : parentCreatedAt;   // a dataset wrapper passes its parent's on
-    CorNode* cP           = treeIn(mP, childParent, childInValue, (srcP->type == CorObject) ? level + 1 : level);
+    if (timed && (mP->value.i == entityCreatedAt) && (isModifiedAt(mP) || ((level >= 2) && isCreatedAt(mP))))
+      continue;
+
+    CorNode* cP = treeIn(mP, entityCreatedAt, inValue || ((srcP->type == CorObject) && opaque(mP->name)), (srcP->type == CorObject) ? level + 1 : level);
 
     if (cP == NULL)
     {
@@ -128,23 +163,11 @@ static CorNode* treeIn(CorNode* srcP, int64_t parentCreatedAt, bool inValue, int
 
 // -----------------------------------------------------------------------------
 //
-// isAttrObject - an object that carries times: an instance or a sub-attribute (it has a "type", or is
-// the entity) - not a dataset wrapper, not a value
+// treeOut - a store tree out, one pass, the clone's own: what is left out put back - the entity's
+// createdAt, right before an object's own modifiedAt or, with neither, both last (where corNgsild puts
+// them); an object below the entity is one with a "type"
 //
-static bool hasType(CorNode* nodeP)
-{
-  CorNode* tP = corTreeLookup(nodeP, "type");
-
-  return (tP != NULL) && (tP->type == CorString);
-}
-
-
-
-// -----------------------------------------------------------------------------
-//
-// treeOut -
-//
-static CorNode* treeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt, bool inValue, int level)
+static CorNode* treeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt, bool inValue, int level)
 {
   if ((storeP->type != CorObject) && (storeP->type != CorArray))
     return corTreeClone(kaP, storeP);
@@ -157,15 +180,38 @@ static CorNode* treeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt,
   nodeP->flags  = storeP->flags;
   nodeP->termId = storeP->termId;
 
-  bool    timed     = (storeP->type == CorObject) && (inValue == false) && ((level == 0) || ((level >= 2) && hasType(storeP)));
-  int64_t createdAt = memberTime(storeP, "createdAt");
-  int64_t ownC      = (createdAt != 0) ? createdAt : parentCreatedAt;
+  bool timed   = (storeP->type == CorObject) && (inValue == false) && ((level == 0) || (level >= 2)) && (entityCreatedAt != 0);
+  bool hasType = (level == 0);
+  bool seenC   = false;
+  bool seenM   = false;
 
   for (CorNode* mP = storeP->value.head; mP != NULL; mP = mP->next)
   {
-    bool     childInValue = inValue || ((storeP->type == CorObject) && opaque(mP->name));
-    int64_t  childParent  = (timed == true) ? ownC : parentCreatedAt;
-    CorNode* cP           = treeOut(kaP, mP, childParent, childInValue, (storeP->type == CorObject) ? level + 1 : level);
+    if (timed && (mP->type == CorInt) && (mP->name != NULL))
+    {
+      if (isCreatedAt(mP))
+      {
+        if (level == 0)                               // the store keeps it first - out, it goes where it was
+          continue;
+        seenC = true;
+      }
+      else if (isModifiedAt(mP))
+      {
+        if (seenC == false)
+        {
+          CorNode* tP = corTreeInteger(kaP, "createdAt", entityCreatedAt);
+
+          tP->termId = CorTermCreatedAt;
+          corTreeChildAdd(nodeP, tP);
+          seenC = true;
+        }
+        seenM = true;
+      }
+    }
+    else if (timed && (hasType == false) && (mP->name != NULL) && (mP->name[0] == 't') && (strcmp(mP->name, "type") == 0))
+      hasType = true;
+
+    CorNode* cP = treeOut(kaP, mP, entityCreatedAt, inValue || ((storeP->type == CorObject) && opaque(mP->name)), (storeP->type == CorObject) ? level + 1 : level);
 
     if (cP == NULL)
       return NULL;
@@ -173,22 +219,21 @@ static CorNode* treeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt,
     corTreeChildAdd(nodeP, cP);
   }
 
-  if ((timed == true) && (ownC != 0))
+  if (timed && hasType)
   {
-    //
-    // What it inherited, put back where corNgsild puts it: last
-    //
-    if (corTreeLookup(storeP, "createdAt") == NULL)
+    if (seenC == false)
     {
-      CorNode* tP = corTreeInteger(kaP, "createdAt", ownC);
-      tP->termId  = CorTermCreatedAt;
+      CorNode* tP = corTreeInteger(kaP, "createdAt", entityCreatedAt);
+
+      tP->termId = CorTermCreatedAt;
       corTreeChildAdd(nodeP, tP);
     }
 
-    if (corTreeLookup(storeP, "modifiedAt") == NULL)
+    if (seenM == false)
     {
-      CorNode* tP = corTreeInteger(kaP, "modifiedAt", ownC);
-      tP->termId  = CorTermModifiedAt;
+      CorNode* tP = corTreeInteger(kaP, "modifiedAt", entityCreatedAt);
+
+      tP->termId = CorTermModifiedAt;
       corTreeChildAdd(nodeP, tP);
     }
   }
@@ -202,16 +247,37 @@ static CorNode* treeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt,
 //
 // corDbTreeIn / corDbTreeOut -
 //
-// An entity is level 0; an attribute (its dataset wrapper) level 1, its parent the entity's createdAt.
+// An entity (entityCreatedAt 0) is level 0 - its createdAt the one its objects inherit. An attribute
+// (its dataset wrapper) is level 1, 'entityCreatedAt' its entity's.
 //
-CorNode* corDbTreeIn(CorNode* srcP, int64_t parentCreatedAt)
+CorNode* corDbTreeIn(CorNode* srcP, int64_t entityCreatedAt)
 {
-  return treeIn(srcP, parentCreatedAt, false, (parentCreatedAt == 0) ? 0 : 1);
+  if (entityCreatedAt == 0)
+  {
+    int64_t createdAt = memberTime(srcP, "createdAt");
+
+    if (createdAt == 0)                               // no createdAt (none to inherit): stored as it is
+      return corTreeClone(NULL, srcP);
+
+    return treeIn(srcP, createdAt, false, 0);
+  }
+
+  return treeIn(srcP, entityCreatedAt, false, 1);
 }
 
-CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt)
+CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt)
 {
-  return treeOut(kaP, storeP, parentCreatedAt, false, (parentCreatedAt == 0) ? 0 : 1);
+  if (entityCreatedAt == 0)
+  {
+    int64_t createdAt = headCreatedAt(storeP);
+
+    if (createdAt == 0)
+      return corTreeClone(kaP, storeP);
+
+    return treeOut(kaP, storeP, createdAt, false, 0);
+  }
+
+  return treeOut(kaP, storeP, entityCreatedAt, false, 1);
 }
 
 #else

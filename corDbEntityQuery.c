@@ -100,7 +100,8 @@ static int distCandCmp(const void* a, const void* b)
 
 // -----------------------------------------------------------------------------
 //
-// qSubTimesUsed - does the q name an attribute's (or sub-attribute's) createdAt or modifiedAt?
+// qSubTimesUsed - does the q name a time the store may leave out: the entity's modifiedAt, an attribute's
+// (or sub-attribute's) createdAt or modifiedAt?
 //
 static bool qSubTimesUsed(LdQNode* nodeP)
 {
@@ -109,6 +110,9 @@ static bool qSubTimesUsed(LdQNode* nodeP)
 
   if (nodeP->type == LdQTermNode)
   {
+    if ((nodeP->term.subPathN == 0) && (strcmp(nodeP->term.attr, "modifiedAt") == 0))
+      return true;
+
     for (int ix = 0; ix < nodeP->term.subPathN; ix++)
     {
       if ((strcmp(nodeP->term.subPathV[ix], "createdAt") == 0) || (strcmp(nodeP->term.subPathV[ix], "modifiedAt") == 0))
@@ -291,8 +295,9 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
     if (filterP != NULL && filterP->qExpr != NULL)
     {
       //
-      // A q on an attribute's own createdAt / modifiedAt reads what the store may leave out - it is
-      // matched against the entity with every time in place (corDbSysTimes.h). Rare: a copy each.
+      // A q on the entity's modifiedAt or an attribute's own createdAt / modifiedAt reads what the store
+      // may leave out - it is matched against the entity with every time in place (corDbSysTimes.h).
+      // Rare: a copy each.
       //
       CorNode* matchP = (qSubTimes == true) ? corDbTreeOut(corRest.kallocP, eP, 0) : eP;
 
