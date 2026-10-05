@@ -58,6 +58,7 @@ coraine --database corDB --dbDir /var/lib/coraine
 | `--dbSync` | `interval` | `request`: a write answers once its record is synced; `none`: never synced |
 | `--dbSyncInterval` | 100 | ms |
 | `--dbSnapshotEvery` | 64 | MiB of log (and at least as much as the last snapshot) |
+| `--dbCompress` | off | snapshots and finished segments compressed (zstd, loaded only then); read with or without it |
 
 [The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
 [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".

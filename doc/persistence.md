@@ -19,7 +19,8 @@ tenant (`corDbStore.h`). A restart loses all of it. After this step:
   (the default; MongoDB's journal makes the same promise) - nothing, with `--dbSync request`
 - recovery time is bounded by a snapshot, not by the age of the broker
 - **no new library**: `open`, `mmap`, `posix_fallocate`, `fdatasync`, `rename`, `ftruncate` - and the
-  cor:// codec the broker already has
+  cor:// codec the broker already has. `--dbCompress` uses zstd, loaded (`dlopen`) when needed and
+  never linked - libzstd is in every coraine that has OpenSSL (libcrypto depends on it)
 
 Not in this step: history retention, the selector, the temporal index, a standalone corDB server.
 Each needs the log; none changes its format (§ 7).
@@ -194,6 +195,31 @@ Older snapshots and logs are deleted once the new snapshot is durable (history, 
 
 Measured target: recovery at memory-bandwidth speed - decoding cor binary, no JSON parse.
 
+## 6a. `--dbCompress`
+
+The snapshots and the finished log and history segments are compressed with zstd (level 3) - never
+the open segment, which a write appends to. On the snapshot thread: a snapshot is compressed as it is
+written, a finished segment (synced, cut, closed by the flusher) after the snapshots - the same thread
+drops the segments a snapshot covers, so nothing is compressed while it is deleted or renamed back
+into being after. A segment is compressed into `<segment>.ztmp`, synced, and renamed over itself; a
+`.ztmp` found at a start is an interrupted compression, deleted.
+
+- **One name, two forms**: the first four bytes - zstd's magic, or a record's `'c'` - tell a compressed
+  file from a plain one. A start reads either, with the option or without (libzstd loaded on demand;
+  absent, the broker does not start on a store it cannot read).
+- **64 MiB frames**: a file is a sequence of zstd frames of at most 64 MiB of content - a segment is
+  never one buffer, to compress or to read.
+- **Segments roll at 64 MiB** with the option (1 GiB without): a history, which no snapshot drops, is
+  then mostly finished, compressed segments.
+- **A compressed file is whole** (it appeared by a rename): one that does not decode to its end is
+  damage, and the broker does not start - not a torn tail to cut.
+- The newest segment compressed (finished, and the next one never written) - the log goes on in a new one.
+- A start with the option compresses the finished segments a run without it left.
+
+Measured on perfRun's fixture (2026-10-05, a fixture that favours a compressor: every entity has the
+same 200-character description): 100 000 entities 74.4 MB → 1.36 MB (MongoDB's files: 11.3 MB); their
+history, ten updates each, 426 MB → 52 MB (TimescaleDB: 1.73 GB).
+
 ## 7. What history adds later, and why nothing here stops it
 
 - **History on** = keep logs and snapshots past the newest snapshot, by the retention policy
@@ -214,6 +240,7 @@ Measured target: recovery at memory-bandwidth speed - decoding cor binary, no JS
 | `--dbDir <path>` | none: no persistence, as today | the tenants' directories |
 | `--dbSync interval\|request\|none` | `interval` | § 5 |
 | `--dbSyncInterval <ms>` | 100 | |
+| `--dbCompress` | off | the snapshots and the finished segments compressed (zstd), on the snapshot thread; segments roll at 64 MiB instead of 1 GiB; a start reads a compressed store with or without it - § 6a |
 | `--dbSnapshotEvery <MiB of log>` | 64 | and at a clean stop |
 
 No `--dbDir`, no change: a corDB without a directory is the in-RAM store of today, at today's speed.
@@ -290,13 +317,10 @@ current. Not in the snapshot: rebuilt from the data, so it can never disagree wi
 - With `--dbSync request`, a failed write or sync is logged, and the request still answers its
   success: the wait happens as the write lock is released, after the operation has returned. The
   503 of § 5 needs the outcome carried back to the operation.
-- **Size.** Nothing is compressed. On perfRun's fixture (2026-10-05) the current state takes 744
-  bytes an entity - MongoDB's documents 1 072, but its files 113 (WiredTiger compresses; the fixture
-  is repetitive). A record decodes on its own, so each carries its attributes' expanded IRIs again.
-  Two steps, neither on the write path: a snapshot and a rolled segment compressed as they are
-  written (zstd), the open segment as it is; and a table of the IRIs per snapshot or segment, the
-  records naming them by number (a format change). History is already a quarter to a sixth of
-  TimescaleDB's room.
+- **Size.** Without `--dbCompress` nothing is compressed: on perfRun's fixture (2026-10-05) the current
+  state takes 744 bytes an entity - MongoDB's documents 1 072, its files 113 (WiredTiger compresses).
+  A record decodes on its own, so each carries its attributes' expanded IRIs again. Not done yet: a
+  table of the IRIs per snapshot or segment, the records naming them by number (a format change).
 
 Decided: the CRC is CRC-32C (corBase's `corCrc32c`, hardware on x86-64 and ARMv8). Hosted
 `@context`s are not corDB's - the plugin implements none of the driver's context functions - so the
