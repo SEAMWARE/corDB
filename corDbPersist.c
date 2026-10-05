@@ -21,6 +21,7 @@
 // which no escaped name can be.
 //
 #define _GNU_SOURCE                                    // pthread_setname_np
+#include <dlfcn.h>                                     // dlopen, dlsym
 #include <errno.h>                                     // errno
 #include <fcntl.h>                                     // open, O_*
 #include <pthread.h>                                   // pthread_*
@@ -186,6 +187,168 @@ static void filePath(CorDbPersist* pP, const char* kind, unsigned int n, const c
 
 // -----------------------------------------------------------------------------
 //
+// zstd - --dbCompress: the snapshots and the finished segments, compressed
+//
+// libzstd is loaded when it is needed - --dbCompress, or a compressed file to read at a start - and
+// never linked: a corDB without the option carries no dependency for it. The five functions are
+// declared here (zstd's stable API), so no header is needed to build either.
+//
+// A compressed file is a sequence of zstd frames, one per 64 MiB of what it holds: a 1 GiB segment is
+// compressed and decompressed without ever being one buffer. It replaces the file it compresses with
+// a rename - a compressed file is always whole, never torn - and keeps its name: the first four bytes
+// (zstd's magic) tell it from a log or a snapshot, whose first byte is 'c'.
+//
+typedef size_t             (*ZstdCompressFunc)(void* dst, size_t dstCap, const void* src, size_t srcLen, int level);
+typedef size_t             (*ZstdDecompressFunc)(void* dst, size_t dstCap, const void* src, size_t srcLen);
+typedef size_t             (*ZstdBoundFunc)(size_t srcLen);
+typedef unsigned long long (*ZstdContentSizeFunc)(const void* src, size_t srcLen);
+typedef size_t             (*ZstdFrameSizeFunc)(const void* src, size_t srcLen);
+typedef unsigned           (*ZstdIsErrorFunc)(size_t code);
+
+static struct
+{
+  pthread_mutex_t      mutex;
+  bool                 tried;
+  bool                 ok;
+  ZstdCompressFunc     compress;
+  ZstdDecompressFunc   decompress;
+  ZstdBoundFunc        bound;
+  ZstdContentSizeFunc  contentSize;
+  ZstdFrameSizeFunc    frameSize;
+  ZstdIsErrorFunc      isError;
+} zstd = { PTHREAD_MUTEX_INITIALIZER, false, false, NULL, NULL, NULL, NULL, NULL, NULL };
+
+#define ZSTD_FRAME      (64 * 1024 * 1024)            // what one frame holds, at most
+#define ZSTD_LEVEL      3                             // zstd's default: ~400 MB/s a core to compress
+
+static bool zstdLoad(void)
+{
+  pthread_mutex_lock(&zstd.mutex);
+
+  if (zstd.tried == false)
+  {
+    void* libP = dlopen("libzstd.so.1", RTLD_NOW | RTLD_LOCAL);
+
+    zstd.tried = true;
+
+    if (libP == NULL)
+      COR_E("corDB: libzstd.so.1 cannot be loaded (%s)", dlerror());
+    else
+    {
+      zstd.compress    = (ZstdCompressFunc)    dlsym(libP, "ZSTD_compress");
+      zstd.decompress  = (ZstdDecompressFunc)  dlsym(libP, "ZSTD_decompress");
+      zstd.bound       = (ZstdBoundFunc)       dlsym(libP, "ZSTD_compressBound");
+      zstd.contentSize = (ZstdContentSizeFunc) dlsym(libP, "ZSTD_getFrameContentSize");
+      zstd.frameSize   = (ZstdFrameSizeFunc)   dlsym(libP, "ZSTD_findFrameCompressedSize");
+      zstd.isError     = (ZstdIsErrorFunc)     dlsym(libP, "ZSTD_isError");
+      zstd.ok          = (zstd.compress != NULL) && (zstd.decompress != NULL) && (zstd.bound != NULL) &&
+                         (zstd.contentSize != NULL) && (zstd.frameSize != NULL) && (zstd.isError != NULL);
+      if (zstd.ok == false)
+        COR_E("corDB: libzstd.so.1 lacks a function corDB needs");
+    }
+  }
+
+  pthread_mutex_unlock(&zstd.mutex);
+  return zstd.ok;
+}
+
+static bool zstdIs(const char* buf, long long len)
+{
+  return (len >= 4) && ((unsigned char) buf[0] == 0x28) && ((unsigned char) buf[1] == 0xB5) && ((unsigned char) buf[2] == 0x2F) && ((unsigned char) buf[3] == 0xFD);
+}
+
+//
+// zstdWrite - 'len' bytes compressed into fd, as one frame; false: not written (said why)
+//
+static bool zstdWrite(int fd, const char* buf, size_t len, const char* path)
+{
+  size_t cap = zstd.bound(len);
+  char*  out = (char*) malloc(cap);
+
+  if (out == NULL)
+  {
+    COR_E("corDB: compressing '%s': out of memory", path);
+    return false;
+  }
+
+  size_t n  = zstd.compress(out, cap, buf, len, ZSTD_LEVEL);
+  bool   ok = (zstd.isError(n) == 0) && writeAll(fd, out, (int) n);
+
+  if (ok == false)
+    COR_E("corDB: compressing '%s': %s", path, zstd.isError(n) ? "zstd refused" : strerror(errno));
+
+  free(out);
+  return ok;
+}
+
+//
+// zstdUnpack - a compressed file's bytes, decompressed (malloc'd, *lenP); NULL: not (said why)
+//
+static char* zstdUnpack(const char* buf, long long len, long long* lenP, const char* path)
+{
+  if (zstdLoad() == false)
+  {
+    COR_E("corDB: '%s' is compressed (zstd), and libzstd.so.1 is not there to read it", path);
+    return NULL;
+  }
+
+  long long total = 0;
+
+  for (long long off = 0; off < len; )
+  {
+    size_t             fsize = zstd.frameSize(&buf[off], (size_t) (len - off));
+    unsigned long long csize = zstd.isError(fsize) ? (0ULL - 2) : zstd.contentSize(&buf[off], fsize);
+
+    if (csize >= (0ULL - 2))
+    {
+      COR_E("corDB: '%s': a damaged zstd frame at byte %lld", path, off);
+      return NULL;
+    }
+
+    total += (long long) csize;
+    off   += (long long) fsize;
+  }
+
+  if (total > 0x7FFFFFFF)
+  {
+    COR_E("corDB: '%s' holds %lld bytes - more than one file can be", path, total);
+    return NULL;
+  }
+
+  char* out = (char*) malloc((total > 0) ? (size_t) total : 1);
+
+  if (out == NULL)
+  {
+    COR_E("corDB: decompressing '%s': out of memory", path);
+    return NULL;
+  }
+
+  long long done = 0;
+
+  for (long long off = 0; off < len; )
+  {
+    size_t fsize = zstd.frameSize(&buf[off], (size_t) (len - off));
+    size_t n     = zstd.decompress(&out[done], (size_t) (total - done), &buf[off], fsize);
+
+    if (zstd.isError(n))
+    {
+      COR_E("corDB: '%s': a damaged zstd frame at byte %lld", path, off);
+      free(out);
+      return NULL;
+    }
+
+    done += (long long) n;
+    off  += (long long) fsize;
+  }
+
+  *lenP = done;
+  return out;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // The segments - mapped, appended to by a copy
 //
 // A segment is mapped once, MAP_SHARED, over more address space than it will ever hold (it rolls at
@@ -326,7 +489,13 @@ static bool segRoll(CorDbPersist* pP, CorDbSeg* sP, const char* kind, unsigned l
 //
 static bool segAppend(CorDbPersist* pP, CorDbSeg* sP, const char* kind, const char* rec, int n)
 {
-  if ((sP->len >= SEG_ROLL) || (sP->len + (unsigned long long) n > sP->mapLen))
+  //
+  // --dbCompress rolls at 64 MiB: a segment is compressed once finished, and a history - never dropped
+  // by a snapshot - is mostly finished segments then, not one open GiB
+  //
+  unsigned long long rollAt = corDbCompress ? (64ULL * 1024 * 1024) : SEG_ROLL;
+
+  if ((sP->len >= rollAt) || (sP->len + (unsigned long long) n > sP->mapLen))
     segRoll(pP, sP, kind, (unsigned long long) n);
 
   if (sP->len + (unsigned long long) n > sP->mapLen)
@@ -357,6 +526,166 @@ static bool segAppend(CorDbPersist* pP, CorDbSeg* sP, const char* kind, const ch
   sP->len += (unsigned long long) n;
 
   return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// The segments to compress - finished ones (synced, cut to their records, closed), queued by the
+// flusher and at a start, compressed by the snapshot thread after its snapshots. One thread for the
+// compression and for the snapshots that drop old segments: a segment is never compressed while a
+// snapshot deletes it, nor renamed back into being after it was deleted.
+//
+typedef struct CompressItem
+{
+  char  path[600];
+  char  dir[512];
+} CompressItem;
+
+static pthread_mutex_t  compressMutex = PTHREAD_MUTEX_INITIALIZER;
+static CompressItem*    compressV     = NULL;
+static int              compressN     = 0;
+static int              compressSize  = 0;
+static bool             compressDue   = false;        // under flushMutex: the snapshot thread has segments waiting
+
+static void compressQueue(const char* path, const char* dir)
+{
+  pthread_mutex_lock(&compressMutex);
+
+  if (compressN == compressSize)
+  {
+    int           size = (compressSize == 0) ? 16 : compressSize * 2;
+    CompressItem* v    = (CompressItem*) realloc(compressV, size * sizeof(CompressItem));
+
+    if (v == NULL)
+    {
+      pthread_mutex_unlock(&compressMutex);
+      return;                                        // stays uncompressed: a start queues it again
+    }
+
+    compressV    = v;
+    compressSize = size;
+  }
+
+  snprintf(compressV[compressN].path, sizeof(compressV[compressN].path), "%s", path);
+  snprintf(compressV[compressN].dir,  sizeof(compressV[compressN].dir),  "%s", dir);
+  ++compressN;
+
+  pthread_mutex_unlock(&compressMutex);
+
+  pthread_mutex_lock(&flushMutex);
+  compressDue = true;
+  pthread_mutex_unlock(&flushMutex);
+}
+
+static bool fileCompressed(const char* path)
+{
+  char head[4];
+  int  fd = open(path, O_RDONLY | O_CLOEXEC);
+  bool z  = false;
+
+  if (fd >= 0)
+  {
+    z = (read(fd, head, 4) == 4) && zstdIs(head, 4);
+    close(fd);
+  }
+
+  return z;
+}
+
+static void syncDir(const char* dir);
+
+//
+// compressFile - a finished segment compressed in place: <path>.ztmp written and synced, renamed over it
+//
+static void compressFile(const char* path, const char* dir)
+{
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+
+  if (fd < 0)
+    return;                                          // gone - a snapshot dropped it
+
+  struct stat st;
+  char        head[4];
+
+  if ((fstat(fd, &st) != 0) || (st.st_size == 0) || (read(fd, head, 4) != 4) || zstdIs(head, 4) || (lseek(fd, 0, SEEK_SET) != 0))
+  {
+    close(fd);
+    return;                                          // empty, or compressed already
+  }
+
+  char  tmp[700];
+  char* buf = (char*) malloc(ZSTD_FRAME);
+
+  snprintf(tmp, sizeof(tmp), "%s.ztmp", path);
+
+  int  ofd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  bool ok  = (buf != NULL) && (ofd >= 0);
+
+  while (ok)
+  {
+    ssize_t got = 0;
+
+    while (got < ZSTD_FRAME)
+    {
+      ssize_t n = read(fd, &buf[got], ZSTD_FRAME - got);
+
+      if ((n < 0) && (errno == EINTR))
+        continue;
+      if (n < 0)
+        ok = false;
+      if (n <= 0)
+        break;
+      got += n;
+    }
+
+    if ((ok == false) || (got == 0))
+      break;
+
+    ok = zstdWrite(ofd, buf, (size_t) got, path);
+  }
+
+  ok = ok && (fdatasync(ofd) == 0);
+
+  struct stat zst;
+  bool        statOk = ok && (fstat(ofd, &zst) == 0);
+
+  if (ofd >= 0)
+    close(ofd);
+  close(fd);
+  free(buf);
+
+  if (ok && (rename(tmp, path) == 0))
+  {
+    syncDir(dir);
+    if (statOk)
+      COR_I("corDB: '%s' compressed: %lld -> %lld bytes", path, (long long) st.st_size, (long long) zst.st_size);
+  }
+  else
+  {
+    COR_E("corDB: compressing '%s' failed - it stays as it is", path);
+    unlink(tmp);
+  }
+}
+
+static void compressDrain(void)
+{
+  for (;;)
+  {
+    CompressItem item;
+
+    pthread_mutex_lock(&compressMutex);
+    if (compressN == 0)
+    {
+      pthread_mutex_unlock(&compressMutex);
+      return;
+    }
+    item = compressV[--compressN];
+    pthread_mutex_unlock(&compressMutex);
+
+    compressFile(item.path, item.dir);
+  }
 }
 
 
@@ -396,7 +725,14 @@ static void flushLocked(CorDbPersist* pP)
   // write is there, so --dbSync request covers both
   //
   for (int i = 0; i < retiredN; i++)
-    ok = segFinish(&retired[i], sync) && ok;
+  {
+    bool finished = segFinish(&retired[i], sync);
+
+    if (finished && corDbCompress)
+      compressQueue(retired[i].path, pP->dir);       // compressed by the snapshot thread
+
+    ok = finished && ok;
+  }
 
   if (sync && (histFd >= 0) && (fdatasync(histFd) != 0))
   {
@@ -767,9 +1103,12 @@ static void snapshot(CorDbPersist* pP)
   int fd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 
   ok = (fd >= 0);
+
+  bool compress = corDbCompress && zstdLoad();      // a chunk is at most 64 MiB: one zstd frame each
+
   for (int i = 0; ok && (i < snap.n); i++)
   {
-    ok     = writeAll(fd, snap.v[i].buf, snap.v[i].len);
+    ok     = compress ? zstdWrite(fd, snap.v[i].buf, (size_t) snap.v[i].len, tmpPath) : writeAll(fd, snap.v[i].buf, snap.v[i].len);
     bytes += (unsigned long long) snap.v[i].len;
   }
   ok = ok && (fdatasync(fd) == 0);
@@ -824,7 +1163,7 @@ static void flushAll(void)
 
   pthread_mutex_lock(&flushMutex);
   pthread_cond_broadcast(&syncedCond);
-  if (due)
+  if (due || compressDue)
   {
     snapKicked = true;
     pthread_cond_signal(&snapCond);                    // the snapshots are the snapshotter's - a sync never waits behind one
@@ -864,6 +1203,12 @@ static void* snapshotter(void* unused)
       if (pP->snapshotDue)
         snapshot(pP);
     }
+
+    pthread_mutex_lock(&flushMutex);
+    compressDue = false;
+    pthread_mutex_unlock(&flushMutex);
+
+    compressDrain();                                 // after the snapshots: what they dropped is not compressed for nothing
 
     pthread_mutex_lock(&flushMutex);
   }
@@ -964,6 +1309,12 @@ bool corDbPersistInit(void)
   else
   {
     COR_E("corDB: --dbSync '%s': interval, request or none", corDbSync);
+    return false;
+  }
+
+  if (corDbCompress && (zstdLoad() == false))
+  {
+    COR_E("corDB: --dbCompress needs libzstd.so.1 (zstd) - not found");
     return false;
   }
 
@@ -1173,6 +1524,25 @@ static LoadResult loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* pat
     return LoadFail;
   }
 
+  //
+  // A compressed file (--dbCompress): read as what it holds. It is always whole - it replaced its
+  // segment with a rename - so anything but a clean end in it is damage, not a torn tail to cut
+  //
+  bool compressed = zstdIs(buf, len);
+
+  if (compressed)
+  {
+    long long ulen = 0;
+    char*     ubuf = zstdUnpack(buf, len, &ulen, path);
+
+    free(buf);
+    if (ubuf == NULL)
+      return LoadFail;
+
+    buf = ubuf;
+    len = (int) ulen;
+  }
+
   enum { ARENA_INIT = 64 * 1024 };
   char*          arenaBuf = (char*) malloc(ARENA_INIT);
   CorAlloc       arena;
@@ -1244,6 +1614,12 @@ static LoadResult loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* pat
 
   if (failed != 0)
     COR_W("corDB: '%s': %d records did not apply - see above", path, failed);
+
+  if (compressed && ((gap && (off != 0)) || ((status == CorDbLogTorn) && (gap == false))))
+  {
+    COR_E("corDB: '%s' (compressed, so whole when it was written) does not decode to its end - byte %d of %d", path, off, len);
+    return LoadFail;
+  }
 
   if (gap && (off == 0))
   {
@@ -1341,7 +1717,16 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
   {
     unsigned int k;
 
-    if (nameNumber(entryP->d_name, "snap", "tmp", &k))
+    size_t nameLen = strlen(entryP->d_name);
+
+    if ((nameLen > 5) && (strcmp(&entryP->d_name[nameLen - 5], ".ztmp") == 0))
+    {
+      char path[1024];
+
+      snprintf(path, sizeof(path), "%s/%s", pP->dir, entryP->d_name);
+      unlink(path);                                    // an interrupted compression: the segment is as it was
+    }
+    else if (nameNumber(entryP->d_name, "snap", "tmp", &k))
     {
       char path[1024];
 
@@ -1530,6 +1915,20 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
     exit(1);
   }
 
+  //
+  // The log goes on in its newest segment - unless that one was compressed (finished, rolled, and the
+  // next one never written): records appended after a zstd frame would be lost on the next start
+  //
+  char path[600];
+
+  filePath(pP, "log", pP->log.n, "cor", path, sizeof(path));
+  if (fileCompressed(path))
+    pP->log.n += 1;
+
+  filePath(pP, "hist", pP->hist.n, "cor", path, sizeof(path));
+  if (fileCompressed(path))
+    pP->hist.n += 1;
+
   if (segOpen(pP, "log", pP->log.n, &pP->log, 0) == false)
   {
     COR_E("corDB: tenant '%s' is NOT persistent", tenantP->name);
@@ -1546,6 +1945,31 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
 
   pthread_mutex_init(&pP->mutex, NULL);
   pthread_mutex_init(&pP->ioMutex, NULL);
+
+  //
+  // --dbCompress: the finished segments a previous run left uncompressed (it ran without the option,
+  // or stopped before its snapshot thread got to them) - every segment before the open ones
+  //
+  if (corDbCompress)
+  {
+    DIR* dirP = opendir(pP->dir);
+
+    for (struct dirent* entryP = (dirP != NULL) ? readdir(dirP) : NULL; entryP != NULL; entryP = readdir(dirP))
+    {
+      unsigned int k;
+      bool         logSeg  = nameNumber(entryP->d_name, "log",  "cor", &k) && (k < pP->log.n);
+      bool         histSeg = (logSeg == false) && nameNumber(entryP->d_name, "hist", "cor", &k) && (pP->hist.fd >= 0) && (k < pP->hist.n);
+
+      if (logSeg || histSeg)
+      {
+        filePath(pP, logSeg ? "log" : "hist", k, "cor", path, sizeof(path));
+        compressQueue(path, pP->dir);
+      }
+    }
+
+    if (dirP != NULL)
+      closedir(dirP);
+  }
 
   pthread_mutex_lock(&flushMutex);
   pP->next    = persistList;
