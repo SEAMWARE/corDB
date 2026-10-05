@@ -45,4 +45,13 @@ extern int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
 //
 extern void corDbPersistMerged(struct CorDbPersist* persistP, CorNode* live, LdMergeReport* reportP);
 
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbMergedNames - the members a merge report says changed, plus modifiedAt, type and scope; -1 if
+// more than 'max'
+//
+extern int corDbMergedNames(LdMergeReport* reportP, const char** names, int max);
+
 #endif  // CORDB_CORDBENTITYMERGE_H_

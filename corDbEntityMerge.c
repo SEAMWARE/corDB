@@ -122,16 +122,12 @@ void corDbApplyReportToLive(CorNode* live, CorNode* merged, LdMergeReport* repor
 
 // -----------------------------------------------------------------------------
 //
-// corDbPersistMerged - the log record of a merge applied to 'live': the attributes the report
-// names, and what a change refreshes beside them (corDbApplyReportToLive) - not the entity
+// corDbMergedNames - the members a merge report says changed, and what a change refreshes beside them
+// (corDbApplyReportToLive: modifiedAt, type, scope); -1 when there are more than 'max'
 //
-void corDbPersistMerged(CorDbPersist* persistP, CorNode* live, LdMergeReport* reportP)
+int corDbMergedNames(LdMergeReport* reportP, const char** names, int max)
 {
-  const char* names[64];
-  int         n = 0;
-
-  if (persistP == NULL)
-    return;
+  int n = 0;
 
   if ((reportP != NULL) && (reportP->changes != NULL))
   {
@@ -142,11 +138,8 @@ void corDbPersistMerged(CorDbPersist* persistP, CorNode* live, LdMergeReport* re
       if ((attrNameP == NULL) || (attrNameP->type != CorString))
         continue;
 
-      if (n == (int) (sizeof(names) / sizeof(names[0])) - 3)
-      {
-        corDbPersistAppend(persistP, CorDbLogEntityPut, live);   // that many attributes: the entity
-        return;
-      }
+      if (n == max - 3)
+        return -1;
 
       names[n++] = attrNameP->value.s;
     }
@@ -156,7 +149,29 @@ void corDbPersistMerged(CorDbPersist* persistP, CorNode* live, LdMergeReport* re
   names[n++] = "type";
   names[n++] = LD_VOCAB_SCOPE;
 
-  corDbPersistAppendAttrs(persistP, live, names, n);
+  return n;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistMerged - the log record of a merge applied to 'live': the attributes the report
+// names, and what a change refreshes beside them (corDbApplyReportToLive) - not the entity
+//
+void corDbPersistMerged(CorDbPersist* persistP, CorNode* live, LdMergeReport* reportP)
+{
+  const char* names[64];
+
+  if (persistP == NULL)
+    return;
+
+  int n = corDbMergedNames(reportP, names, 64);
+
+  if (n < 0)
+    corDbPersistAppend(persistP, CorDbLogEntityPut, live);   // that many attributes: the entity
+  else
+    corDbPersistAppendAttrs(persistP, live, names, n);
 }
 
 

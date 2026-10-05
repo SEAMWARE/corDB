@@ -1652,27 +1652,33 @@ static bool named(const char* name, const char** names, int n)
   return false;
 }
 
-void corDbPersistAppendAttrs(CorDbPersist* pP, CorNode* entityP, const char** names, int n)
+typedef struct AttrsBody
 {
-  if (pP == NULL)
-    return;
+  CorNode setV[ATTRS_MAX];
+  CorNode delV[ATTRS_MAX];
+  CorNode idN;
+  CorNode attrsN;
+  CorNode deletedN;
+  CorNode bodyN;
+} AttrsBody;
 
+//
+// attrsBody - the ATTRS_PUT body of 'names' in 'entityP', built in *bP; NULL: too many names, or no id
+//
+static CorNode* attrsBody(CorNode* entityP, const char** names, int n, AttrsBody* bP)
+{
   const char* id = corDbEntityId(entityP);
 
   if ((n > ATTRS_MAX) || (id == NULL))
-  {
-    corDbPersistAppend(pP, CorDbLogEntityPut, entityP);
-    return;
-  }
+    return NULL;
 
-  CorNode setV[ATTRS_MAX];
-  CorNode delV[ATTRS_MAX];
-  int     nSet = 0;
-  int     nDel = 0;
-  CorNode idN      = { 0 };
-  CorNode attrsN   = { 0 };
-  CorNode deletedN = { 0 };
-  CorNode bodyN    = { 0 };
+  int nSet = 0;
+  int nDel = 0;
+
+  memset(&bP->idN,      0, sizeof(CorNode));
+  memset(&bP->attrsN,   0, sizeof(CorNode));
+  memset(&bP->deletedN, 0, sizeof(CorNode));
+  memset(&bP->bodyN,    0, sizeof(CorNode));
 
   //
   // The members, in the entity's order: one the write added is at its end, and replay appends it
@@ -1683,10 +1689,10 @@ void corDbPersistAppendAttrs(CorDbPersist* pP, CorNode* entityP, const char** na
     if ((mP->name == NULL) || (strcmp(mP->name, "id") == 0) || (named(mP->name, names, n) == false))
       continue;
 
-    setV[nSet]      = *mP;
-    setV[nSet].next = NULL;
+    bP->setV[nSet]      = *mP;
+    bP->setV[nSet].next = NULL;
     if (nSet > 0)
-      setV[nSet - 1].next = &setV[nSet];
+      bP->setV[nSet - 1].next = &bP->setV[nSet];
     ++nSet;
   }
 
@@ -1698,39 +1704,67 @@ void corDbPersistAppendAttrs(CorDbPersist* pP, CorNode* entityP, const char** na
     if ((names[i] == NULL) || (strcmp(names[i], "id") == 0) || (corTreeLookup(entityP, names[i]) != NULL) || named(names[i], names, i))
       continue;
 
-    delV[nDel].name    = (char*) "";
-    delV[nDel].type    = CorString;
-    delV[nDel].value.s = (char*) names[i];
-    delV[nDel].next    = NULL;
+    memset(&bP->delV[nDel], 0, sizeof(CorNode));
+    bP->delV[nDel].name    = (char*) "";
+    bP->delV[nDel].type    = CorString;
+    bP->delV[nDel].value.s = (char*) names[i];
     if (nDel > 0)
-      delV[nDel - 1].next = &delV[nDel];
+      bP->delV[nDel - 1].next = &bP->delV[nDel];
     ++nDel;
   }
 
-  idN.name    = (char*) "id";
-  idN.type    = CorString;
-  idN.value.s = (char*) id;
+  bP->idN.name    = (char*) "id";
+  bP->idN.type    = CorString;
+  bP->idN.value.s = (char*) id;
 
-  attrsN.name       = (char*) "attrs";
-  attrsN.type       = CorObject;
-  attrsN.value.head = (nSet > 0) ? &setV[0] : NULL;
-  attrsN.value.tail = (nSet > 0) ? &setV[nSet - 1] : NULL;
-  idN.next          = &attrsN;
+  bP->attrsN.name       = (char*) "attrs";
+  bP->attrsN.type       = CorObject;
+  bP->attrsN.value.head = (nSet > 0) ? &bP->setV[0] : NULL;
+  bP->attrsN.value.tail = (nSet > 0) ? &bP->setV[nSet - 1] : NULL;
+  bP->idN.next          = &bP->attrsN;
 
   if (nDel > 0)
   {
-    deletedN.name       = (char*) "deleted";
-    deletedN.type       = CorArray;
-    deletedN.value.head = &delV[0];
-    deletedN.value.tail = &delV[nDel - 1];
-    attrsN.next         = &deletedN;
+    bP->deletedN.name       = (char*) "deleted";
+    bP->deletedN.type       = CorArray;
+    bP->deletedN.value.head = &bP->delV[0];
+    bP->deletedN.value.tail = &bP->delV[nDel - 1];
+    bP->attrsN.next         = &bP->deletedN;
   }
 
-  bodyN.type       = CorObject;
-  bodyN.value.head = &idN;
-  bodyN.value.tail = (nDel > 0) ? &deletedN : &attrsN;
+  bP->bodyN.type       = CorObject;
+  bP->bodyN.value.head = &bP->idN;
+  bP->bodyN.value.tail = (nDel > 0) ? &bP->deletedN : &bP->attrsN;
 
-  corDbPersistAppend(pP, CorDbLogAttrsPut, &bodyN);
+  return &bP->bodyN;
+}
+
+void corDbPersistAppendAttrs(CorDbPersist* pP, CorNode* entityP, const char** names, int n)
+{
+  if (pP == NULL)
+    return;
+
+  AttrsBody body;
+  CorNode*  bodyP = attrsBody(entityP, names, n, &body);
+
+  if (bodyP == NULL)
+    corDbPersistAppend(pP, CorDbLogEntityPut, entityP);
+  else
+    corDbPersistAppend(pP, CorDbLogAttrsPut, bodyP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistPreAddAttrs - an ATTRS_PUT body encoded now, before the lock (as corDbPersistPreAdd);
+// its index - with lenV[ix] -1 when it could not be (too many names: the caller logs the entity)
+//
+int corDbPersistPreAddAttrs(CorDbPre* preP, CorNode* entityP, const char** names, int n)
+{
+  AttrsBody body;
+
+  return corDbPersistPreAdd(preP, attrsBody(entityP, names, n, &body));
 }
 
 

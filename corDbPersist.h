@@ -186,6 +186,12 @@ typedef struct CorDbPre
 
 #define COR_DB_PRE(name)  CorDbPre name __attribute__((cleanup(corDbPersistPreFree))) = { { NULL, 0, 0 }, 0, 0, NULL, NULL, NULL }
 
+//
+// corDbPersistPreAddAttrs - an ATTRS_PUT body (corDbPersistAppendAttrs) encoded before the lock; its index,
+// lenV[ix] -1 when it could not be (too many names - the caller logs the entity)
+//
+extern int corDbPersistPreAddAttrs(CorDbPre* preP, CorNode* entityP, const char** names, int n);
+
 extern bool corDbPersistOn(void);
 extern int  corDbPersistPreAdd(CorDbPre* preP, CorNode* bodyP);
 extern void corDbPersistAppendPre(CorDbPersist* persistP, CorDbLogOp op, CorDbPre* preP, int ix, CorNode* bodyP);
