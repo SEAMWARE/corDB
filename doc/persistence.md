@@ -290,6 +290,13 @@ current. Not in the snapshot: rebuilt from the data, so it can never disagree wi
 - With `--dbSync request`, a failed write or sync is logged, and the request still answers its
   success: the wait happens as the write lock is released, after the operation has returned. The
   503 of § 5 needs the outcome carried back to the operation.
+- **Size.** Nothing is compressed. On perfRun's fixture (2026-10-05) the current state takes 744
+  bytes an entity - MongoDB's documents 1 072, but its files 113 (WiredTiger compresses; the fixture
+  is repetitive). A record decodes on its own, so each carries its attributes' expanded IRIs again.
+  Two steps, neither on the write path: a snapshot and a rolled segment compressed as they are
+  written (zstd), the open segment as it is; and a table of the IRIs per snapshot or segment, the
+  records naming them by number (a format change). History is already a quarter to a sixth of
+  TimescaleDB's room.
 
 Decided: the CRC is CRC-32C (corBase's `corCrc32c`, hardware on x86-64 and ARMv8). Hosted
 `@context`s are not corDB's - the plugin implements none of the driver's context functions - so the
