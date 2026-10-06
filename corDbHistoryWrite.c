@@ -802,7 +802,7 @@ void corDbHistoryDeletePrepare(CorDbHistDel* delP, const char* entityId, CorAllo
 
 void corDbHistoryDeletedPre(CorDbStore* storeP, CorDbHistDel* delP, const char* entityId)
 {
-  if ((storeP == NULL) || (storeP->historyP == NULL) || (delP->event.buf == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL) || (corNgsild.troeSkip == true) || (delP->event.buf == NULL))
     return;
 
   enqueueEvent(storeP, entityId, NULL, "deleted", delP->atNs, delP->event.buf, delP->event.len);
@@ -818,7 +818,7 @@ void corDbHistoryDeletedPre(CorDbStore* storeP, CorDbHistDel* delP, const char* 
 //
 void corDbHistoryCreatedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* entityP, CorAlloc* kaP)
 {
-  if ((storeP == NULL) || (storeP->historyP == NULL) || (entityP == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL) || (corNgsild.troeSkip == true) || (entityP == NULL))
     return;
 
   HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, entityP);
@@ -843,7 +843,7 @@ void corDbHistoryCreatedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ent
 //
 void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* newEntityP, CorNode* oldEntityP, CorAlloc* kaP)
 {
-  if ((storeP == NULL) || (storeP->historyP == NULL) || (newEntityP == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL) || (corNgsild.troeSkip == true) || (newEntityP == NULL))
     return;
 
   HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, newEntityP);
@@ -918,7 +918,7 @@ void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ne
 //
 void corDbHistoryCreated(CorDbStore* storeP, CorNode* entityP, CorAlloc* kaP)
 {
-  if ((storeP == NULL) || (storeP->historyP == NULL) || (entityP == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL) || (corNgsild.troeSkip == true) || (entityP == NULL))
     return;
 
   HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, entityP);
@@ -948,7 +948,7 @@ void corDbHistoryCreated(CorDbStore* storeP, CorNode* entityP, CorAlloc* kaP)
 //
 void corDbHistoryReplaced(CorDbStore* storeP, CorNode* newEntityP, CorNode* oldEntityP, CorAlloc* kaP)
 {
-  if ((storeP == NULL) || (storeP->historyP == NULL) || (newEntityP == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL) || (corNgsild.troeSkip == true) || (newEntityP == NULL))
     return;
 
   HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, newEntityP);
@@ -1006,7 +1006,7 @@ void corDbHistoryReplaced(CorDbStore* storeP, CorNode* newEntityP, CorNode* oldE
 //
 void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport* reportP, CorAlloc* kaP)
 {
-  if ((storeP == NULL) || (storeP->historyP == NULL) || (liveEntityP == NULL) || (reportP == NULL) || (reportP->changes == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL) || (corNgsild.troeSkip == true) || (liveEntityP == NULL) || (reportP == NULL) || (reportP->changes == NULL))
     return;
 
   if (corNgsild.troeEntityOnly == true)             // no instances; a merge has no entity event (CorNgsild.h)
@@ -1079,7 +1079,7 @@ void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport*
 //
 void corDbHistoryDeleted(CorDbStore* storeP, CorNode* goneEntityP, CorAlloc* kaP)
 {
-  if ((storeP == NULL) || (storeP->historyP == NULL) || (goneEntityP == NULL))
+  if ((storeP == NULL) || (storeP->historyP == NULL) || (corNgsild.troeSkip == true) || (goneEntityP == NULL))
     return;
 
   HistCtx ctx; HistCtx* eP = entityOf(storeP, &ctx, goneEntityP);

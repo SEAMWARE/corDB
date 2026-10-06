@@ -16,7 +16,8 @@
 // Which instances a write reached is the broker's own answer (ldInstanceWritten, the merge report) -
 // what its TRoE events say for timescale.
 //
-// All of them: a no-op without `--troe corDB` (the store's historyP is NULL).
+// All of them: a no-op without `--troe corDB` (the store's historyP is NULL), and for a write that records no
+// history (corNgsild.troeSkip - a Snapshot's capture and clone copy what has a history of its own).
 //
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
 #include "corTree/CorNode.h"                           // CorNode
