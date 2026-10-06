@@ -29,28 +29,6 @@
 
 
 
-#if COR_DB_SYS_TIMES
-// -----------------------------------------------------------------------------
-//
-// attrsTimes - the fragment's attributes of a live entity, in place: their instances' inherited times put
-// in (fill - ldEntityAttrsSet keeps an instance's createdAt) or the inherited ones taken out again
-// (corDbSysTimes.h)
-//
-static void attrsTimes(CorNode* eP, CorNode* fragmentDb, bool fill)
-{
-  int64_t entityCreatedAt = corDbCreatedAt(eP, 0);
-
-  for (CorNode* fP = (fragmentDb != NULL) ? fragmentDb->value.head : NULL; fP != NULL; fP = fP->next)
-  {
-    CorNode* attrP = corTreeLookup(eP, fP->name);
-
-    if (fill == true)
-      corDbAttrTimesFill(attrP, entityCreatedAt);
-    else
-      corDbAttrTimesDrop(attrP, entityCreatedAt);
-  }
-}
-#endif
 
 
 
@@ -86,13 +64,7 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
     if (idP != NULL && idP->type == CorString && strcmp(idP->value.s, entityId) == 0)
     {
       // NULL allocator → malloc heap (tenant store lifetime)
-#if COR_DB_SYS_TIMES
-      attrsTimes(eP, fragmentDb, true);               // what the attributes inherit, in place - ldEntityAttrsSet keeps it
-#endif
-      ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
-#if COR_DB_SYS_TIMES
-      attrsTimes(eP, fragmentDb, false);              // and the store's form again: only the new times stay
-#endif
+      ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);   // keeps an inherited createdAt inherited (0x04)
 
       //
       // The log record: the members the fragment names, as the entity has them now, and what the

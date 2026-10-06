@@ -62,12 +62,12 @@ extern CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreat
 
 // -----------------------------------------------------------------------------
 //
-// corDbAttrTimesFill / corDbAttrTimesDrop - an attribute of a store entity, IN PLACE: its instances'
-// missing times put in (the entity's createdAt) / the times equal to the entity's createdAt taken out -
-// around corNgsild's in-place update (corDbEntityAttrsSet)
+// corDbEntityCopy / corDbEntityCopyFinish - corDbTreeOut of a store ENTITY in two steps: the copy, under
+// the store's lock (as fast as a plain clone - the lock is held no longer than without inherited times),
+// then the times put back, after the lock, on the request's own copy. *createdAtP: what Finish needs.
 //
-extern void corDbAttrTimesFill(CorNode* attrP, int64_t entityCreatedAt);
-extern void corDbAttrTimesDrop(CorNode* attrP, int64_t entityCreatedAt);
+extern CorNode* corDbEntityCopy(CorAlloc* kaP, CorNode* storeP, int64_t* createdAtP);
+extern void     corDbEntityCopyFinish(CorAlloc* kaP, CorNode* copyP, int64_t createdAt);
 
 
 

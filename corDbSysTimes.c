@@ -10,7 +10,7 @@
 
 #include "corTree/CorNode.h"                          // CorNode
 #include "corTree/corTreeBuilder.h"                   // corTreeObject, corTreeArray, corTreeInteger, corTreeChildAdd
-#include "corTree/corTreeClone.h"                     // corTreeClone
+#include "corTree/corTreeClone.h"                     // corTreeClone, corTreeCloneMarked
 #include "corTree/corTreeFree.h"                      // corTreeFree
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 #include "corNgsild/CorTerm.h"                        // CorTermCreatedAt, CorTermModifiedAt
@@ -50,7 +50,35 @@ static inline bool isModifiedAt(CorNode* mP)
 
 // -----------------------------------------------------------------------------
 //
-// headCreatedAt - a store entity's createdAt: its FIRST member (corDbTreeIn puts it there - one hop),
+// frontCreatedAt - a store entity's createdAt member where the store keeps it: first, or second after the
+// "id" the id index puts first (corDbIndex.c, idFirst) - NULL when it is not there; *prevPP its predecessor
+//
+static inline CorNode* frontCreatedAt(CorNode* nodeP, CorNode** prevPP)
+{
+  CorNode* hP = nodeP->value.head;
+
+  *prevPP = NULL;
+
+  if (hP == NULL)
+    return NULL;
+
+  if (isCreatedAt(hP))
+    return hP;
+
+  if ((hP->next != NULL) && isCreatedAt(hP->next))
+  {
+    *prevPP = hP;
+    return hP->next;
+  }
+
+  return NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// headCreatedAt - a store entity's createdAt: at its front (corDbTreeIn puts it there - a hop or two),
 // else looked up (an entity stored whole)
 //
 static inline int64_t headCreatedAt(CorNode* nodeP)
@@ -58,9 +86,10 @@ static inline int64_t headCreatedAt(CorNode* nodeP)
   if ((nodeP == NULL) || (nodeP->type != CorObject))
     return 0;
 
-  CorNode* hP = nodeP->value.head;
+  CorNode* prevP;
+  CorNode* cP = frontCreatedAt(nodeP, &prevP);
 
-  return ((hP != NULL) && isCreatedAt(hP)) ? (int64_t) hP->value.i : memberTime(nodeP, "createdAt");
+  return (cP != NULL) ? (int64_t) cP->value.i : memberTime(nodeP, "createdAt");
 }
 
 
@@ -116,6 +145,8 @@ static bool opaque(const char* name)
 // INHERIT_C / INHERIT_M - a store object below the entity whose createdAt / modifiedAt is not there: the
 // entity's createdAt. CorNode flag bits 0x04 and 0x08 (0x01, 0x02 and 0xF0 are corJsonld's). Store-only:
 // an out-copy never carries them, and the log does not keep them - corDbTreeIn sets them again on replay.
+// corNgsild's ldEntityAttrsSet knows them: an instance it replaces keeps an inherited createdAt inherited,
+// and its report's preValue has every time in place.
 //
 #define INHERIT_C   0x04
 #define INHERIT_M   0x08
@@ -218,6 +249,8 @@ static CorNode* treeIn(CorNode* srcP, int64_t entityCreatedAt, bool inValue, int
     if (keptC == false) nodeP->flags |= INHERIT_C;
     if (keptM == false) nodeP->flags |= INHERIT_M;
   }
+  else if (level == 0)
+    nodeP->flags |= INHERIT_C;                        // the entity: its createdAt is FIRST - out, it goes back in its place
 
   return nodeP;
 }
@@ -226,42 +259,117 @@ static CorNode* treeIn(CorNode* srcP, int64_t entityCreatedAt, bool inValue, int
 
 // -----------------------------------------------------------------------------
 //
-// treeOut - a store tree out: a clone, but for a marked object (INHERIT_C / INHERIT_M), whose missing
-// times are put back - a createdAt right before its object's modifiedAt, both last when neither is there
-// (where corNgsild puts them). No member is looked at in an unmarked object.
+// timesBack - corTreeCloneMarked's callback for a marked object (INHERIT_C / INHERIT_M): its missing times
+// put back in the clone - a createdAt right before its modifiedAt, both last when neither is there (where
+// corNgsild puts them)
+//
+static void timesBack(CorAlloc* kaP, CorNode* copyP, CorNode* origP, void* ctx)
+{
+  int64_t  entityCreatedAt = *((int64_t*) ctx);
+  CorNode* headP           = copyP->value.head;
+  CorNode* frontPrevP      = NULL;
+  CorNode* frontP          = ((origP->flags & INHERIT_C) != 0) ? frontCreatedAt(copyP, &frontPrevP) : NULL;
+
+  if (frontP != NULL)
+  {
+    //
+    // The entity: its createdAt (at the front in the store) right before its modifiedAt - or last, with
+    // the modifiedAt it leaves out while it is the createdAt. (A marked instance has no createdAt.)
+    //
+    if (frontPrevP == NULL)
+      copyP->value.head = frontP->next;
+    else
+      frontPrevP->next = frontP->next;
+
+    if (copyP->value.tail == frontP)
+      copyP->value.tail = frontPrevP;
+
+    headP = frontP;                                   // the node to put back
+
+    CorNode* prevP = NULL;
+    CorNode* mP    = copyP->value.head;
+
+    while ((mP != NULL) && (isModifiedAt(mP) == false))
+    {
+      prevP = mP;
+      mP    = mP->next;
+    }
+
+    if (mP == NULL)
+    {
+      corTreeChildAdd(copyP, headP);
+      corTreeChildAdd(copyP, timeNode(kaP, false, entityCreatedAt));
+    }
+    else
+    {
+      headP->next = mP;
+
+      if (prevP == NULL)
+        copyP->value.head = headP;
+      else
+        prevP->next = headP;
+    }
+
+    return;
+  }
+
+  if ((origP->flags & INHERIT_C) != 0)
+  {
+    CorNode* tP    = timeNode(kaP, true, entityCreatedAt);
+    CorNode* tailP = copyP->value.tail;
+
+    if ((tailP != NULL) && (isModifiedAt(tailP) == true))
+    {
+      //
+      // Right before the modifiedAt, which is last (corNgsild puts it there): the two nodes swap what
+      // they hold, and the one holding the modifiedAt goes last - no walk
+      //
+      CorNode tmp = *tailP;
+
+      tailP->name   = tP->name;   tailP->value  = tP->value;   tailP->termId = tP->termId;   tailP->flags = tP->flags;
+      tP->name      = tmp.name;   tP->value     = tmp.value;   tP->termId    = tmp.termId;   tP->flags    = tmp.flags;
+
+      corTreeChildAdd(copyP, tP);
+    }
+    else
+    {
+      CorNode* prevP = NULL;
+      CorNode* mP    = headP;
+
+      while ((mP != NULL) && (isModifiedAt(mP) == false))
+      {
+        prevP = mP;
+        mP    = mP->next;
+      }
+
+      if (mP == NULL)
+        corTreeChildAdd(copyP, tP);
+      else
+      {
+        tP->next = mP;
+
+        if (prevP == NULL)
+          copyP->value.head = tP;
+        else
+          prevP->next = tP;
+      }
+    }
+  }
+
+  if ((origP->flags & INHERIT_M) != 0)
+    corTreeChildAdd(copyP, timeNode(kaP, false, entityCreatedAt));
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// treeOut - a store tree out: corTree's own clone (one call - not a call per node across the library),
+// timesBack on each marked object
 //
 static CorNode* treeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt)
 {
-  CorNode* nodeP = (storeP->type == CorObject) ? corTreeObject(kaP, storeP->name) : corTreeArray(kaP, storeP->name);
-
-  if (nodeP == NULL)
-    return NULL;
-
-  unsigned char inherits = storeP->flags & INHERITS;
-
-  nodeP->flags  = storeP->flags & ~INHERITS;
-  nodeP->termId = storeP->termId;
-
-  for (CorNode* mP = storeP->value.head; mP != NULL; mP = mP->next)
-  {
-    if (((inherits & INHERIT_C) != 0) && isModifiedAt(mP))
-    {
-      corTreeChildAdd(nodeP, timeNode(kaP, true, entityCreatedAt));
-      inherits &= ~INHERIT_C;
-    }
-
-    CorNode* cP = ((mP->type != CorObject) && (mP->type != CorArray)) ? corTreeClone(kaP, mP) : treeOut(kaP, mP, entityCreatedAt);
-
-    if (cP == NULL)
-      return NULL;
-
-    corTreeChildAdd(nodeP, cP);
-  }
-
-  if ((inherits & INHERIT_C) != 0) corTreeChildAdd(nodeP, timeNode(kaP, true,  entityCreatedAt));
-  if ((inherits & INHERIT_M) != 0) corTreeChildAdd(nodeP, timeNode(kaP, false, entityCreatedAt));
-
-  return nodeP;
+  return corTreeCloneMarked(kaP, storeP, INHERITS, timesBack, &entityCreatedAt);
 }
 
 
@@ -317,58 +425,46 @@ static CorNode* entityOut(CorAlloc* kaP, CorNode* storeP, int64_t createdAt)
 
 // -----------------------------------------------------------------------------
 //
-// corDbAttrTimesFill / corDbAttrTimesDrop - an attribute of the store, in place: its instances' times
-// put in (each missing one the entity's createdAt - two small nodes, no copy) / the ones equal to the
-// entity's createdAt taken out again
+// timesPut - a copy made with corTreeClone (the marks copied too): every marked object's times put back,
+// the marks cleared
 //
-void corDbAttrTimesFill(CorNode* attrP, int64_t entityCreatedAt)
+static void timesPut(CorAlloc* kaP, CorNode* nodeP, int64_t entityCreatedAt)
 {
-  if ((attrP == NULL) || (attrP->type != CorObject))
-    return;
-
-  for (CorNode* instP = attrP->value.head; instP != NULL; instP = instP->next)
+  for (CorNode* mP = nodeP->value.head; mP != NULL; mP = mP->next)
   {
-    if ((instP->type != CorObject) || ((instP->flags & INHERITS) == 0))
-      continue;
+    if ((mP->type == CorObject) || (mP->type == CorArray))
+      timesPut(kaP, mP, entityCreatedAt);
+  }
 
-    if ((instP->flags & INHERIT_C) != 0) corTreeChildAdd(instP, timeNode(NULL, true,  entityCreatedAt));
-    if ((instP->flags & INHERIT_M) != 0) corTreeChildAdd(instP, timeNode(NULL, false, entityCreatedAt));
-
-    instP->flags &= ~INHERITS;
+  if ((nodeP->flags & INHERITS) != 0)
+  {
+    timesBack(kaP, nodeP, nodeP, &entityCreatedAt);
+    nodeP->flags &= ~INHERITS;
   }
 }
 
-void corDbAttrTimesDrop(CorNode* attrP, int64_t entityCreatedAt)
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityCopy / corDbEntityCopyFinish - corDbTreeOut of a store ENTITY in two steps: the copy under the
+// store's lock - corTreeClone, as without inherited times - and the times put back after it, on the
+// request's own copy
+//
+CorNode* corDbEntityCopy(CorAlloc* kaP, CorNode* storeP, int64_t* createdAtP)
 {
-  if ((attrP == NULL) || (attrP->type != CorObject) || (entityCreatedAt == 0))
-    return;
+  *createdAtP = (((storeP->flags & INHERIT_C) != 0) && (storeP->type == CorObject)) ? headCreatedAt(storeP) : 0;
 
-  for (CorNode* instP = attrP->value.head; instP != NULL; instP = instP->next)
-  {
-    if (instP->type != CorObject)
-      continue;
+  if (*createdAtP == 0)
+    return corDbTreeOut(kaP, storeP, 0);              // not in the store's form: whole already - or the old way
 
-    CorNode* mP = instP->value.head;
+  return corTreeClone(kaP, storeP);
+}
 
-    while (mP != NULL)
-    {
-      CorNode* nextP = mP->next;
-
-      if ((mP->type == CorInt) && (mP->value.i == entityCreatedAt))
-      {
-        unsigned char mark = isCreatedAt(mP) ? INHERIT_C : isModifiedAt(mP) ? INHERIT_M : 0;
-
-        if (mark != 0)
-        {
-          corTreeChildRemove(instP, mP);
-          corTreeFree(mP);
-          instP->flags |= mark;
-        }
-      }
-
-      mP = nextP;
-    }
-  }
+void corDbEntityCopyFinish(CorAlloc* kaP, CorNode* copyP, int64_t createdAt)
+{
+  if ((copyP != NULL) && (createdAt != 0))
+    timesPut(kaP, copyP, createdAt);
 }
 
 
@@ -410,6 +506,9 @@ CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt)
     if (createdAt == 0)
       return corTreeClone(kaP, storeP);
 
+    if ((storeP->flags & INHERIT_C) != 0)             // the store's form: one clone, timesBack on what is marked
+      return treeOut(kaP, storeP, createdAt);
+
     return entityOut(kaP, storeP, createdAt);
   }
 
@@ -419,8 +518,8 @@ CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt)
 #else
 
 CorNode* corDbTreeIn(CorNode* srcP, int64_t parentCreatedAt)                  { (void) parentCreatedAt; return corTreeClone(NULL, srcP); }
-void     corDbAttrTimesFill(CorNode* attrP, int64_t entityCreatedAt)            { (void) attrP; (void) entityCreatedAt; }
-void     corDbAttrTimesDrop(CorNode* attrP, int64_t entityCreatedAt)            { (void) attrP; (void) entityCreatedAt; }
+CorNode* corDbEntityCopy(CorAlloc* kaP, CorNode* storeP, int64_t* createdAtP) { *createdAtP = 0; return corTreeClone(kaP, storeP); }
+void     corDbEntityCopyFinish(CorAlloc* kaP, CorNode* copyP, int64_t createdAt) { (void) kaP; (void) copyP; (void) createdAt; }
 CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt) { (void) parentCreatedAt; return corTreeClone(kaP, storeP); }
 
 #endif

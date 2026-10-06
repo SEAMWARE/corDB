@@ -137,9 +137,10 @@ static bool qSubTimesUsed(LdQNode* nodeP)
 
 // -----------------------------------------------------------------------------
 //
-// corDbEntityQuery -
+// entityQuery - under the store's read lock: the page's entities copied as corTreeClone copies them, and
+// for each, what corDbEntityCopyFinish needs and its geoDistance (-1: none) - both put in after the lock
 //
-int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
+static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP, int64_t** createdAtVP, double** distVP)
 {
   bool qSubTimes = (filterP != NULL) && qSubTimesUsed(filterP->qExpr);   // once per query
 
@@ -355,17 +356,50 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
   //
   if ((limit > 0) || unpaged)
   {
-    for (int i = unpaged ? 0 : offset; i < nCand && (unpaged || (i - offset) < limit); i++)
+    int from = unpaged ? 0 : offset;
+    int n    = (from < nCand) ? nCand - from : 0;
+
+    if ((unpaged == false) && (n > limit))
+      n = limit;
+
+    *createdAtVP = (int64_t*) corAlloc(corRest.kallocP, (n + 1) * sizeof(int64_t));
+    *distVP      = (double*)  corAlloc(corRest.kallocP, (n + 1) * sizeof(double));
+
+    for (int i = from, j = 0; j < n; i++, j++)
     {
-      CorNode* cloneP = corDbTreeOut(corRest.kallocP, cands[i].eP, 0);
-
-      if (cands[i].dist >= 0)
-        corTreeChildAdd(cloneP, corTreeFloat(corRest.kallocP, "geoDistance", cands[i].dist));
-
-      corTreeChildAdd(arrayP, cloneP);
+      corTreeChildAdd(arrayP, corDbEntityCopy(corRest.kallocP, cands[i].eP, &(*createdAtVP)[j]));
+      (*distVP)[j] = cands[i].dist;
     }
   }
 
   *arrayPP = arrayP;
   return DB_OK;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityQuery - the copies under the store's lock, their inherited times (and geoDistance, after them)
+// put in after it
+//
+int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
+{
+  int64_t* createdAtV = NULL;
+  double*  distV      = NULL;
+  int      r          = entityQuery(tenantP, filterP, arrayPP, &createdAtV, &distV);
+
+  if ((r != DB_OK) || (createdAtV == NULL))
+    return r;
+
+  int j = 0;
+  for (CorNode* eP = (*arrayPP)->value.head; eP != NULL; eP = eP->next, j++)
+  {
+    corDbEntityCopyFinish(corRest.kallocP, eP, createdAtV[j]);
+
+    if (distV[j] >= 0)
+      corTreeChildAdd(eP, corTreeFloat(corRest.kallocP, "geoDistance", distV[j]));
+  }
+
+  return r;
 }
