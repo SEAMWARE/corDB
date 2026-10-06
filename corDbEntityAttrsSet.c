@@ -121,7 +121,7 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
         names[n++] = LD_VOCAB_SCOPE;
         corDbPersistAppendAttrs(corDbLockedStore->persistP, eP, names, n);
       }
-      corDbHistoryMerged(corDbLockedStore, corDbFullView(eP, corRest.kallocP), reportP, corRest.kallocP);
+      corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }
   }

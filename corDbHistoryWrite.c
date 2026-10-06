@@ -28,6 +28,7 @@
 #include "corNgsild/ldTermId.h"                        // ldTermId
 #include "corNgsild/CorTerm.h"                         // CorTerm*
 
+#include "corDB/corDbSysTimes.h"                       // corDbTreeOut, corDbCreatedAt, corDbModifiedAt
 #include "corDB/corDbHistory.h"                        // CorDbHistory, corDbHistoryEntity, corDbHistoryInstanceAdd, corDbHistoryEntityEvent
 #include "corDB/corDbPersist.h"                        // corDbPersistHistAppend
 #include "corDB/corDbStore.h"                          // CorDbStore
@@ -116,10 +117,10 @@ static const char* typeOf(CorNode* entityP)
 //
 static uint64_t timeOf(CorNode* entityP)
 {
-  CorNode* tP = (entityP != NULL) ? corTreeLookup(entityP, "modifiedAt") : NULL;
+  int64_t t = (entityP != NULL) ? corDbModifiedAt(entityP, 0) : 0;   // a store entity: left out while it is its createdAt
 
-  if ((tP != NULL) && (tP->type == CorInt) && (tP->value.i > 0))
-    return (uint64_t) tP->value.i;
+  if (t > 0)
+    return (uint64_t) t;
 
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -1010,7 +1011,8 @@ void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport*
   if (eP == NULL)
     return;
 
-  uint64_t atNs = timeOf(liveEntityP);
+  uint64_t atNs            = timeOf(liveEntityP);
+  int64_t  entityCreatedAt = corDbCreatedAt(liveEntityP, 0);
 
   for (CorNode* changeP = reportP->changes->value.head; changeP != NULL; changeP = changeP->next)
   {
@@ -1036,6 +1038,13 @@ void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport*
 
     CorNode*    preP     = corTreeLookup(changeP, "preValue");
     CorNode*    postP    = corTreeLookup(liveEntityP, attrName);
+
+    //
+    // The STORE entity (corDbSysTimes.h): only the changed Attribute is copied out with every time in
+    // place - not the whole entity, under the write lock
+    //
+    if ((COR_DB_SYS_TIMES == 1) && (postP != NULL) && (postP->type == CorObject))
+      postP = corDbTreeOut(kaP, postP, entityCreatedAt);
 
     //
     // The instances the write reached - ldInstanceWritten, the broker's one answer to "touched" (the one

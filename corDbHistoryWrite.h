@@ -117,7 +117,8 @@ extern void corDbHistoryReplaced(CorDbStore* storeP, CorNode* newEntityP, CorNod
 // -----------------------------------------------------------------------------
 //
 // corDbHistoryMerged - attributes written (merge, PATCH, append): the instances the report says the
-// write reached, from the live entity after it; a deletion for each it removed
+// write reached, from the live STORE entity after it (each changed Attribute copied out with every time
+// in place - corDbSysTimes.h); a deletion for each it removed
 //
 extern void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport* reportP, CorAlloc* kaP);
 

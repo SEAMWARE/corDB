@@ -224,7 +224,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       {
         corDbApplyReportToLive(live, mergedTargetsV[i], &reportsV[i]);
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
-        corDbHistoryMerged(corDbLockedStore, corDbFullView(live, corRest.kallocP), &reportsV[i], corRest.kallocP);
+        corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
         anyOk = true;
         continue;
       }
@@ -263,7 +263,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       else
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
 
-      corDbHistoryMerged(corDbLockedStore, corDbFullView(live, corRest.kallocP), &reportsV[i], corRest.kallocP);
+      corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
       anyOk = true;
     }
   }

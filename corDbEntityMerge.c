@@ -220,7 +220,7 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
     {
       corDbApplyReportToLive(eP, mergedEntity, reportP);
       corDbPersistMerged(corDbLockedStore->persistP, eP, reportP);
-      corDbHistoryMerged(corDbLockedStore, corDbFullView(eP, corRest.kallocP), reportP, corRest.kallocP);
+      corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }
   }
