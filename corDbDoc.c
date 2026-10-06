@@ -169,6 +169,17 @@ int corDbDocCreate(Tenant* tenantP, const char* collection, const char* docId, C
 //
 int corDbDocRetrieve(Tenant* tenantP, const char* collection, const char* docId, CorNode** docPP)
 {
+  return corDbDocRetrieveIn(tenantP, collection, docId, corRest.kallocP, docPP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbDocRetrieveIn - corDbDocRetrieve, the copy in 'allocP' (at start there is no request)
+//
+int corDbDocRetrieveIn(Tenant* tenantP, const char* collection, const char* docId, CorAlloc* allocP, CorNode** docPP)
+{
   COR_DB_READ(tenantP);
 
   CorNode* dP = docById(corDbStoreDocs(corDbLockedStore, collection, false), docId);
@@ -176,7 +187,7 @@ int corDbDocRetrieve(Tenant* tenantP, const char* collection, const char* docId,
   if (dP == NULL)
     return DB_NOT_FOUND;
 
-  *docPP = corTreeClone(corRest.kallocP, dP);
+  *docPP = corTreeClone(allocP, dP);
 
   return (*docPP != NULL) ? DB_OK : DB_ERR;
 }
@@ -189,13 +200,24 @@ int corDbDocRetrieve(Tenant* tenantP, const char* collection, const char* docId,
 //
 int corDbDocQuery(Tenant* tenantP, const char* collection, CorNode** arrayPP)
 {
+  return corDbDocQueryIn(tenantP, collection, corRest.kallocP, arrayPP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbDocQueryIn - corDbDocQuery, the copies in 'allocP' (at start there is no request)
+//
+int corDbDocQueryIn(Tenant* tenantP, const char* collection, CorAlloc* allocP, CorNode** arrayPP)
+{
   COR_DB_READ(tenantP);
 
   CorNode* collP  = corDbStoreDocs(corDbLockedStore, collection, false);
-  CorNode* arrayP = corTreeArray(corRest.kallocP, NULL);
+  CorNode* arrayP = corTreeArray(allocP, NULL);
 
   for (CorNode* dP = (collP != NULL) ? collP->value.head : NULL; dP != NULL; dP = dP->next)
-    corTreeChildAdd(arrayP, corTreeClone(corRest.kallocP, dP));
+    corTreeChildAdd(arrayP, corTreeClone(allocP, dP));
 
   *arrayPP = arrayP;
   return DB_OK;
@@ -251,6 +273,73 @@ int corDbDocDelete(Tenant* tenantP, const char* collection, const char* docId)
   corTreeChildRemove(collP, oldP);
   corTreeFree(oldP);
   logDelete(corDbLockedStore->persistP, collection, docId);
+
+  return DB_OK;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbDocMerge - a document's members set from a fragment, under one write lock: a member is set (replaced
+// or added), a null member removed; "id" and "type" are not touched. DB_NOT_FOUND: no such document.
+//
+int corDbDocMerge(Tenant* tenantP, const char* collection, const char* docId, CorNode* fragmentP)
+{
+  COR_DB_WRITE(tenantP);
+
+  CorNode* collP = corDbStoreDocs(corDbLockedStore, collection, false);
+  CorNode* oldP  = docById(collP, docId);
+
+  if (oldP == NULL)
+    return DB_NOT_FOUND;
+
+  CorNode* mergedP = corTreeClone(NULL, oldP);           // malloc - the store's
+
+  if (mergedP == NULL)
+  {
+    COR_E("corDB: out of memory for document '%s' (%s)", docId, collection);
+    return DB_ERR;
+  }
+
+  for (CorNode* fP = (fragmentP != NULL) ? fragmentP->value.head : NULL; fP != NULL; fP = fP->next)
+  {
+    if ((fP->name == NULL) || (strcmp(fP->name, "id") == 0) || (strcmp(fP->name, "type") == 0))
+      continue;
+
+    CorNode* currentP = corTreeLookup(mergedP, fP->name);
+
+    if (fP->type == CorNull)
+    {
+      if (currentP != NULL)
+      {
+        corTreeChildRemove(mergedP, currentP);
+        corTreeFree(currentP);
+      }
+      continue;
+    }
+
+    CorNode* cloneP = corTreeClone(NULL, fP);
+
+    if (cloneP == NULL)
+    {
+      corTreeFree(mergedP);
+      COR_E("corDB: out of memory for document '%s' (%s)", docId, collection);
+      return DB_ERR;
+    }
+
+    if (currentP != NULL)
+    {
+      corTreeChildReplace(mergedP, currentP, cloneP);
+      corTreeFree(currentP);
+    }
+    else
+      corTreeChildAdd(mergedP, cloneP);
+  }
+
+  corTreeChildReplace(collP, oldP, mergedP);
+  corTreeFree(oldP);
+  logPut(corDbLockedStore->persistP, collection, docId, mergedP);
 
   return DB_OK;
 }

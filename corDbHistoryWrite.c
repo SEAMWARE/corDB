@@ -251,6 +251,12 @@ void corDbHistoryDrain(CorDbStore* storeP)
 
   pthread_mutex_lock(&storeP->histMutex);
 
+  if (storeP->historyP == NULL)                      // the tenant was dropped meanwhile (corDbHistoryDrop)
+  {
+    pthread_mutex_unlock(&storeP->histMutex);
+    return;
+  }
+
   pthread_mutex_lock(&storeP->histQMutex);
   CorDbHistItem* itemP = storeP->histQHead;
   __atomic_store_n(&storeP->histQHead, NULL, __ATOMIC_RELEASE);
@@ -1080,4 +1086,44 @@ void corDbHistoryDeleted(CorDbStore* storeP, CorNode* goneEntityP, CorAlloc* kaP
 
   if (eP != NULL)
     entityEvent(storeP, eP, "deleted", timeOf(NULL), kaP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryDrop - a dropped tenant's history: what is queued thrown away, the history freed
+//
+void corDbHistoryDrop(CorDbStore* storeP)
+{
+  if (storeP == NULL)
+    return;
+
+  pthread_mutex_lock(&storeP->histMutex);
+
+  pthread_mutex_lock(&storeP->histQMutex);
+  CorDbHistItem* itemP = storeP->histQHead;
+  __atomic_store_n(&storeP->histQHead, NULL, __ATOMIC_RELEASE);
+  storeP->histQTail = NULL;
+  pthread_mutex_unlock(&storeP->histQMutex);
+
+  CorDbHistItem* nextP;
+
+  for (; itemP != NULL; itemP = nextP)
+  {
+    nextP = itemP->next;
+
+    if (itemP->isEvent)
+      free(itemP->body);
+    free(itemP);
+  }
+
+  if (storeP->historyP != NULL)
+  {
+    corDbHistoryFree(storeP->historyP);
+    free(storeP->historyP);
+    storeP->historyP = NULL;
+  }
+
+  pthread_mutex_unlock(&storeP->histMutex);
 }
