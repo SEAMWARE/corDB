@@ -62,6 +62,17 @@ extern CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreat
 
 // -----------------------------------------------------------------------------
 //
+// corDbAttrTimesFill / corDbAttrTimesDrop - an attribute of a store entity, IN PLACE: its instances'
+// missing times put in (the entity's createdAt) / the times equal to the entity's createdAt taken out -
+// around corNgsild's in-place update (corDbEntityAttrsSet)
+//
+extern void corDbAttrTimesFill(CorNode* attrP, int64_t entityCreatedAt);
+extern void corDbAttrTimesDrop(CorNode* attrP, int64_t entityCreatedAt);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbCreatedAt / corDbModifiedAt - an object's times as they are: its member, else the entity's
 // createdAt - parentCreatedAt (0 for the entity itself, whose modifiedAt is then its createdAt)
 //

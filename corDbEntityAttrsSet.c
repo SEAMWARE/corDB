@@ -32,28 +32,22 @@
 #if COR_DB_SYS_TIMES
 // -----------------------------------------------------------------------------
 //
-// attrsReform - the fragment's attributes of a live entity swapped for another form of themselves:
-// whole (toFull, every inherited time in place - what ldEntityAttrsSet reads and keeps) or the store's
+// attrsTimes - the fragment's attributes of a live entity, in place: their instances' inherited times put
+// in (fill - ldEntityAttrsSet keeps an instance's createdAt) or the inherited ones taken out again
 // (corDbSysTimes.h)
 //
-static void attrsReform(CorNode* eP, CorNode* fragmentDb, bool toFull)
+static void attrsTimes(CorNode* eP, CorNode* fragmentDb, bool fill)
 {
   int64_t entityCreatedAt = corDbCreatedAt(eP, 0);
 
   for (CorNode* fP = (fragmentDb != NULL) ? fragmentDb->value.head : NULL; fP != NULL; fP = fP->next)
   {
-    CorNode* oldP = corTreeLookup(eP, fP->name);
+    CorNode* attrP = corTreeLookup(eP, fP->name);
 
-    if ((oldP == NULL) || (oldP->type != CorObject))
-      continue;
-
-    CorNode* newP = (toFull == true) ? corDbTreeOut(NULL, oldP, entityCreatedAt) : corDbTreeIn(oldP, entityCreatedAt);
-
-    if (newP == NULL)
-      continue;
-
-    corTreeChildReplace(eP, oldP, newP);
-    corTreeFree(oldP);
+    if (fill == true)
+      corDbAttrTimesFill(attrP, entityCreatedAt);
+    else
+      corDbAttrTimesDrop(attrP, entityCreatedAt);
   }
 }
 #endif
@@ -93,11 +87,11 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
     {
       // NULL allocator → malloc heap (tenant store lifetime)
 #if COR_DB_SYS_TIMES
-      attrsReform(eP, fragmentDb, true);              // what the attributes inherit, in place - ldEntityAttrsSet keeps it
+      attrsTimes(eP, fragmentDb, true);               // what the attributes inherit, in place - ldEntityAttrsSet keeps it
 #endif
       ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
 #if COR_DB_SYS_TIMES
-      attrsReform(eP, fragmentDb, false);             // and the store's form again: only the new times stay
+      attrsTimes(eP, fragmentDb, false);              // and the store's form again: only the new times stay
 #endif
 
       //
