@@ -9,36 +9,31 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-// System timestamps by inheritance (coraine doc/cor-protocol-details.md § 4.10a) - a build choice,
-// COR_DB_SYS_TIMES (0 by default).
+// System timestamps - one per created entity (coraine doc/cor-protocol-details.md § 4.10a)
 //
 // corNgsild gives the entity, every attribute instance and every sub-attribute a createdAt and a
-// modifiedAt member. An entity is created whole, with one time. With COR_DB_SYS_TIMES=1 the store keeps
-// that one time - the entity's createdAt - and, below the entity, only the times that differ from it:
+// modifiedAt member. An entity is created whole, with one time. The store keeps that one time - the
+// entity's createdAt - and, below the entity, only the times that differ from it:
 //
 //   created entity       the entity's createdAt; its modifiedAt only once it differs
 //   modified attribute   its own modifiedAt (its createdAt still the entity's)
 //   added attribute      its own createdAt and modifiedAt
 //
-// A tree is converted at the store's edges only, in one pass - corDbTreeIn leaves out every createdAt /
-// modifiedAt equal to the entity's createdAt, corDbTreeOut puts them back (a createdAt right before its
-// object's modifiedAt, both last when neither is there - where corNgsild puts them). Everything outside
-// corDB sees the members as ever; the store, the log and the snapshot keep the short form, plain
-// CorNodes. Never inside a value: a Property's JSON value is the user's.
-//
-// With COR_DB_SYS_TIMES=0 corDbTreeIn / corDbTreeOut are corTreeClone, the accessors member lookups.
+// A time that is not there is the entity's createdAt. An object whose time was left out is MARKED (CorNode
+// flag 0x04: createdAt inherited, 0x08: modifiedAt inherited); the entity's createdAt is kept at its front,
+// after the id the index puts first. In, corDbTreeIn leaves the inherited times out and marks; out, a copy
+// is corTree's clone and the marked objects get their times back - a createdAt right before its object's
+// modifiedAt, both last when neither is there (where corNgsild puts them). corNgsild's ldEntityAttrsSet
+// keeps an inherited createdAt inherited. Everything outside corDB sees every time; the store, the log and
+// the snapshot keep the short form (the marks are not written - corDbTreeIn sets them again on replay). A
+// store written with every time in place is read as it is. Never inside a value: a Property's JSON value is
+// the user's.
 //
 #include <stdbool.h>                                  // bool
 #include <stdint.h>                                   // int64_t
 
 #include "corAlloc/CorAlloc.h"                        // CorAlloc
 #include "corTree/CorNode.h"                          // CorNode
-
-
-
-#ifndef COR_DB_SYS_TIMES
-#define COR_DB_SYS_TIMES 0
-#endif
 
 
 
@@ -81,14 +76,14 @@ extern int64_t corDbModifiedAt(CorNode* nodeP, int64_t parentCreatedAt);
 
 // -----------------------------------------------------------------------------
 //
-// corDbFullView - a store entity for history (--troe corDB), which encodes instances whole: itself with
-// COR_DB_SYS_TIMES=0 or no history, else a copy (kaP) with every time in place
+// corDbFullView - a store entity for history (--troe corDB), which encodes instances whole: itself with no
+// history, else a copy (kaP) with every time in place
 //
 extern bool corDbHistoryOn;
 
 static inline CorNode* corDbFullView(CorNode* storeP, CorAlloc* kaP)
 {
-  return ((COR_DB_SYS_TIMES == 0) || (corDbHistoryOn == false) || (storeP == NULL)) ? storeP : corDbTreeOut(kaP, storeP, 0);
+  return ((corDbHistoryOn == false) || (storeP == NULL)) ? storeP : corDbTreeOut(kaP, storeP, 0);
 }
 
 #endif  // CORDB_CORDBSYSTIMES_H_

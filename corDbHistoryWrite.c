@@ -1043,7 +1043,7 @@ void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMergeReport*
     // The STORE entity (corDbSysTimes.h): only the changed Attribute is copied out with every time in
     // place - not the whole entity, under the write lock
     //
-    if ((COR_DB_SYS_TIMES == 1) && (postP != NULL) && (postP->type == CorObject))
+    if ((postP != NULL) && (postP->type == CorObject))
       postP = corDbTreeOut(kaP, postP, entityCreatedAt);
 
     //

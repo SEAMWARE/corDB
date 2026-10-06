@@ -42,14 +42,8 @@ HAVE_CORAINE  = $(wildcard $(CORAINE)/src/lib/db/DbDriver.h)
 COR_FEATURE_SUBSCRIPTIONS ?= 1
 COR_FEATURE_REGISTRATIONS ?= 1
 
-#
-# COR_DB_SYS_TIMES=1 - the system timestamps (createdAt, modifiedAt) kept beside the node in the store, not as
-# two member nodes of every object (corDbSysTimes.h). Off by default.
-#
-COR_DB_SYS_TIMES ?= 0
-
 INCLUDE       = -I$(COR_LIBS) -I$(CORAINE)/src/lib -I$(CORAINE)/src/plugins
-DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_DB_SYS_TIMES=$(COR_DB_SYS_TIMES)
+DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS)
 # The current-state plugin's version; troe/corDbRegister.c defines its own
 VERSION_DEF   = -DPLUGIN_VERSION=\"0.2.0\"
 CFLAGS        = -Wall -Werror -Wundef -fPIC $(INCLUDE) $(DEFINES) -MMD -MP $(EXTRA_CFLAGS)

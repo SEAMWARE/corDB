@@ -105,7 +105,7 @@ static int distCandCmp(const void* a, const void* b)
 //
 static bool qSubTimesUsed(LdQNode* nodeP)
 {
-  if ((COR_DB_SYS_TIMES == 0) || (nodeP == NULL))
+  if (nodeP == NULL)
     return false;
 
   if (nodeP->type == LdQTermNode)

@@ -100,21 +100,20 @@ static inline int64_t headCreatedAt(CorNode* nodeP)
 //
 int64_t corDbCreatedAt(CorNode* nodeP, int64_t parentCreatedAt)
 {
-  int64_t t = (COR_DB_SYS_TIMES == 1) ? headCreatedAt(nodeP) : memberTime(nodeP, "createdAt");
+  int64_t t = headCreatedAt(nodeP);
 
-  return ((t == 0) && (COR_DB_SYS_TIMES == 1)) ? parentCreatedAt : t;
+  return (t == 0) ? parentCreatedAt : t;
 }
 
 int64_t corDbModifiedAt(CorNode* nodeP, int64_t parentCreatedAt)
 {
   int64_t t = memberTime(nodeP, "modifiedAt");
 
-  return ((t == 0) && (COR_DB_SYS_TIMES == 1)) ? corDbCreatedAt(nodeP, parentCreatedAt) : t;
+  return (t == 0) ? corDbCreatedAt(nodeP, parentCreatedAt) : t;
 }
 
 
 
-#if COR_DB_SYS_TIMES
 // -----------------------------------------------------------------------------
 //
 // opaque - a member whose content is the user's: a value is never looked into
@@ -519,11 +518,3 @@ CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt)
   return treeOut(kaP, storeP, entityCreatedAt);
 }
 
-#else
-
-CorNode* corDbTreeIn(CorNode* srcP, int64_t parentCreatedAt)                  { (void) parentCreatedAt; return corTreeClone(NULL, srcP); }
-CorNode* corDbEntityCopy(CorAlloc* kaP, CorNode* storeP, int64_t* createdAtP) { *createdAtP = 0; return corTreeClone(kaP, storeP); }
-void     corDbEntityCopyFinish(CorAlloc* kaP, CorNode* copyP, int64_t createdAt) { (void) kaP; (void) copyP; (void) createdAt; }
-CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t parentCreatedAt) { (void) parentCreatedAt; return corTreeClone(kaP, storeP); }
-
-#endif
