@@ -183,10 +183,158 @@ void corDbPersistMerged(CorDbPersist* persistP, CorNode* live, LdMergeReport* re
 
 // -----------------------------------------------------------------------------
 //
-// corDbEntityChangesApply - persist a merged single entity (DB driver entry)
+// mergePrepare - BEFORE the write lock: what corDbApplyReportToLive would clone into the store under it -
+// the members the report changed and, with any change, modifiedAt, type and scope - each a malloc clone
+// in the store's form (corDbSysTimes.h), the children of one request-arena object
 //
-int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
-                            CorNode* mergedEntity, LdMergeReport* reportP)
+static CorNode* mergePrepare(CorNode* merged, LdMergeReport* reportP)
+{
+  CorNode* prepP           = corTreeObject(corRest.kallocP, NULL);
+  int64_t  entityCreatedAt = corDbCreatedAt(merged, 0);
+  bool     anyChange       = false;
+
+  if ((prepP == NULL) || (reportP == NULL) || (reportP->changes == NULL))
+    return prepP;
+
+  for (CorNode* change = reportP->changes->value.head; change != NULL; change = change->next)
+  {
+    CorNode* attrNameP = corTreeLookup(change, "attr");
+    CorNode* reasonP   = corTreeLookup(change, "reason");
+
+    if ((attrNameP == NULL) || (reasonP == NULL) || (attrNameP->type != CorString) || (reasonP->type != CorString))
+      continue;
+
+    anyChange = true;
+
+    if (strcmp(reasonP->value.s, "attributeDeleted") == 0)
+      continue;
+
+    CorNode* srcP = corTreeLookup(merged, attrNameP->value.s);
+
+    if ((srcP != NULL) && (corTreeLookup(prepP, attrNameP->value.s) == NULL))
+      corTreeChildAdd(prepP, corDbTreeIn(srcP, entityCreatedAt));
+  }
+
+  if (anyChange)
+  {
+    const char* refreshed[] = { LD_VOCAB_MODIFIED_AT, "type", LD_VOCAB_SCOPE };
+
+    for (int ix = 0; ix < 3; ix++)
+    {
+      CorNode* srcP = corTreeLookup(merged, refreshed[ix]);
+
+      if ((srcP != NULL) && (corTreeLookup(prepP, refreshed[ix]) == NULL))
+        corTreeChildAdd(prepP, corTreeClone(NULL, srcP));
+    }
+  }
+
+  return prepP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// prepFree - what mergePrepare cloned and nobody took
+//
+static void prepFree(CorNode* prepP)
+{
+  CorNode* mP = (prepP != NULL) ? prepP->value.head : NULL;
+
+  while (mP != NULL)
+  {
+    CorNode* nextP = mP->next;
+
+    corTreeFree(mP);
+    mP = nextP;
+  }
+
+  if (prepP != NULL)
+  {
+    prepP->value.head = NULL;
+    prepP->value.tail = NULL;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// takeOrAdd - a member mergePrepare made (already the store's) moved into the live entity, replacing (and
+// freeing) a same-named one
+//
+static void takeOrAdd(CorNode* live, CorNode* prepP, const char* name)
+{
+  CorNode* nodeP = corTreeLookup(prepP, name);
+
+  if (nodeP == NULL)
+    return;
+
+  corTreeChildRemove(prepP, nodeP);
+
+  CorNode* oldP = corTreeLookup(live, name);
+
+  if (oldP != NULL)
+  {
+    corTreeChildReplace(live, oldP, nodeP);
+    corTreeFree(oldP);
+  }
+  else
+    corTreeChildAdd(live, nodeP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// applyPrepared - corDbApplyReportToLive, with what it would clone made before the lock (mergePrepare)
+//
+static void applyPrepared(CorNode* live, CorNode* prepP, LdMergeReport* reportP)
+{
+  bool anyChange = false;
+
+  if ((reportP != NULL) && (reportP->changes != NULL))
+  {
+    for (CorNode* change = reportP->changes->value.head; change != NULL; change = change->next)
+    {
+      CorNode* attrNameP = corTreeLookup(change, "attr");
+      CorNode* reasonP   = corTreeLookup(change, "reason");
+
+      if ((attrNameP == NULL) || (reasonP == NULL) || (attrNameP->type != CorString) || (reasonP->type != CorString))
+        continue;
+
+      if (strcmp(reasonP->value.s, "attributeDeleted") == 0)
+      {
+        CorNode* oldP = corTreeLookup(live, attrNameP->value.s);
+
+        if (oldP != NULL)
+        {
+          corTreeChildRemove(live, oldP);
+          corTreeFree(oldP);
+        }
+      }
+      else
+        takeOrAdd(live, prepP, attrNameP->value.s);
+
+      anyChange = true;
+    }
+  }
+
+  if (anyChange)
+  {
+    takeOrAdd(live, prepP, LD_VOCAB_MODIFIED_AT);
+    takeOrAdd(live, prepP, "type");
+    takeOrAdd(live, prepP, LD_VOCAB_SCOPE);
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// changesApply - under the write lock: what mergePrepare made moved into the live entity
+//
+static int changesApply(Tenant* tenantP, const char* entityId, CorNode* mergedEntity, LdMergeReport* reportP, CorNode* prepP)
 {
   COR_DB_WRITE(tenantP);
 
@@ -218,7 +366,7 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
     CorNode* idP = corTreeLookup(eP, "id");
     if (idP != NULL && idP->type == CorString && strcmp(idP->value.s, entityId) == 0)
     {
-      corDbApplyReportToLive(eP, mergedEntity, reportP);
+      applyPrepared(eP, prepP, reportP);
       corDbPersistMerged(corDbLockedStore->persistP, eP, reportP);
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
@@ -226,4 +374,21 @@ int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
   }
 
   return DB_NOT_FOUND;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityChangesApply - persist a merged single entity (DB driver entry): what goes into the store is
+// cloned before the write lock, and only moved in under it
+//
+int corDbEntityChangesApply(Tenant* tenantP, const char* entityId,
+                            CorNode* mergedEntity, LdMergeReport* reportP)
+{
+  CorNode* prepP = mergePrepare(mergedEntity, reportP);
+  int      r     = changesApply(tenantP, entityId, mergedEntity, reportP, prepP);
+
+  prepFree(prepP);                                    // what was not taken (not found, invalid geometry)
+  return r;
 }

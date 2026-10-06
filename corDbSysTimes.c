@@ -432,7 +432,11 @@ static void timesPut(CorAlloc* kaP, CorNode* nodeP, int64_t entityCreatedAt)
 {
   for (CorNode* mP = nodeP->value.head; mP != NULL; mP = mP->next)
   {
-    if ((mP->type == CorObject) || (mP->type == CorArray))
+    //
+    // Not into a value: nothing in a value is marked. corJsonld marks a value node (its value-kind
+    // bits, 0xF0); one without them (a store rebuilt from its files) is walked, and finds nothing
+    //
+    if (((mP->type == CorObject) || (mP->type == CorArray)) && ((mP->flags & 0xF0) == 0))
       timesPut(kaP, mP, entityCreatedAt);
   }
 
