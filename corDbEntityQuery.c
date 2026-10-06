@@ -23,6 +23,7 @@
 #include "corNgsild/ldEntityMatch.h"                    // ldEntityMatchType, ldEntityMatchScope, ldEntityMatchQ
 
 #include "db/DbDriver.h"                              // DB_OK, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbGeoMatch.h"       // corDbGeoMatch
 #include "corDB/corDbEntityQuery.h"    // Own interface
@@ -99,10 +100,50 @@ static int distCandCmp(const void* a, const void* b)
 
 // -----------------------------------------------------------------------------
 //
-// corDbEntityQuery -
+// qSubTimesUsed - does the q name a time the store may leave out: the entity's modifiedAt, an attribute's
+// (or sub-attribute's) createdAt or modifiedAt?
 //
-int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
+static bool qSubTimesUsed(LdQNode* nodeP)
 {
+  if (nodeP == NULL)
+    return false;
+
+  if (nodeP->type == LdQTermNode)
+  {
+    if ((nodeP->term.subPathN == 0) && (strcmp(nodeP->term.attr, "modifiedAt") == 0))
+      return true;
+
+    for (int ix = 0; ix < nodeP->term.subPathN; ix++)
+    {
+      if ((strcmp(nodeP->term.subPathV[ix], "createdAt") == 0) || (strcmp(nodeP->term.subPathV[ix], "modifiedAt") == 0))
+        return true;
+    }
+
+    return false;
+  }
+
+  if ((nodeP->type == LdQAndNode) || (nodeP->type == LdQOrNode))
+  {
+    for (int ix = 0; ix < nodeP->group.count; ix++)
+    {
+      if (qSubTimesUsed(nodeP->group.childV[ix]))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+
+// -----------------------------------------------------------------------------
+//
+// entityQuery - under the store's read lock: the page's entities copied as corTreeClone copies them, and
+// for each, what corDbEntityCopyFinish needs and its geoDistance (-1: none) - both put in after the lock
+//
+static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP, int64_t** createdAtVP, double** distVP)
+{
+  bool qSubTimes = (filterP != NULL) && qSubTimesUsed(filterP->qExpr);   // once per query
+
   COR_DB_READ(tenantP);
 
   CorNode* entities = corDbEntities(tenantP);
@@ -254,7 +295,14 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
     //
     if (filterP != NULL && filterP->qExpr != NULL)
     {
-      if (!ldEntityMatchQ(eP, filterP->qExpr))
+      //
+      // A q on the entity's modifiedAt or an attribute's own createdAt / modifiedAt reads what the store
+      // may leave out - it is matched against the entity with every time in place (corDbSysTimes.h).
+      // Rare: a copy each.
+      //
+      CorNode* matchP = (qSubTimes == true) ? corDbTreeOut(corRest.kallocP, eP, 0) : eP;
+
+      if (!ldEntityMatchQ(matchP, filterP->qExpr))
         continue;
     }
 
@@ -308,17 +356,50 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
   //
   if ((limit > 0) || unpaged)
   {
-    for (int i = unpaged ? 0 : offset; i < nCand && (unpaged || (i - offset) < limit); i++)
+    int from = unpaged ? 0 : offset;
+    int n    = (from < nCand) ? nCand - from : 0;
+
+    if ((unpaged == false) && (n > limit))
+      n = limit;
+
+    *createdAtVP = (int64_t*) corAlloc(corRest.kallocP, (n + 1) * sizeof(int64_t));
+    *distVP      = (double*)  corAlloc(corRest.kallocP, (n + 1) * sizeof(double));
+
+    for (int i = from, j = 0; j < n; i++, j++)
     {
-      CorNode* cloneP = corTreeClone(corRest.kallocP, cands[i].eP);
-
-      if (cands[i].dist >= 0)
-        corTreeChildAdd(cloneP, corTreeFloat(corRest.kallocP, "geoDistance", cands[i].dist));
-
-      corTreeChildAdd(arrayP, cloneP);
+      corTreeChildAdd(arrayP, corDbEntityCopy(corRest.kallocP, cands[i].eP, &(*createdAtVP)[j]));
+      (*distVP)[j] = cands[i].dist;
     }
   }
 
   *arrayPP = arrayP;
   return DB_OK;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityQuery - the copies under the store's lock, their inherited times (and geoDistance, after them)
+// put in after it
+//
+int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
+{
+  int64_t* createdAtV = NULL;
+  double*  distV      = NULL;
+  int      r          = entityQuery(tenantP, filterP, arrayPP, &createdAtV, &distV);
+
+  if ((r != DB_OK) || (createdAtV == NULL))
+    return r;
+
+  int j = 0;
+  for (CorNode* eP = (*arrayPP)->value.head; eP != NULL; eP = eP->next, j++)
+  {
+    corDbEntityCopyFinish(corRest.kallocP, eP, createdAtV[j]);
+
+    if (distV[j] >= 0)
+      corTreeChildAdd(eP, corTreeFloat(corRest.kallocP, "geoDistance", distV[j]));
+  }
+
+  return r;
 }

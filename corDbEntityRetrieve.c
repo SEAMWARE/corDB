@@ -14,6 +14,7 @@
 #include "corRest/CorRestState.h"                       // corRest
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityRetrieve.h" // Own interface
@@ -22,9 +23,9 @@
 
 // -----------------------------------------------------------------------------
 //
-// corDbEntityRetrieve -
+// entityRetrieve - under the store's read lock
 //
-int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityPP)
+static int entityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityPP, int64_t* createdAtP)
 {
   COR_DB_READ(tenantP);
 
@@ -40,7 +41,7 @@ int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityP
 
     if (hitP != NULL)
     {
-      *entityPP = corTreeClone(corRest.kallocP, hitP);
+      *entityPP = corDbEntityCopy(corRest.kallocP, hitP, createdAtP);
       return DB_OK;
     }
 
@@ -57,10 +58,27 @@ int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityP
       // Clone into the request arena (freed at request end), matching mongoc's
       // retrieve. A NULL (malloc) clone would leak — no caller frees the result;
       // they all consume it within the request (render / merge / replace-copy).
-      *entityPP = corTreeClone(corRest.kallocP, eP);
+      *entityPP = corDbEntityCopy(corRest.kallocP, eP, createdAtP);
       return DB_OK;
     }
   }
 
   return DB_NOT_FOUND;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityRetrieve - the copy under the store's lock, its inherited times put back after it
+//
+int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityPP)
+{
+  int64_t createdAt = 0;
+  int     r         = entityRetrieve(tenantP, entityId, entityPP, &createdAt);
+
+  if (r == DB_OK)
+    corDbEntityCopyFinish(corRest.kallocP, *entityPP, createdAt);
+
+  return r;
 }

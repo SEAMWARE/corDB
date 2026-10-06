@@ -23,6 +23,7 @@
 #include "corRest/CorRestState.h"                           // corRest (kallocP arena)
 
 #include "db/DbDriver.h"                                  // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexUnlink, corDbEntityId
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistory.h"                      // corDbHistoryOn
@@ -109,7 +110,7 @@ int corDbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
 
     if (goneV[i] != NULL)
     {
-      snapshotsV[i] = corTreeClone(corRest.kallocP, goneV[i]);   // arena snapshot for notify
+      snapshotsV[i] = corDbTreeOut(corRest.kallocP, goneV[i], 0);   // arena snapshot for notify
       corTreeFree(goneV[i]);                                      // the malloc store node
     }
   }

@@ -10,6 +10,8 @@
 #include <stdbool.h>                                 // bool
 #include <string.h>                                   // strcmp
 
+#include "corTree/corTreeFree.h"                      // corTreeFree
+#include "corTree/corTreeChildReplace.h"              // corTreeChildReplace
 #include "corTree/CorNode.h"                          // CorNode
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 
@@ -17,12 +19,16 @@
 #include "corNgsild/LdVocab.h"                         // LD_VOCAB_MODIFIED_AT, LD_VOCAB_SCOPE
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
 #include "corRest/CorRestState.h"                    // corRest (kallocP - the history's scratch)
 #include "corDB/corDbStore.h"          // corDbEntities
 #include "corDB/corDbEntityAttrsSet.h" // Own interface
+
+
+
 
 
 
@@ -58,7 +64,7 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
     if (idP != NULL && idP->type == CorString && strcmp(idP->value.s, entityId) == 0)
     {
       // NULL allocator → malloc heap (tenant store lifetime)
-      ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);
+      ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);   // keeps an inherited createdAt inherited (0x04)
 
       //
       // The log record: the members the fragment names, as the entity has them now, and what the

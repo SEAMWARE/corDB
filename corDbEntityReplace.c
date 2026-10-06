@@ -18,6 +18,7 @@
 #include "corRest/CorRestState.h"                        // corRest
 
 #include "db/DbDriver.h"                               // DB_OK, DB_NOT_FOUND, DB_ERR, Tenant
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLookup, corDbIndexReplace
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistory.h"                      // corDbHistoryOn
@@ -39,7 +40,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
   // the index, is reachable by nobody else, so the caller's copy of it and its free come AFTER
   // (see corDbEntityBulkCreate for what doing them under the lock cost).
   //
-  CorNode* cloneP = corTreeClone(NULL, newEntityP);
+  CorNode* cloneP = corDbTreeIn(newEntityP, 0);
   CorNode* oldP   = NULL;
 
   if (cloneP == NULL)
@@ -56,7 +57,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
 
   COR_DB_HIST_PRE(hist);                             // its history records too (--troe corDB)
   if (corDbHistoryOn)
-    corDbHistoryPrepare(&hist, cloneP, "replaced", corRest.kallocP);
+    corDbHistoryPrepare(&hist, newEntityP, "replaced", corRest.kallocP);   // the request's: every time in place
 
   {
     COR_DB_WRITE(tenantP);
@@ -90,7 +91,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
         //
         corDbIndexReplace(corDbStoreOf(tenantP), eP, cloneP);
         corDbPersistAppendPre(corDbLockedStore->persistP, CorDbLogEntityPut, &pre, preIx, cloneP);
-        corDbHistoryReplacedPre(corDbLockedStore, &hist, cloneP, eP, corRest.kallocP);
+        corDbHistoryReplacedPre(corDbLockedStore, &hist, corDbFullView(cloneP, corRest.kallocP), corDbFullView(eP, corRest.kallocP), corRest.kallocP);
         oldP = eP;
         break;
       }
@@ -107,7 +108,7 @@ int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntity
   // request end, matching mongoc's oldEntityPP), then free the malloc store
   // node — returning the raw malloc node would leak (no caller frees it).
   if (oldEntityPP != NULL)
-    *oldEntityPP = corTreeClone(corRest.kallocP, oldP);
+    *oldEntityPP = corDbTreeOut(corRest.kallocP, oldP, 0);
   corTreeFree(oldP);
 
   return DB_OK;

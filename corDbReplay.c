@@ -17,6 +17,7 @@
 #include "corTree/corTreeFree.h"                       // corTreeFree
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbCreatedAt
 #include "corDB/corDbIndex.h"                          // corDbIndexLookup, corDbIndexLink, corDbIndexReplace, corDbIndexUnlink
 #include "corDB/corDbLog.h"                            // CorDbLogRecord
 #include "corDB/corDbStore.h"                          // CorDbStore
@@ -126,7 +127,7 @@ bool corDbReplay(CorDbStore* storeP, CorDbLogRecord* recP)
   {
   case CorDbLogEntityPut:
   {
-    CorNode* cloneP = corTreeClone(NULL, recP->bodyP);
+    CorNode* cloneP = corDbTreeIn(recP->bodyP, 0);   // the store's form - a record written either way
 
     if (cloneP == NULL)
       return false;
@@ -163,7 +164,7 @@ bool corDbReplay(CorDbStore* storeP, CorDbLogRecord* recP)
 
     for (CorNode* mP = (attrsP != NULL) ? attrsP->value.head : NULL; mP != NULL; mP = mP->next)
     {
-      CorNode* cloneP = corTreeClone(NULL, mP);
+      CorNode* cloneP = corDbTreeIn(mP, corDbCreatedAt(entityP, 0));
 
       if (cloneP == NULL)
         return false;

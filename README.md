@@ -31,6 +31,75 @@ A plugin is built with the broker's feature switches: `COR_FEATURE_SUBSCRIPTIONS
 `COR_FEATURE_REGISTRATIONS=0` for a broker built without them. `OBJDIR` and `OUT` build a variant
 elsewhere. Needs `libgeos_c` (geo-queries).
 
+### System timestamps - one per created entity
+
+corNgsild gives the entity, every attribute instance and every sub-attribute a `createdAt` and a
+`modifiedAt`. An entity is created whole, with one time, so the store keeps that one time - the
+entity's `createdAt` - and, below the entity, only the times that differ from it (`corDbSysTimes.h`):
+
+| | stored |
+|---|---|
+| a created entity | the entity's `createdAt`; its `modifiedAt` once it differs |
+| a modified attribute | its own `modifiedAt` - its `createdAt` is still the entity's |
+| an added attribute | its own `createdAt` and `modifiedAt` |
+
+- **A time that is not there is the entity's `createdAt`.** An object whose time was left out is marked
+  (CorNode flag `0x04`: `createdAt` inherited, `0x08`: `modifiedAt`); the entity's `createdAt` is kept
+  at its front, after the `id` the index puts first - a hop or two.
+- **The conversion is at the store's edges.** In, the inherited times are left out and the object marked;
+  out, the copy is corTree's own clone (`corTreeCloneMarked`) and only a marked object is looked at.
+  Retrieve and query copy under the read lock as a plain clone and put the times back after it, on the
+  request's own copy - the lock is held no longer than for a store with every time in place.
+- **corNgsild keeps it so**: `ldEntityAttrsSet` keeps an inherited `createdAt` inherited when it replaces
+  an instance, and its report's `preValue` has every time in place.
+- **Everything outside corDB sees every time.** The log and the snapshot keep the short form; the marks
+  are not written, `corDbTreeIn` sets them again on replay. A store written with every time in place is
+  read as it is. A `q` on the entity's `modifiedAt`, or on an attribute's own `createdAt` / `modifiedAt`,
+  matches each candidate on a copy with every time in place.
+
+**Memory** - 100 000 entities of 10 Property attributes, `--database corDB` in RAM, broker RSS, against
+the same code keeping every time (2026-10-06):
+
+| | every time kept | one per entity | |
+|---|---:|---:|---:|
+| created | 612 472 kB | 481 268 kB | **-21.4 %** |
+| every value then changed once (a merge per entity) | 831 620 kB | 638 288 kB | **-23.3 %** |
+| with 2 constant sub-attributes + `observedAt` per attribute, created | 1 620 080 kB | 1 238 836 kB | **-23.5 %** |
+| the same, every value then changed once | 2 350 892 kB | 1 657 848 kB | **-29.5 %** |
+
+A changed attribute takes back one time, its `modifiedAt`; a constant sub-attribute none. The growth from
+"created" to "changed" is glibc's: the merges run on 32 connections, and the memory the old nodes are
+freed into stays with the broker's malloc arenas.
+
+**Throughput** - test/perf/perfRun.sh, release builds, broker on 8 cores; requests/s against the same code
+keeping every time (the mean of two runs, their difference in brackets), 2026-10-06:
+
+| scenario | in RAM | durable (`--dbDir`) | durable + history (`--troe corDB`) |
+|---|---|---|---|
+| query_c50 | 70,159 / 70,782 / **+0.9 %** (+8.5 %) | 73,918 / 75,039 / **+1.5 %** (-0.5 %) | 73,364 / 74,589 / **+1.7 %** (+1.3 %) |
+| query_c200 | 70,661 / 70,159 / **-0.7 %** (+4.6 %) | 70,950 / 72,283 / **+1.9 %** (-0.7 %) | 70,856 / 72,018 / **+1.6 %** (+0.7 %) |
+| query_l1_c50 | 416,201 / 410,725 / **-1.3 %** (+3.7 %) | 415,046 / 427,785 / **+3.1 %** (-1.1 %) | 415,178 / 416,412 / **+0.3 %** (+0.9 %) |
+| query_l100_c50 | 15,998 / 15,827 / **-1.1 %** (+2.7 %) | 16,614 / 16,236 / **-2.3 %** (-3.0 %) | 16,287 / 15,732 / **-3.4 %** (+1.6 %) |
+| retrieve_c50 | 454,890 / 456,724 / **+0.4 %** (+4.2 %) | 456,256 / 468,133 / **+2.6 %** (+1.0 %) | 461,334 / 470,225 / **+1.9 %** (+0.6 %) |
+| patch_c50 | 179,072 / 186,271 / **+4.0 %** (+3.5 %) | 136,268 / 147,922 / **+8.6 %** (-0.7 %) | 111,845 / 115,857 / **+3.6 %** (+0.1 %) |
+| patch_c1 | 39,245 / 38,792 / **-1.2 %** (+0.5 %) | 37,644 / 37,686 / **+0.1 %** (-0.4 %) | 35,436 / 35,069 / **-1.0 %** (-0.7 %) |
+| batch20_c50 | 39,999 / 40,207 / **+0.5 %** (+1.5 %) | 33,594 / 33,493 / **-0.3 %** (+1.2 %) | 21,823 / 21,044 / **-3.6 %** (-0.2 %) |
+| create_c50 | 189,802 / 196,711 / **+3.6 %** (+0.8 %) | 112,943 / 125,750 / **+11.3 %** (+2.1 %) | 80,622 / 91,839 / **+13.9 %** (-1.4 %) |
+| create_c1 | 30,368 / 31,039 / **+2.2 %** (+0.0 %) | 27,048 / 28,021 / **+3.6 %** (-0.4 %) | 21,640 / 22,464 / **+3.8 %** (-0.2 %) |
+| batch20create_c50 | 49,623 / 51,534 / **+3.9 %** (+2.2 %) | 13,316 / 15,578 / **+17.0 %** (-2.2 %) | 7,254 / 7,712 / **+6.3 %** (-3.6 %) |
+| merge_c50 | 126,632 / 130,141 / **+2.8 %** (-0.8 %) | 102,224 / 99,835 / **-2.3 %** (-4.4 %) | 75,924 / 73,889 / **-2.7 %** (-1.8 %) |
+| delete_c50 | 226,585 / 241,294 / **+6.5 %** (-0.5 %) | 204,700 / 215,551 / **+5.3 %** (+3.2 %) | 184,706 / 197,403 / **+6.9 %** (-0.2 %) |
+| batch20delete_c50 | 67,732 / 76,385 / **+12.8 %** (-0.2 %) | 65,040 / 70,548 / **+8.5 %** (+0.3 %) | 47,226 / 47,964 / **+1.6 %** (-2.8 %) |
+
+**Forms measured and not taken** (perfRun as above, the change against every time kept; how each one
+led to the next: [history](doc/history/sys-times.md)):
+
+| form | memory | worst |
+|---|---|---|
+| `createdAt` and `modifiedAt` each inherited per object (from the parent / the object's own `createdAt`), looked up member by member | -22 % | patch_c50 -27.5 %, delete -19 %, merge -14 % (RAM) |
+| one time per created entity, the out-copy checking every member | -21.7 % | patch_c50 -25 %, merge -15 %, delete -11 % |
+| marked objects; append filling and dropping the times in place under the write lock | -21.5 % | patch_c50 -13 % (RAM), batch update -21 % (history) |
+
 The NGSI-LD and Cor-Lib functions the plugins call are resolved from the broker at `dlopen` (it is
 linked `-rdynamic`), so a plugin links none of them - and is the same for both of coraine's HTTP
 servers.

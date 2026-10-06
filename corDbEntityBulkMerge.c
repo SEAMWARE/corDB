@@ -20,6 +20,7 @@
 #include <stddef.h>                                       // NULL
 #include <string.h>                                       // strcmp
 
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"                         // corDbIndexLookup
 #include <stdlib.h>                                       // calloc, free
 #include "corTree/corTreeFree.h"                          // corTreeFree
@@ -96,7 +97,7 @@ int corDbEntityBulkRetrieve(Tenant* tenantP, CorNode* fragmentsArr, CorNode** ta
     if (live == NULL)
       continue;  // slot stays NULL -> DB_NOT_FOUND in the broker
 
-    CorNode* shared = corTreeClone(corRest.kallocP, live);
+    CorNode* shared = corDbTreeOut(corRest.kallocP, live, 0);   // every time in place, as the merge reads them
 
     int j = 0;
     for (CorNode* f2 = fragmentsArr->value.head; f2 != NULL; f2 = f2->next, j++)
@@ -185,7 +186,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       CorNode* mP = corTreeLookup(mergedTargetsV[i], names[k]);
 
       if (mP != NULL)
-        chV[i].setV[chV[i].nSet++] = corTreeClone(NULL, mP);   // NULL allocator: malloc, the store's lifetime
+        chV[i].setV[chV[i].nSet++] = corDbTreeIn(mP, corDbCreatedAt(mergedTargetsV[i], 0));   // malloc, the store's lifetime - in its form
       else
         chV[i].delV[chV[i].nDel++] = names[k];
     }
