@@ -96,6 +96,13 @@ typedef struct CorDbPersist
   uint64_t              syncedHistSeq;                 // the last history record on the disk (atomic)
   CorDbSeg              hist;                          // hist.fd -1: no history
 
+  //
+  // The tenant was dropped (corDbPersistDrop): its files are gone, the flusher, the snapshotter and the
+  // close at a stop pass it by. It stays in the list - the flusher and the snapshotter walk the list
+  // without the lock, so nothing is ever taken out of it.
+  //
+  bool                  dropped;
+
   struct CorDbPersist*  next;                          // every tenant's, for the flusher
 } CorDbPersist;
 
@@ -219,5 +226,14 @@ extern void corDbPersistSyncWait(void);
 // this returns, and the next start loads the snapshots with no log to replay (§ 5a).
 //
 extern void corDbPersistClose(void);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistDrop - a tenant's log dropped: marked, a snapshot in progress waited for (its store is empty
+// by now - corDbTenantDrop), the segments closed, every file and the directory deleted
+//
+extern void corDbPersistDrop(CorDbPersist* pP);
 
 #endif  // CORDB_CORDBPERSIST_H_

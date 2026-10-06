@@ -15,6 +15,10 @@
 #include "db/DbQueryFilter.h"                          // DbQueryFilter
 #include "shared/geoMatch.h"                           // csrGeoMatchOverlap, csrGeoMatchExact
 
+#include "corDB/corDbContext.h"                      // corDbContextSave, ...Delete, ...List, ...Get
+#include "corDB/corDbSubscriptionStatsFlush.h"       // corDbSubscriptionStatsFlush
+#include "corDB/corDbSnapshot.h"                     // corDbSnapshotCreate, ...Query, ...Update, ...Delete
+#include "corDB/corDbTenantDrop.h"                   // corDbTenantDrop
 #include "corDB/corDbGlobals.h"        // corDbArgV
 #include "corDB/corDbInit.h"           // corDbInit
 #include "corDB/corDbClose.h"          // corDbClose
@@ -142,6 +146,16 @@ void dbRegister(DbDriver* driverP)
   driverP->registrationDelete   = corDbRegistrationDelete;
   driverP->registrationList     = corDbRegistrations;
 #endif
+  driverP->contextSave     = corDbContextSave;
+  driverP->contextDelete   = corDbContextDelete;
+  driverP->contextList     = corDbContextList;
+  driverP->contextGet      = corDbContextGet;
+  driverP->subscriptionStatsFlush = corDbSubscriptionStatsFlush;
+  driverP->snapshotCreate  = corDbSnapshotCreate;
+  driverP->snapshotQuery   = corDbSnapshotQuery;
+  driverP->snapshotUpdate  = corDbSnapshotUpdate;
+  driverP->snapshotDelete  = corDbSnapshotDelete;
+  driverP->tenantDrop      = corDbTenantDrop;
   driverP->docCreate       = corDbDocCreate;
   driverP->docRetrieve     = corDbDocRetrieve;
   driverP->docQuery        = corDbDocQuery;

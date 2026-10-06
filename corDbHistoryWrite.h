@@ -130,4 +130,11 @@ extern void corDbHistoryMerged(CorDbStore* storeP, CorNode* liveEntityP, LdMerge
 //
 extern void corDbHistoryDeleted(CorDbStore* storeP, CorNode* goneEntityP, CorAlloc* kaP);
 
+// -----------------------------------------------------------------------------
+//
+// corDbHistoryDrop - a dropped tenant's history (corDbTenantDrop): what is queued thrown away, the history
+// freed - under the history's mutex, which a drain takes too
+//
+extern void corDbHistoryDrop(struct CorDbStore* storeP);
+
 #endif  // CORDB_CORDBHISTORYWRITE_H_

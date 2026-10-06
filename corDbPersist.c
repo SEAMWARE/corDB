@@ -777,6 +777,9 @@ static void flushLocked(CorDbPersist* pP)
 //
 static void flushOne(CorDbPersist* pP)
 {
+  if (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == true)
+    return;
+
   pthread_mutex_lock(&pP->ioMutex);
   flushLocked(pP);
   pthread_mutex_unlock(&pP->ioMutex);
@@ -1018,6 +1021,9 @@ static void snapshot(CorDbPersist* pP)
   uint64_t        seq    = 0;
   long            maxUs  = 0;                          // the longest any writer could have waited on it
 
+  if (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == true)
+    return;
+
   //
   // The start. ioMutex first - the flusher waits - then, under the tenant's write lock, only what
   // touches no disk but an open: the sequence, the cursor, and the log switched to a new segment, the
@@ -1125,6 +1131,15 @@ static void snapshot(CorDbPersist* pP)
   }
 
   long lockedMs = maxUs / 1000;
+
+  if (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == true)   // dropped while it was taken: no file
+  {
+    chunksFree(&snap);
+    pthread_mutex_lock(&pP->ioMutex);
+    pP->snapshotting = false;
+    pthread_mutex_unlock(&pP->ioMutex);
+    return;
+  }
 
   if (ok == false)
   {
@@ -1244,7 +1259,7 @@ static void* snapshotter(void* unused)
 
     for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
     {
-      if (pP->snapshotDue)
+      if ((pP->snapshotDue) && (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == false))
         snapshot(pP);
     }
 
@@ -2547,7 +2562,7 @@ void corDbPersistClose(void)
 
   for (CorDbPersist* pP = persistList; pP != NULL; pP = pP->next)
   {
-    if (pP->sinceSnapBytes != 0)                       // written since the last snapshot
+    if ((pP->sinceSnapBytes != 0) && (pP->dropped == false))   // written since the last snapshot
       snapshot(pP);
   }
 
@@ -2557,8 +2572,11 @@ void corDbPersistClose(void)
   {
     nextP = pP->next;
 
-    segFinish(&pP->log, true);                         // cut to its records, synced whatever --dbSync says
-    segFinish(&pP->hist, true);
+    if (pP->dropped == false)
+    {
+      segFinish(&pP->log, true);                       // cut to its records, synced whatever --dbSync says
+      segFinish(&pP->hist, true);
+    }
     free(pP->histBuf.buf);
 
     if (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true)
@@ -2572,4 +2590,73 @@ void corDbPersistClose(void)
 
   persistList = NULL;
   COR_I("corDB: logs written and synced");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistDrop -
+//
+void corDbPersistDrop(CorDbPersist* pP)
+{
+  if (pP == NULL)
+    return;
+
+  __atomic_store_n(&pP->dropped, true, __ATOMIC_RELEASE);
+
+  //
+  // A snapshot in progress ends at its next slice - the store was emptied and its cursor cleared under
+  // the write lock (corDbTenantDrop) - and writes no file once it sees the mark
+  //
+  for (;;)
+  {
+    pthread_mutex_lock(&pP->ioMutex);
+    bool snapshotting = pP->snapshotting;
+    pthread_mutex_unlock(&pP->ioMutex);
+
+    if (snapshotting == false)
+      break;
+
+    struct timespec pause = { 0, 1000 * 1000 };
+    nanosleep(&pause, NULL);
+  }
+
+  pthread_mutex_lock(&pP->ioMutex);
+  pthread_mutex_lock(&pP->mutex);
+
+  segFinish(&pP->log,  false);
+  segFinish(&pP->hist, false);
+
+  for (int ix = 0; ix < pP->retiredN; ix++)
+    segFinish(&pP->retired[ix], false);
+  pP->retiredN = 0;
+
+  pthread_mutex_unlock(&pP->mutex);
+  pthread_mutex_unlock(&pP->ioMutex);
+
+  DIR* dirP = opendir(pP->dir);
+
+  if (dirP != NULL)
+  {
+    struct dirent* entryP;
+    char           path[1024];
+
+    while ((entryP = readdir(dirP)) != NULL)
+    {
+      if ((strcmp(entryP->d_name, ".") == 0) || (strcmp(entryP->d_name, "..") == 0))
+        continue;
+
+      snprintf(path, sizeof(path), "%s/%s", pP->dir, entryP->d_name);
+      if (unlink(path) != 0)
+        COR_W("corDB: dropping tenant '%s': '%s' not deleted: %s", pP->tenant, path, strerror(errno));
+    }
+
+    closedir(dirP);
+  }
+
+  if (rmdir(pP->dir) != 0)
+    COR_W("corDB: dropping tenant '%s': its directory '%s' not deleted: %s", pP->tenant, pP->dir, strerror(errno));
+  else
+    COR_I("corDB: tenant '%s' dropped - its directory '%s' deleted", pP->tenant, pP->dir);
 }
