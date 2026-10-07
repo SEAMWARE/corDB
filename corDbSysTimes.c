@@ -15,6 +15,7 @@
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 #include "corNgsild/CorTerm.h"                        // CorTermCreatedAt, CorTermModifiedAt
 
+#include "corNgsild/ldTypes.h"                         // ldAttrTypeFromString, LdAttrNone
 #include "corDB/corDbSysTimes.h"                      // Own interface
 
 
@@ -141,6 +142,24 @@ static bool opaque(const char* name)
 
 // -----------------------------------------------------------------------------
 //
+// attrObject - an object below the dataset wrapper that is an attribute instance or a sub-attribute: one
+// of the attribute types, or no type
+//
+static bool attrObject(CorNode* objP)
+{
+  for (CorNode* mP = objP->value.head; mP != NULL; mP = mP->next)
+  {
+    if ((mP->name != NULL) && (mP->name[0] == 't') && (strcmp(mP->name, "type") == 0))
+      return (mP->type == CorString) && (ldAttrTypeFromString(mP->value.s) != LdAttrNone);
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // INHERIT_C / INHERIT_M - a store object below the entity whose createdAt / modifiedAt is not there: the
 // entity's createdAt. CorNode flag bits 0x04 and 0x08 (0x01, 0x02 and 0xF0 are corJsonld's). Store-only:
 // an out-copy never carries them, and the log does not keep them - corDbTreeIn sets them again on replay.
@@ -186,6 +205,14 @@ static CorNode* treeIn(CorNode* srcP, int64_t entityCreatedAt, bool inValue, int
 
   nodeP->flags  = srcP->flags & ~INHERITS;
   nodeP->termId = srcP->termId;
+
+  //
+  // Below the dataset wrapper, an object whose "type" is not an attribute type (a ServiceDescription, the
+  // JSON Schemas in it - "type": "object", "integer") is no attribute: itself and all it holds stored as
+  // they are. A "has a type" test alone marked the schemas, and their out-copies came back with times.
+  //
+  if ((srcP->type == CorObject) && (inValue == false) && (level >= 2) && (attrObject(srcP) == false))
+    inValue = true;
 
   bool timed   = (srcP->type == CorObject) && (inValue == false) && ((level == 0) || (level >= 2));
   bool hasType = false;
