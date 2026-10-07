@@ -13,9 +13,10 @@
 #include "corTree/corTreeClone.h"                     // corTreeClone, corTreeCloneMarked
 #include "corTree/corTreeFree.h"                      // corTreeFree
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
-#include "corNgsild/CorTerm.h"                        // CorTermCreatedAt, CorTermModifiedAt
+#include "corTree/corTreeChildPrepend.h"              // corTreeChildPrepend
+#include "corNgsild/CorTerm.h"                        // CorTermCreatedAt, CorTermModifiedAt, CorTermType
 
-#include "corNgsild/ldTypes.h"                         // ldAttrTypeFromString, LdAttrNone
+#include "corNgsild/ldTypes.h"                         // ldAttrTypeFromString, ldAttrTypeToString, LdAttrNone
 #include "corDB/corDbSysTimes.h"                      // Own interface
 
 
@@ -254,7 +255,22 @@ static CorNode* treeIn(CorNode* srcP, int64_t entityCreatedAt, bool inValue, int
         }
       }
       else if (timed && (mP->type == CorString) && (mP->name != NULL) && (mP->name[0] == 't') && (strcmp(mP->name, "type") == 0))
+      {
         hasType = true;
+
+        //
+        // An attribute's type is kept in the node (CorNode.kind - cor-protocol-details § 4.2), not as a
+        // member: one node of 64 bytes less per attribute instance and sub-attribute. Out, the copy gets
+        // its "type" back, first (typeBack)
+        //
+        LdAttrType attrType = ldAttrTypeFromString(mP->value.s);
+
+        if ((level >= 2) && (attrType != LdAttrNone))
+        {
+          nodeP->kind = (unsigned char) attrType;
+          continue;
+        }
+      }
 
       cP = corTreeClone(NULL, mP);
     }
@@ -289,7 +305,7 @@ static CorNode* treeIn(CorNode* srcP, int64_t entityCreatedAt, bool inValue, int
 // put back in the clone - a createdAt right before its modifiedAt, both last when neither is there (where
 // corNgsild puts them)
 //
-static void timesBack(CorAlloc* kaP, CorNode* copyP, CorNode* origP, void* ctx)
+static void timesBackTimes(CorAlloc* kaP, CorNode* copyP, CorNode* origP, void* ctx)
 {
   int64_t  entityCreatedAt = *((int64_t*) ctx);
   CorNode* headP           = copyP->value.head;
@@ -390,6 +406,43 @@ static void timesBack(CorAlloc* kaP, CorNode* copyP, CorNode* origP, void* ctx)
 
 // -----------------------------------------------------------------------------
 //
+// typeBack - an attribute object whose type the store keeps in the node (kind): its "type" member back,
+// first, where corNgsild puts it - and the copy's kind cleared: everything outside corDB sees the member
+//
+static void typeBack(CorAlloc* kaP, CorNode* copyP, unsigned char kind)
+{
+  CorNode* typeP = corTreeString(kaP, "type", ldAttrTypeToString((LdAttrType) kind));
+
+  if (typeP == NULL)
+    return;
+
+  typeP->termId = CorTermType;
+  corTreeChildPrepend(copyP, typeP);
+  copyP->kind = 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// timesBack - corTreeCloneMarked's callback for a marked object (INHERIT_C / INHERIT_M) or one with a kind:
+// what the store left out put back in the clone - the times (timesBackTimes), then the type (typeBack)
+//
+static void timesBack(CorAlloc* kaP, CorNode* copyP, CorNode* origP, void* ctx)
+{
+  unsigned char kind = origP->kind;                   // the original's: a clone (corTreeCloneMarked) has none
+
+  if ((origP->flags & INHERITS) != 0)
+    timesBackTimes(kaP, copyP, origP, ctx);
+
+  if (kind != 0)
+    typeBack(kaP, copyP, kind);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // treeOut - a store tree out: corTree's own clone (one call - not a call per node across the library),
 // timesBack on each marked object
 //
@@ -466,7 +519,7 @@ static void timesPut(CorAlloc* kaP, CorNode* nodeP, int64_t entityCreatedAt)
       timesPut(kaP, mP, entityCreatedAt);
   }
 
-  if ((nodeP->flags & INHERITS) != 0)
+  if (((nodeP->flags & INHERITS) != 0) || (nodeP->kind != 0))
   {
     timesBack(kaP, nodeP, nodeP, &entityCreatedAt);
     nodeP->flags &= ~INHERITS;
@@ -543,5 +596,54 @@ CorNode* corDbTreeOut(CorAlloc* kaP, CorNode* storeP, int64_t entityCreatedAt)
   }
 
   return treeOut(kaP, storeP, entityCreatedAt);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbAttrFold - an attribute of a store entity, written into it in place (ldEntityAttrsSet): the types
+// its new instances and sub-attributes brought as members kept in the nodes instead (kind), as corDbTreeIn
+// keeps them
+//
+static void attrFold(CorNode* nodeP, int level)
+{
+  if (nodeP->type != CorObject)
+    return;
+
+  if ((level >= 2) && (attrObject(nodeP) == false))  // a ServiceDescription, its JSON Schemas: as they are
+    return;
+
+  CorNode* prevP = NULL;
+
+  for (CorNode* mP = nodeP->value.head; mP != NULL; )
+  {
+    CorNode* nextP = mP->next;
+
+    if ((level >= 2) && (nodeP->kind == 0) && (mP->type == CorString) && (mP->name != NULL) &&
+        (mP->name[0] == 't') && (strcmp(mP->name, "type") == 0) && (ldAttrTypeFromString(mP->value.s) != LdAttrNone))
+    {
+      nodeP->kind = (unsigned char) ldAttrTypeFromString(mP->value.s);
+
+      if (prevP == NULL) nodeP->value.head = nextP; else prevP->next = nextP;
+      if (nodeP->value.tail == mP) nodeP->value.tail = prevP;
+      mP->next = NULL;
+      corTreeFree(mP);
+      mP = nextP;
+      continue;
+    }
+
+    if ((mP->type == CorObject) && (opaque(mP->name) == false))
+      attrFold(mP, level + 1);
+
+    prevP = mP;
+    mP    = nextP;
+  }
+}
+
+void corDbAttrFold(CorNode* attrP)
+{
+  if (attrP != NULL)
+    attrFold(attrP, 1);                               // the dataset wrapper - its instances are level 2
 }
 

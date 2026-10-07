@@ -76,6 +76,15 @@ extern int64_t corDbModifiedAt(CorNode* nodeP, int64_t parentCreatedAt);
 
 // -----------------------------------------------------------------------------
 //
+// corDbAttrFold - an attribute of a store entity written in place (ldEntityAttrsSet): the "type" members it
+// brought kept in the nodes (CorNode.kind), as corDbTreeIn keeps them
+//
+extern void corDbAttrFold(CorNode* attrP);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbFullView - a store entity for history (--troe corDB), which encodes instances whole: itself with no
 // history, else a copy (kaP) with every time in place
 //
