@@ -21,6 +21,7 @@
 
 #include "corAlloc/corAlloc.h"                        // corAlloc
 #include "corRest/CorRestState.h"                     // corRest
+#include "corNgsild/ldTypes.h"                         // ldAttrTypeToString, LdAttrType
 #include "corNgsild/CorNgsild.h"                      // corNgsild
 #include "corNgsild/LdVocab.h"                        // LD_VOCAB_SCOPE
 #include "corNgsild/ldEntityMerge.h"                   // LdMergeReport
@@ -431,7 +432,10 @@ static CorNode* tombstone(CorNode* deletedInstanceP, uint64_t atNs, CorAlloc* ka
   if (tP == NULL)
     return NULL;
 
-  if ((typeP != NULL) && (typeP->type == CorString))
+  // The store keeps an attribute's type in the node (CorNode.kind): a stored instance has no "type" member
+  if ((deletedInstanceP != NULL) && (deletedInstanceP->kind >= LdAttrProperty) && (deletedInstanceP->kind <= LdAttrJsonProperty))
+    corTreeChildAdd(tP, corTreeString(kaP, "type", ldAttrTypeToString((LdAttrType) deletedInstanceP->kind)));
+  else if ((typeP != NULL) && (typeP->type == CorString))
     corTreeChildAdd(tP, corTreeString(kaP, "type", typeP->value.s));
 
   corTreeChildAdd(tP, corTreeString(kaP, "value", "urn:ngsi-ld:null"));

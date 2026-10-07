@@ -19,7 +19,7 @@
 #include "corNgsild/LdVocab.h"                         // LD_VOCAB_MODIFIED_AT, LD_VOCAB_SCOPE
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
-#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
+#include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView, corDbAttrFold
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryCreated, ...Replaced, ...Merged, ...Deleted
@@ -65,6 +65,13 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
     {
       // NULL allocator → malloc heap (tenant store lifetime)
       ldEntityAttrsSet(eP, fragmentDb, overwriteScope, ts, reportP, NULL);   // keeps an inherited createdAt inherited (0x04)
+
+      // The attributes it wrote: their types kept in the nodes, as corDbTreeIn keeps them
+      for (CorNode* mP = (fragmentDb != NULL) ? fragmentDb->value.head : NULL; mP != NULL; mP = mP->next)
+      {
+        if ((mP->type == CorObject) && (mP->name != NULL))
+          corDbAttrFold(corTreeLookup(eP, mP->name));
+      }
 
       //
       // The log record: the members the fragment names, as the entity has them now, and what the
