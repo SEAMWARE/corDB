@@ -6,7 +6,8 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-#include <pthread.h>                                 // pthread_rwlock_init
+#include <pthread.h>                                 // pthread_rwlock_init, pthread_rwlockattr_*
+
 #include <stddef.h>                                  // NULL
 #include <stdlib.h>                                  // malloc, free
 
@@ -20,6 +21,7 @@
 #include "corDB/corDbHistory.h"                      // CorDbHistory, corDbHistoryOn
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryDrain
 #include "corDB/corDbPersist.h"                      // corDbPersistOpen, corDbPersistSyncWait
+#include "corDB/corDbGlobals.h"                       // corDbLockWriters
 #include "corDB/corDbStore.h"         // Own interface
 
 
@@ -96,7 +98,15 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->histQTail  = NULL;
   pthread_mutex_init(&storeP->histQMutex, NULL);
   pthread_mutex_init(&storeP->histMutex, NULL);
-  pthread_rwlock_init(&storeP->lock, NULL);
+  {
+    pthread_rwlockattr_t lockAttr;                     // --dbLockPrefer (corDbInit)
+
+    pthread_rwlockattr_init(&lockAttr);
+    if (corDbLockWriters)
+      pthread_rwlockattr_setkind_np(&lockAttr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+    pthread_rwlock_init(&storeP->lock, &lockAttr);
+    pthread_rwlockattr_destroy(&lockAttr);
+  }
   storeP->persistP = corDbPersistOpen(tenantP, storeP);   // the log replayed into it - NULL without --dbDir
 
   //
