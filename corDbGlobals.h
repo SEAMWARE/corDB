@@ -32,5 +32,7 @@ extern char* corDbSync;                                // interval | request | n
 extern int   corDbSyncInterval;                        // ms
 extern int   corDbSnapshotEvery;                       // MiB of log
 extern bool  corDbCompress;                            // snapshots and finished segments compressed (zstd)
+extern char* corDbLockPrefer;                          // --dbLockPrefer reads|writes
+extern bool  corDbLockWriters;                         // true: a store's lock lets writers in first (corDbInit)
 
 #endif  // CORDB_CORDBGLOBALS_H_

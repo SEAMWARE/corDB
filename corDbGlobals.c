@@ -14,8 +14,10 @@
 
 // -----------------------------------------------------------------------------
 //
-// --dbDir, --dbSync, --dbSyncInterval, --dbSnapshotEvery, --dbCompress
+// --dbDir, --dbSync, --dbSyncInterval, --dbSnapshotEvery, --dbCompress, --dbLockPrefer
 //
+char* corDbLockPrefer    = "reads";
+bool  corDbLockWriters   = false;   // --dbLockPrefer writes - set by corDbInit
 char* corDbDir          = NULL;
 char* corDbSync         = "interval";
 int   corDbSyncInterval = 100;
@@ -31,10 +33,11 @@ bool  corDbCompress      = false;
 #if COR_DB_RAM_ONLY
 //
 // ramDB: corDB in RAM only - no disk, so no options for one: --dbDir is refused as the unknown option
-// it is, not ignored
+// it is, not ignored. The lock's preference is not a disk option.
 //
 CorArg corDbArgV[] =
 {
+  { "--dbLockPrefer",    "-dbLockPrefer",    CorArgString, _vp &corDbLockPrefer, CorArgOpt, _vp "reads",    NULL,  NULL,       "reads|writes - whom a tenant's store lock lets in first when both wait (doc/performance.md in coraine)" },
   CORARGS_END
 };
 #else
@@ -45,6 +48,7 @@ CorArg corDbArgV[] =
   { "--dbSyncInterval", "-dbSyncInterval", CorArgInt,    _vp &corDbSyncInterval, CorArgOpt, _vp 100,        _vp 1, _vp 60000,  "ms between two syncs of the log" },
   { "--dbSnapshotEvery", "-dbSnapshotEvery", CorArgInt,  _vp &corDbSnapshotEvery, CorArgOpt, _vp 64,         _vp 1, _vp 65536,  "MiB of log after which a tenant is snapshotted" },
   { "--dbCompress",     "-dbCompress",     CorArgBool,   _vp &corDbCompress,     CorArgOpt, _vp false,      _vp false, _vp true, "compress the snapshots and the finished log segments (zstd, on the snapshot thread - the open segment never)" },
+  { "--dbLockPrefer",    "-dbLockPrefer",    CorArgString, _vp &corDbLockPrefer, CorArgOpt, _vp "reads",    NULL,  NULL,       "reads|writes - whom a tenant's store lock lets in first when both wait (doc/performance.md in coraine)" },
   CORARGS_END
 };
 #endif

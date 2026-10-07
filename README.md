@@ -154,6 +154,7 @@ coraine --database corDB --dbDir /var/lib/coraine
 | `--dbSyncInterval` | 100 | ms |
 | `--dbSnapshotEvery` | 64 | MiB of log (and at least as much as the last snapshot) |
 | `--dbCompress` | off | snapshots and finished segments compressed (zstd, loaded only then); read with or without it |
+| `--dbLockPrefer` | `reads` | whom a tenant's store lock lets in first when readers and writers both wait: `writes` (also for `ramDB`). Which is faster is the workload's - coraine's performance.md, "Writes that notify, and which writer the lock lets in first" |
 
 [The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
 [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".
