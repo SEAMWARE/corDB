@@ -352,6 +352,12 @@ static const char* isoString(uint64_t ns, CorAlloc* kaP)
 
 
 
+static CorNode* miniEntity(const char* attrName, CorDbInstance* iP, CorAlloc* kaP);
+static bool     qNamesAttr(LdQNode* nodeP, const char* attrName);
+static bool     qInstanceHolds(LdQNode* nodeP, const char* attrName, CorNode* miniEntityP);
+
+
+
 // -----------------------------------------------------------------------------
 //
 // temporalEntity - one entity's temporal representation, in kaP - timescale's answer, from the index
@@ -404,6 +410,8 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
     if (pickV == NULL)
       continue;
 
+    LdQNode* qP = ((fP != NULL) && (fP->qTree != NULL) && qNamesAttr((LdQNode*) fP->qTree, aP->name)) ? (LdQNode*) fP->qTree : NULL;
+
     for (int i = 0; i < aP->instances; i++)
     {
       CorDbInstance* iP = &aP->instanceV[i];
@@ -415,6 +423,14 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
 
       if (inWindow(&window, ns) == false)
         continue;
+
+      if (qP != NULL)                                    // the instances that meet q (§ 11.3.3)
+      {
+        CorNode* miniP = miniEntity(aP->name, iP, kaP);
+
+        if ((miniP == NULL) || (qInstanceHolds(qP, aP->name, miniP) == false))
+          continue;
+      }
 
       pickV[picks++] = (Pick) { iP, iP->datasetId, ns, i, backward };
     }
@@ -616,12 +632,13 @@ static CorDbHistAttr* attrOfEntity(CorDbHistEntity* eP, const char* attrName)
 
 // -----------------------------------------------------------------------------
 //
-// qTermHolds - does an instance of the term's attribute, anywhere in its history, satisfy it
+// qTermHolds - does an instance of the term's attribute, in the window, satisfy it
 //
-// timescale's EXISTS over every instance, in or out of the window (troeQTreeToSql); "!attr" holds when
-// no instance has it.
+// § 11.3.3: the query is checked against the instances the temporal query lets through (timeproperty,
+// timerel) - timescale's EXISTS with the window in it (troeQTreeToSql); "!attr" holds when no instance
+// in the window has it.
 //
-static bool qTermHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
+static bool qTermHolds(CorDbHistEntity* eP, LdQNode* nodeP, TroeQueryFilter* fP, CorAlloc* kaP)
 {
   LdQTerm* tP = &nodeP->term;
 
@@ -630,7 +647,7 @@ static bool qTermHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
     LdQNode positive = *nodeP;
 
     positive.term.op = LdQExists;
-    return !qTermHolds(eP, &positive, kaP);
+    return !qTermHolds(eP, &positive, fP, kaP);
   }
 
   CorDbHistAttr* aP = attrOfEntity(eP, tP->attr);
@@ -638,9 +655,19 @@ static bool qTermHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
   if (aP == NULL)
     return false;
 
+  Axis   axis = axisOf(fP);
+  Window window;
+
+  windowOf(fP, &window);
+
   for (int i = 0; i < aP->instances; i++)
   {
-    CorNode* entityP = miniEntity(aP->name, &aP->instanceV[i], kaP);
+    CorDbInstance* iP = &aP->instanceV[i];
+
+    if ((onAxis(iP, axis) == false) || (inWindow(&window, axisNs(iP, axis)) == false))
+      continue;
+
+    CorNode* entityP = miniEntity(aP->name, iP, kaP);
 
     if ((entityP != NULL) && ldEntityMatchQ(entityP, nodeP))
       return true;
@@ -656,17 +683,17 @@ static bool qTermHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
 // qHolds - the q tree over the entity's history: AND and OR of its terms (a linked one never gets
 // here - the broker refuses what it cannot compile for a temporal store)
 //
-static bool qHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
+static bool qHolds(CorDbHistEntity* eP, LdQNode* nodeP, TroeQueryFilter* fP, CorAlloc* kaP)
 {
   switch (nodeP->type)
   {
   case LdQTermNode:
-    return qTermHolds(eP, nodeP, kaP);
+    return qTermHolds(eP, nodeP, fP, kaP);
 
   case LdQAndNode:
     for (int i = 0; i < nodeP->group.count; i++)
     {
-      if (qHolds(eP, nodeP->group.childV[i], kaP) == false)
+      if (qHolds(eP, nodeP->group.childV[i], fP, kaP) == false)
         return false;
     }
     return true;
@@ -674,13 +701,76 @@ static bool qHolds(CorDbHistEntity* eP, LdQNode* nodeP, CorAlloc* kaP)
   case LdQOrNode:
     for (int i = 0; i < nodeP->group.count; i++)
     {
-      if (qHolds(eP, nodeP->group.childV[i], kaP) == true)
+      if (qHolds(eP, nodeP->group.childV[i], fP, kaP) == true)
         return true;
     }
     return false;
 
   default:
     return false;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// qNamesAttr - does a term of the q tree name the attribute
+//
+static bool qNamesAttr(LdQNode* nodeP, const char* attrName)
+{
+  if (nodeP->type == LdQTermNode)
+    return (strcmp(nodeP->term.attr, attrName) == 0);
+
+  if ((nodeP->type == LdQAndNode) || (nodeP->type == LdQOrNode))
+  {
+    for (int i = 0; i < nodeP->group.count; i++)
+    {
+      if (qNamesAttr(nodeP->group.childV[i], attrName))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// qInstanceHolds - does one instance of an attribute meet the q tree (§ 11.3.3, the last step: an entity's
+// temporal representation holds only the instances that meet the query restrictions)
+//
+// A term on the instance's attribute is evaluated on the instance; a term on another attribute does not
+// restrict it, and holds. miniEntityP: the instance, as miniEntity gives it.
+//
+static bool qInstanceHolds(LdQNode* nodeP, const char* attrName, CorNode* miniEntityP)
+{
+  switch (nodeP->type)
+  {
+  case LdQTermNode:
+    if (strcmp(nodeP->term.attr, attrName) != 0)
+      return true;
+    return ldEntityMatchQ(miniEntityP, nodeP);
+
+  case LdQAndNode:
+    for (int i = 0; i < nodeP->group.count; i++)
+    {
+      if (qInstanceHolds(nodeP->group.childV[i], attrName, miniEntityP) == false)
+        return false;
+    }
+    return true;
+
+  case LdQOrNode:
+    for (int i = 0; i < nodeP->group.count; i++)
+    {
+      if (qInstanceHolds(nodeP->group.childV[i], attrName, miniEntityP) == true)
+        return true;
+    }
+    return false;
+
+  default:
+    return true;
   }
 }
 
@@ -802,8 +892,8 @@ static bool hasAttributes(CorNode* entityP)
 //
 // corDbTroeQuery - GET /temporal/entities, POST /temporal/entityOperations/query
 //
-// q and geoQ select entities by their history: an instance anywhere in it satisfies a q term; an
-// instance in the window, the georel.
+// q and geoQ select entities by the instances in the window: one that satisfies a q term, the georel.
+// Of a selected entity, only the instances that meet q are returned (§ 11.3.3).
 //
 static int corDbTroeQuery(Tenant* tenantP, TroeQueryFilter* fP, CorNode** resultPP, TroeRangeInfo* rangeP)
 {
@@ -849,7 +939,7 @@ static int corDbTroeQuery(Tenant* tenantP, TroeQueryFilter* fP, CorNode** result
   for (CorDbHistEntity* eP = hP->first; (eP != NULL) && (selV != NULL); eP = eP->next)
   {
     if (entitySelected(eP, fP, patternP) && hasInstanceInWindow(eP, fP) &&
-        ((fP->qTree == NULL) || qHolds(eP, (LdQNode*) fP->qTree, kaP)) &&
+        ((fP->qTree == NULL) || qHolds(eP, (LdQNode*) fP->qTree, fP, kaP)) &&
         ((fP->geoRelType == 0) || geoHolds(eP, fP, kaP)))
       selV[sels++] = eP;
   }
