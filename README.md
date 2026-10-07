@@ -74,6 +74,15 @@ the same code with the type as a member - two runs each, alternated (2026-10-07)
 | created | 380 596 kB | 317 932 kB | **-16.5 %** |
 | every value then changed once (a merge per entity) | 494 414 kB | 429 876 kB | **-13.1 %** |
 
+Throughput, `perfRun` on `--dbDir` (8 cores, release builds, four runs each, 2026-10-07): every
+scenario within -0.7 % to +4.5 % of the type as a member, but concurrent creates **-7.7 %**. That one
+is glibc's allocator, not the work: with snapshots off it stays (-6.5 %), the profile has it in malloc
+and free (one long-lived node less per attribute changes how a request's short-lived allocations
+coalesce among them), and under jemalloc the two forms are equal, under tcmalloc within 2.2 %. In RAM
+they are within 1.5 %; with a writer-preferring lock the type in the node is **+8.6 %**. The tables:
+coraine's [performance.md](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "Writes
+that notify, and which writer the lock lets in first".
+
 **Memory** - 100 000 entities of 10 Property attributes, `--database corDB` in RAM, broker RSS, against
 the same code keeping every time (2026-10-06):
 
