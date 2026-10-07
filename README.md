@@ -57,6 +57,23 @@ entity's `createdAt` - and, below the entity, only the times that differ from it
   read as it is. A `q` on the entity's `modifiedAt`, or on an attribute's own `createdAt` / `modifiedAt`,
   matches each candidate on a copy with every time in place.
 
+**The attribute type in the node.** On disk, the log and the snapshot already keep an attribute's
+`type` as the object's kind (cor:// - coraine `doc/cor-protocol-details.md` § 4.2). In RAM it is kept the
+same way: `corDbTreeIn` folds the `"type"` member of an attribute instance or sub-attribute (one of the 8
+attribute types) into the node (`CorNode.kind`, in its padding byte - the node stays 40 bytes), and every
+copy out gets the member back, first. One node less per attribute instance and sub-attribute (a 54-byte
+allocation, 64 with malloc's overhead). Inside corDB, what reads a type reads the kind: corNgsild's
+`ldAttrTypeDetect` (the matchers go through it), the codec, the deletion tombstone; what
+`ldEntityAttrsSet` writes in place is folded after it (`corDbAttrFold`).
+
+100 000 entities of 10 Property attributes, corDB in RAM (`ramDB`), broker RSS, release builds, against
+the same code with the type as a member - two runs each, alternated (2026-10-07):
+
+| | type as a member | type in the node | |
+|---|---:|---:|---:|
+| created | 380 596 kB | 317 932 kB | **-16.5 %** |
+| every value then changed once (a merge per entity) | 494 414 kB | 429 876 kB | **-13.1 %** |
+
 **Memory** - 100 000 entities of 10 Property attributes, `--database corDB` in RAM, broker RSS, against
 the same code keeping every time (2026-10-06):
 
