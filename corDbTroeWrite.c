@@ -557,6 +557,7 @@ int corDbTroeInstanceDelete(Tenant* tenantP, const char* entityId, const char* a
 
 
 
+#ifdef TROE_DRIVER_HISTORY_IMPORT
 // -----------------------------------------------------------------------------
 //
 // importTypes - an imported event's entity type(s): its snapshot's "type" (several joined by '\n'),
@@ -833,3 +834,4 @@ int corDbTroeHistoryImport(const TroeEvent* listHead, int count)
   historyUnlock(storeP);
   return rc;
 }
+#endif  // TROE_DRIVER_HISTORY_IMPORT

@@ -1005,5 +1005,7 @@ void troeRegister(TroeDriver* driverP)
   driverP->entityTemporalAttrDelete     = corDbTroeAttrDelete;
   driverP->entityTemporalInstanceModify = corDbTroeInstanceModify;
   driverP->entityTemporalInstanceDelete = corDbTroeInstanceDelete;
-  driverP->historyImport                = corDbTroeHistoryImport;
+#ifdef TROE_DRIVER_HISTORY_IMPORT
+  driverP->historyImport                = corDbTroeHistoryImport;   // a broker header without it: no import
+#endif
 }

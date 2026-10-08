@@ -24,10 +24,12 @@ extern int corDbTroeAttrDelete(Tenant* tenantP, const char* entityId, const char
 extern int corDbTroeInstanceModify(Tenant* tenantP, const char* entityId, const char* attrName, const char* instanceId, CorNode* rootP);
 extern int corDbTroeInstanceDelete(Tenant* tenantP, const char* entityId, const char* attrName, const char* instanceId);
 
+#ifdef TROE_DRIVER_HISTORY_IMPORT
 //
 // corDbTroeHistoryImport - history from another store (TroeDriver.historyImport): the events written as
 // they are - the source's instanceIds and times
 //
 extern int corDbTroeHistoryImport(const TroeEvent* listHead, int count);
+#endif
 
 #endif  // CORDB_CORDBTROEWRITE_H_
