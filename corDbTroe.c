@@ -9,8 +9,8 @@
 // corDB as the TRoE driver (`--database corDB --troe corDB`): the broker takes troeRegister from this
 // plugin - the current-state one - so history is the same store, the same lock and the same log
 // (corDbHistory.h). The write sites record it; the broker's TRoE events are not used (their hooks are
-// NULL). What this file serves is the temporal API: the reads, and the temporal writes that correct
-// history.
+// NULL). What this file serves is the temporal API: the reads, the temporal writes that correct
+// history, and history imported from another store (historyImport - coraine-import).
 //
 #include <stdbool.h>                                   // bool
 #include <stdint.h>                                    // uint64_t
@@ -1005,4 +1005,5 @@ void troeRegister(TroeDriver* driverP)
   driverP->entityTemporalAttrDelete     = corDbTroeAttrDelete;
   driverP->entityTemporalInstanceModify = corDbTroeInstanceModify;
   driverP->entityTemporalInstanceDelete = corDbTroeInstanceDelete;
+  driverP->historyImport                = corDbTroeHistoryImport;
 }

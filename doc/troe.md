@@ -25,6 +25,14 @@ events (their hooks are NULL with `--troe corDB`). Current state overwrites; his
 - **Entity events** - created, replaced, deleted - are records of their own: `{ id, type, entityOp, at }`.
   A deleted entity's history stays.
 
+- **History imported from another store** (coraine-import, the broker's doc/migration.md) comes in
+  through `TroeDriver.historyImport`, not through the write sites: the entity events at their time,
+  every instance with the instanceId, createdAt, modifiedAt and observedAt it had in the source - into
+  the index and the history log as the temporal API's own writes are. A deletion is the tombstone a
+  live deletion writes (the type the record gives, else that of the attribute's last instance). The
+  import writes the current state with `corNgsild.troeSkip`, so nothing else is recorded for it. A batch
+  is refused whole when the first instance of one of its attributes is there already (a re-import).
+
 An instance record is `{ id, type?, attr, datasetId?, deletedAt?, instanceId, instance }`, cor binary.
 The instanceId is the one the instance carries, or one generated; it sits beside the instance in the
 record and is put back into it on a read.
