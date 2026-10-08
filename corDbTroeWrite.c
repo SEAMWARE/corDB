@@ -8,7 +8,8 @@
 //
 // The temporal API's own writes (`--troe corDB`): create and add history (§ 5.6.11, § 5.6.12), delete
 // an entity's or an attribute's (§ 5.6.16, § 5.6.13), modify and delete one instance (§ 5.6.14,
-// § 5.6.15) - the correction path; history otherwise comes in from current state (corDbHistoryWrite.c).
+// § 5.6.15) - the correction path; history otherwise comes in from current state (corDbHistoryWrite.c),
+// or from another store (corDbTroeHistoryImport - coraine-import).
 //
 // Under the history mutex, what the writes have queued applied first. Every change is a record of the
 // history log: an added instance as any other (and an entity's 'created' event), a removal or a
@@ -33,9 +34,10 @@
 #include "corNgsild/ldBinCodec.h"                      // ldBinCodec
 #include "corNgsild/ldCheckDateTime.h"                 // ldIsoToNanoseconds
 #include "corNgsild/ldTermId.h"                        // ldTermId, ldNodeRename
+#include "corNgsild/ldTypes.h"                         // ldAttrTypeToString, LdAttrType
 
 #include "db/Tenant.h"                                 // Tenant
-#include "troe/TroeDriver.h"                           // TROE_*
+#include "troe/TroeDriver.h"                           // TROE_*, TroeEvent, TroeOp*
 
 #include "corDB/corDbHistory.h"                        // corDbHistory*
 #include "corDB/corDbHistoryWrite.h"                   // corDbHistoryDrain
@@ -552,3 +554,284 @@ int corDbTroeInstanceDelete(Tenant* tenantP, const char* entityId, const char* a
   historyUnlock(storeP);
   return rc;
 }
+
+
+
+#ifdef TROE_DRIVER_HISTORY_IMPORT
+// -----------------------------------------------------------------------------
+//
+// importTypes - an imported event's entity type(s): its snapshot's "type" (several joined by '\n'),
+// else the single name the event carries
+//
+static const char* importTypes(const TroeEvent* evP)
+{
+  const char* types = (evP->entitySnapshot != NULL) ? typeOf(evP->entitySnapshot) : NULL;
+
+  return (types != NULL) ? types : evP->entityType;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// importInstance - the one instance an imported attribute event names: its snapshot is the attribute's
+// wrapper { datasetId|"@none": instance }
+//
+static CorNode* importInstance(const TroeEvent* evP)
+{
+  CorNode* wrapP = evP->attrSnapshot;
+
+  if ((wrapP == NULL) || (wrapP->type != CorObject) || (wrapP->value.head == NULL))
+    return NULL;
+
+  if ((evP->datasetId != NULL) && (evP->datasetId[0] != 0))
+  {
+    CorNode* namedP = corTreeLookup(wrapP, evP->datasetId);
+
+    if (namedP != NULL)
+      return namedP;
+  }
+
+  return wrapP->value.head;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// tombstoneType - the type of the instance a deletion records: the one it gives, else the type of the
+// attribute's last recorded instance (a deleted instance keeps its Attribute's type - § 5.3.2.5), else
+// Property
+//
+static const char* tombstoneType(CorDbHistEntity* eP, const char* attrName, CorNode* srcP, CorAlloc* kaP)
+{
+  CorNode* typeP = corTreeLookup(srcP, "type");
+
+  if ((srcP->kind >= LdAttrProperty) && (srcP->kind <= LdAttrJsonProperty))
+    return ldAttrTypeToString((LdAttrType) srcP->kind);
+  if ((typeP != NULL) && (typeP->type == CorString))
+    return typeP->value.s;
+
+  CorDbHistAttr* aP    = corDbHistoryAttrLookup(eP, attrName);
+  CorNode*       lastP = ((aP != NULL) && (aP->instances > 0)) ? corDbHistoryInstanceDecode(&aP->instanceV[aP->instances - 1], kaP) : NULL;
+
+  if (lastP != NULL)
+  {
+    typeP = corTreeLookup(lastP, "type");
+
+    if ((lastP->kind >= LdAttrProperty) && (lastP->kind <= LdAttrJsonProperty))
+      return ldAttrTypeToString((LdAttrType) lastP->kind);
+    if ((typeP != NULL) && (typeP->type == CorString))
+      return typeP->value.s;
+  }
+
+  return "Property";
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// importRecord - an imported attribute event as a history record: the instance with the times and the
+// instanceId the event carries; a deletion as a tombstone (the kind, urn:ngsi-ld:null, deletedAt)
+//
+static bool importRecord(CorDbHistEntity* eP, const TroeEvent* evP, CorAlloc* kaP, CorDbHistRecord* recP)
+{
+  CorNode*    srcP      = importInstance(evP);
+  const char* datasetId = ((evP->datasetId != NULL) && (evP->datasetId[0] != 0)) ? evP->datasetId : NULL;
+  uint64_t    createdAt = (evP->createdAtNs != 0) ? evP->createdAtNs : evP->modifiedAtNs;
+  uint64_t    deletedAt = (evP->op == TroeOpAttrDeleted) ? evP->modifiedAtNs : 0;
+  CorNode*    instP;
+
+  if ((srcP == NULL) || (srcP->type != CorObject))
+    return false;
+
+  if (deletedAt != 0)
+  {
+    instP = corTreeObject(kaP, NULL);
+    corTreeChildAdd(instP, corTreeString(kaP, "type", tombstoneType(eP, evP->attrName, srcP, kaP)));
+    corTreeChildAdd(instP, corTreeString(kaP, "value", "urn:ngsi-ld:null"));
+    corTreeChildAdd(instP, corTreeInteger(kaP, "deletedAt", (long long) deletedAt));
+  }
+  else
+  {
+    instP = corTreeClone(kaP, srcP);
+    if (instP == NULL)
+      return false;
+
+    instP->name = NULL;
+    instP->next = NULL;
+
+    CorNode* idP = corTreeLookup(instP, "instanceId");
+    if (idP != NULL)
+      corTreeChildRemove(instP, idP);
+  }
+
+  timeSet(instP, "createdAt",  createdAt,          kaP);
+  timeSet(instP, "modifiedAt", evP->modifiedAtNs,  kaP);
+
+  //
+  // The source's instanceId: the encoder takes the one the instance carries (none: one generated -
+  // a source that had none, an entity's created row)
+  //
+  if ((evP->instanceId != NULL) && (evP->instanceId[0] != 0))
+    corTreeChildAdd(instP, corTreeString(kaP, "instanceId", evP->instanceId));
+
+  return corDbHistoryRecordEncode(eP->id, corDbHistoryEntityTypesJoined(eP, kaP), evP->attrName, datasetId, instP, deletedAt, kaP, recP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// importDuplicate - is the event's instanceId in the attribute's history already?
+//
+// A re-import is what puts one there: compared by its times first (the index has them), decoded only
+// where they are equal.
+//
+static bool importDuplicate(CorDbHistEntity* eP, const TroeEvent* evP, CorAlloc* kaP)
+{
+  if ((evP->instanceId == NULL) || (evP->instanceId[0] == 0))
+    return false;
+
+  CorDbHistAttr* aP        = corDbHistoryAttrLookup(eP, evP->attrName);
+  uint64_t       createdAt = (evP->createdAtNs != 0) ? evP->createdAtNs : evP->modifiedAtNs;
+
+  if (aP == NULL)
+    return false;
+
+  for (int ix = aP->instances - 1; ix >= 0; ix--)
+  {
+    CorDbInstance* iP = &aP->instanceV[ix];
+
+    if ((iP->modifiedAtNs != evP->modifiedAtNs) || (iP->createdAtNs != createdAt))
+      continue;
+
+    CorNode* instP = corDbHistoryInstanceDecode(iP, kaP);
+    CorNode* idP   = (instP != NULL) ? corTreeLookup(instP, "instanceId") : NULL;
+
+    if ((idP != NULL) && (idP->type == CorString) && (strcmp(idP->value.s, evP->instanceId) == 0))
+      return true;
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// importCheck - a batch that would put an instanceId in twice is refused whole, before anything is
+// written: the first event of each attribute in the batch is looked for (a re-import repeats them all)
+//
+static bool importCheck(CorDbStore* storeP, const TroeEvent* listHead, CorAlloc* kaP)
+{
+  for (const TroeEvent* evP = listHead; evP != NULL; evP = evP->next)
+  {
+    if ((evP->op < TroeOpAttrCreated) || (evP->attrName == NULL) || (evP->entityId == NULL))
+      continue;
+
+    bool first = true;
+
+    for (const TroeEvent* prevP = listHead; prevP != evP; prevP = prevP->next)
+    {
+      if ((prevP->attrName != NULL) && (prevP->entityId != NULL) &&
+          (strcmp(prevP->attrName, evP->attrName) == 0) && (strcmp(prevP->entityId, evP->entityId) == 0))
+      {
+        first = false;
+        break;
+      }
+    }
+
+    if (first == false)
+      continue;
+
+    CorDbHistEntity* eP = corDbHistoryEntity(storeP->historyP, evP->entityId, NULL, false);
+
+    if ((eP != NULL) && (importDuplicate(eP, evP, kaP) == true))
+    {
+      COR_E("corDB: imported history: the instance '%s' of '%s' of '%s' is there already", evP->instanceId, evP->attrName, evP->entityId);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbTroeHistoryImport - TroeDriver.historyImport: history from another store (coraine-import)
+//
+// Written as it comes: the entity events at their time, every instance with the instanceId, createdAt,
+// modifiedAt (and observedAt, in the instance) the event carries - into the index and the history log,
+// as the temporal API's own writes. Nothing else is recorded for it (the import writes the current state
+// with corNgsild.troeSkip). One batch is one tenant; refused whole when it would repeat an instanceId.
+//
+int corDbTroeHistoryImport(const TroeEvent* listHead, int count)
+{
+  (void) count;
+
+  if (listHead == NULL)
+    return TROE_OK;
+
+  CorDbStore* storeP = historyLock(listHead->tenantP);
+
+  if (storeP == NULL)
+    return TROE_ERR;
+
+  CorAlloc* kaP = corRest.kallocP;
+  int       rc  = (importCheck(storeP, listHead, kaP) == true) ? TROE_OK : TROE_ERR;
+
+  for (const TroeEvent* evP = listHead; (evP != NULL) && (rc == TROE_OK); evP = evP->next)
+  {
+    if (evP->entityId == NULL)
+    {
+      rc = TROE_ERR;
+      break;
+    }
+
+    const char*      types = importTypes(evP);
+    CorDbHistEntity* eP    = corDbHistoryEntity(storeP->historyP, evP->entityId, types, true);
+
+    if (eP == NULL)
+    {
+      rc = TROE_ERR;
+      break;
+    }
+
+    if (evP->op < TroeOpAttrCreated)
+    {
+      const char* entityOp = (evP->op == TroeOpEntityCreated) ? "created" : (evP->op == TroeOpEntityReplaced) ? "replaced" : "deleted";
+
+      if ((types != NULL) && (evP->op != TroeOpEntityDeleted))
+        corDbHistoryEntityTypes(storeP->historyP, eP, types, true);
+
+      CorBinBuffer event;
+
+      if (corDbHistoryEntityEvent(eP, entityOp, evP->modifiedAtNs, kaP, &event) == true)
+        corDbPersistHistAppend(storeP->persistP, event.buf, event.len);
+      else
+        rc = TROE_ERR;
+
+      free(event.buf);
+      continue;
+    }
+
+    CorDbHistRecord rec;
+
+    if ((evP->attrName == NULL) || (importRecord(eP, evP, kaP, &rec) == false) || (corDbHistoryRecordAdd(storeP->historyP, eP, &rec) == NULL))
+    {
+      COR_E("corDB: imported history: an instance of '%s' of '%s' could not be recorded", (evP->attrName != NULL) ? evP->attrName : "?", evP->entityId);
+      rc = TROE_ERR;
+      break;
+    }
+
+    corDbPersistHistAppend(storeP->persistP, rec.body, rec.bodyLen);
+  }
+
+  historyUnlock(storeP);
+  return rc;
+}
+#endif  // TROE_DRIVER_HISTORY_IMPORT
