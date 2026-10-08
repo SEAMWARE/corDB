@@ -352,6 +352,46 @@ static const char* isoString(uint64_t ns, CorAlloc* kaP)
 
 
 
+// -----------------------------------------------------------------------------
+//
+// AttrPicks - one attribute's instances that passed the filters, in the page's order
+//
+typedef struct AttrPicks
+{
+  CorDbHistAttr*  aP;
+  Pick*           pickV;
+  int             picks;
+} AttrPicks;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// groupEnd - the end of the datasetId group that starts at p0 (the picks are sorted by datasetId first)
+//
+static int groupEnd(Pick* pickV, int picks, int p0)
+{
+  int p1 = p0 + 1;
+
+  while ((p1 < picks) && (((pickV[p1].datasetId == NULL) && (pickV[p0].datasetId == NULL)) ||
+                          ((pickV[p1].datasetId != NULL) && (pickV[p0].datasetId != NULL) && (strcmp(pickV[p1].datasetId, pickV[p0].datasetId) == 0))))
+    ++p1;
+
+  return p1;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// temporalEntity outcomes - the entity whole, its instances cut to the byte budget, or not built (it does not fit)
+//
+#define TEMPORAL_FITS    0
+#define TEMPORAL_CUT     1
+#define TEMPORAL_NO_FIT  2
+
+
+
 static CorNode* miniEntity(const char* attrName, CorDbInstance* iP, CorAlloc* kaP);
 static bool     qNamesAttr(LdQNode* nodeP, const char* attrName);
 static bool     qInstanceHolds(LdQNode* nodeP, const char* attrName, CorNode* miniEntityP);
@@ -362,8 +402,17 @@ static bool     qInstanceHolds(LdQNode* nodeP, const char* attrName, CorNode* mi
 //
 // temporalEntity - one entity's temporal representation, in kaP - timescale's answer, from the index
 //
-static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRangeInfo* rangeP, CorAlloc* kaP)
+// budget (bytes, 0 = none; TroeQueryFilter.maxBytes): the entity whole when it fits (*bytesP its size);
+// else, with cutAllowed, its instances cut to the K per attribute that fit (TEMPORAL_CUT); else - or
+// when not even K = 1 fits - NULL (TEMPORAL_NO_FIT).
+//
+static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRangeInfo* rangeP, CorAlloc* kaP,
+                               int64_t budget, bool cutAllowed, int* outcomeP, int64_t* bytesP)
 {
+  *outcomeP = TEMPORAL_FITS;
+  if (bytesP != NULL)
+    *bytesP = 0;
+
   CorNode* entityP = corTreeObject(kaP, NULL);
 
   corTreeChildAdd(entityP, corTreeString(kaP, "id", eP->id));
@@ -393,7 +442,19 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
   uint64_t minNs      = 0;
   uint64_t maxNs      = 0;
 
+  //
+  // Pass 1 - per attribute, the instances that pass the filters, in the page's order
+  //
+  int        attrN  = 0;
   for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = aP->next)
+    ++attrN;
+
+  AttrPicks* apV    = (AttrPicks*) corAlloc(kaP, (attrN + 1) * sizeof(AttrPicks));
+  int        apN    = 0;
+  int        deepest = 0;                              // the most instances any (attribute, datasetId) has on the page
+  bool       more    = false;                          // instances after the page (§ 6.4.7.3) - for rangeP, once the entity is built
+
+  for (CorDbHistAttr* aP = eP->attrs; (aP != NULL) && (apV != NULL); aP = aP->next)
   {
     for (int i = 0; i < aP->instances; i++)              // the entity's modifiedAt: its last write, filters or not
     {
@@ -440,22 +501,111 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
 
     qsort(pickV, picks, sizeof(Pick), pickCompare);
 
-    CorNode* arrayP = corTreeArray(kaP, aP->name);
+    apV[apN++] = (AttrPicks) { aP, pickV, picks };
 
     //
     // The page is per datasetId (§ 6.4.7.3): offsetN skipped, then at most `page`, in each
     //
     for (int p0 = 0; p0 < picks; )
     {
-      int p1 = p0 + 1;
+      int p1 = groupEnd(pickV, picks, p0);
 
-      while ((p1 < picks) && (((pickV[p1].datasetId == NULL) && (pickV[p0].datasetId == NULL)) ||
-                              ((pickV[p1].datasetId != NULL) && (pickV[p0].datasetId != NULL) && (strcmp(pickV[p1].datasetId, pickV[p0].datasetId) == 0))))
-        ++p1;
+      if (p1 - p0 > offsetN + page)
+        more = true;
 
-      if ((p1 - p0 > offsetN + page) && (rangeP != NULL))
-        rangeP->hasMore = true;
+      int on = p1 - (p0 + offsetN);                      // on the page: after offsetN, at most `page`
+      if (on > page)
+        on = page;
+      if (on > deepest)
+        deepest = on;
 
+      p0 = p1;
+    }
+  }
+
+#ifdef TROE_QUERY_FILTER_MAX_BYTES
+  //
+  // The byte budget (TroeQueryFilter.maxBytes): each instance counted as its stored record (bodyLen),
+  // summed per rank - the k-th instance of the page of every (attribute, datasetId). The largest K
+  // whose ranks 1..K fit is the cut: the same K for every attribute, a smaller instance limit, so
+  // offsetN + K is where the next temporal page starts (§ 6.4.7.3). Measured before anything is
+  // decoded: what does not fit is never built.
+  //
+  if ((budget > 0) && (deepest > 0))
+  {
+    int64_t* rankV = (int64_t*) corAlloc(kaP, deepest * sizeof(int64_t));
+    int64_t  total = (int64_t) strlen(eP->id) + 64;  // + id, type, timestamps
+
+    if (rankV != NULL)
+    {
+      memset(rankV, 0, deepest * sizeof(int64_t));
+
+      for (int a = 0; a < apN; a++)
+      {
+        for (int p0 = 0; p0 < apV[a].picks; )
+        {
+          int p1   = groupEnd(apV[a].pickV, apV[a].picks, p0);
+          int from = p0 + offsetN;
+
+          for (int r = 0; (r < deepest) && (from + r < p1); r++)
+            rankV[r] += apV[a].pickV[from + r].iP->bodyLen;
+
+          p0 = p1;
+        }
+      }
+
+      int     k    = 0;                                // ranks 1..k fit
+      int64_t sum  = total;
+      bool    full = false;
+
+      for (int r = 0; r < deepest; r++)
+      {
+        total += rankV[r];
+
+        if ((full == false) && (sum + rankV[r] <= budget))
+        {
+          sum += rankV[r];
+          k    = r + 1;
+        }
+        else
+          full = true;
+      }
+
+      if (total > budget)
+      {
+        if ((cutAllowed == false) || (k == 0))
+        {
+          *outcomeP = TEMPORAL_NO_FIT;
+          return NULL;
+        }
+
+        page      = k;                                   // the cut: K instances per attribute
+        *outcomeP = TEMPORAL_CUT;
+        more      = true;                                // the rest is on the next temporal page
+        if (bytesP != NULL)
+          *bytesP = budget;
+      }
+      else if (bytesP != NULL)
+        *bytesP = total;
+    }
+  }
+#else
+  (void) budget;
+  (void) cutAllowed;
+#endif
+
+  //
+  // Pass 2 - the page's instances, decoded
+  //
+  for (int a = 0; a < apN; a++)
+  {
+    Pick*    pickV  = apV[a].pickV;
+    int      picks  = apV[a].picks;
+    CorNode* arrayP = corTreeArray(kaP, apV[a].aP->name);
+
+    for (int p0 = 0; p0 < picks; )
+    {
+      int p1   = groupEnd(pickV, picks, p0);
       int from = p0 + offsetN;
       int to   = (from + page < p1) ? from + page : p1;
 
@@ -503,6 +653,9 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
 
   if (rangeP != NULL)
   {
+    if (more)
+      rangeP->hasMore = true;
+
     if (minNs != 0)
     {
       const char* minIso = isoString(minNs, kaP);
@@ -515,7 +668,7 @@ static CorNode* temporalEntity(CorDbHistEntity* eP, TroeQueryFilter* fP, TroeRan
       if ((rangeP->rangeEndIso == NULL) || (strcmp(maxIso, rangeP->rangeEndIso) > 0))
         rangeP->rangeEndIso = maxIso;
     }
-    if (rangeP->size == 0)
+    if ((rangeP->size == 0) || (*outcomeP == TEMPORAL_CUT))   // cut: the page is the entity's K instances per attribute
       rangeP->size = page;
   }
 
@@ -548,8 +701,24 @@ static int corDbTroeRetrieve(Tenant* tenantP, const char* entityId, TroeQueryFil
 
   if (eP != NULL)
   {
-    *resultPP = temporalEntity(eP, fP, rangeP, corRest.kallocP);
+    //
+    // The byte budget: the entity's instances cut to what fits (fewer per attribute, the temporal
+    // pagination Link to the rest), or - not even one per attribute fits - nothing and budgetHit
+    //
+    int     outcome = TEMPORAL_FITS;
+    int64_t budget  = 0;
+
+#ifdef TROE_QUERY_FILTER_MAX_BYTES
+    budget = (fP != NULL) ? fP->maxBytes : 0;
+#endif
+
+    *resultPP = temporalEntity(eP, fP, rangeP, corRest.kallocP, budget, true, &outcome, NULL);
     rc        = TROE_OK;
+
+#ifdef TROE_QUERY_FILTER_MAX_BYTES
+    if (outcome != TEMPORAL_FITS)
+      fP->budgetHit = true;
+#endif
   }
 
   pthread_mutex_unlock(&storeP->histMutex);
@@ -955,9 +1124,48 @@ static int corDbTroeQuery(Tenant* tenantP, TroeQueryFilter* fP, CorNode** result
 
   rangeP->moreEntities = (sels > offset + limit);
 
+  //
+  // The byte budget (TroeQueryFilter.maxBytes): each entity whole or not at all, in the page's order -
+  // the page ends before the one that does not fit. Only the first entity of the page may instead be
+  // cut to fewer instances per attribute (it then ends the page): a page of whole entities can always
+  // go on where it stopped, an entity on its own cannot be skipped.
+  //
+  int64_t budget = 0;
+  int64_t used   = 0;
+
+#ifdef TROE_QUERY_FILTER_MAX_BYTES
+  budget = fP->maxBytes;
+#endif
+
   for (int i = offset; (i < sels) && (i < offset + limit); i++)
   {
-    CorNode* entityP = temporalEntity(selV[i], fP, rangeP, kaP);
+    int      outcome   = TEMPORAL_FITS;
+    int64_t  bytes     = 0;
+    bool     first     = ((*resultPP)->value.head == NULL);
+    int64_t  remaining = (budget > 0) ? ((budget > used) ? budget - used : 1) : 0;
+    CorNode* entityP   = temporalEntity(selV[i], fP, rangeP, kaP, remaining, first, &outcome, &bytes);
+
+#ifdef TROE_QUERY_FILTER_MAX_BYTES
+    if (outcome == TEMPORAL_NO_FIT)                    // the page ends before this entity
+    {
+      fP->budgetHit        = true;
+      fP->budgetFetched    = i - offset;
+      rangeP->moreEntities = true;
+      break;
+    }
+
+    if (outcome == TEMPORAL_CUT)                       // the first entity, cut - and the page ends with it
+    {
+      fP->budgetHit     = true;
+      fP->budgetFetched = i - offset + 1;
+      if ((i + 1 < sels) && (i + 1 < offset + limit))
+        rangeP->moreEntities = true;
+      corTreeChildAdd(*resultPP, entityP);
+      break;
+    }
+#endif
+
+    used += bytes;
 
     if (hasAttributes(entityP))
       corTreeChildAdd(*resultPP, entityP);
