@@ -14,6 +14,7 @@
 #include "corTree/CorNode.h"                          // CorNode
 #include "corTree/corTreeBuilder.h"                   // corTreeArray, corTreeClone, corTreeFloat, corTreeChildAdd
 #include "corTree/corTreeClone.h"                     // corTreeClone
+#include "corJson/corJsonRenderSize.h"                // corJsonFastRenderSize
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
 #include "corRest/CorRestState.h"                       // corRest
 #include "corNgsild/LdQ.h"                              // LdQNode
@@ -365,8 +366,34 @@ static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayP
     *createdAtVP = (int64_t*) corAlloc(corRest.kallocP, (n + 1) * sizeof(int64_t));
     *distVP      = (double*)  corAlloc(corRest.kallocP, (n + 1) * sizeof(double));
 
+#ifdef DB_QUERY_FILTER_MAX_BYTES
+    //
+    // The byte budget (DbQueryFilter.maxBytes): each entity's rendered size, as
+    // corJson would render the stored entity, counted BEFORE it is copied - the
+    // copy is the memory the budget is there to bound. The page ends before the
+    // entity that does not fit, so it stays a prefix of the result set.
+    //
+    int64_t maxBytes = (filterP != NULL) ? filterP->maxBytes : 0;
+    int64_t bytes    = 0;
+#endif
+
     for (int i = from, j = 0; j < n; i++, j++)
     {
+#ifdef DB_QUERY_FILTER_MAX_BYTES
+      if (maxBytes > 0)
+      {
+        int64_t size = corJsonFastRenderSize(cands[i].eP);
+
+        if (bytes + size > maxBytes)
+        {
+          filterP->budgetHit = true;
+          break;
+        }
+
+        bytes += size;
+      }
+#endif
+
       corTreeChildAdd(arrayP, corDbEntityCopy(corRest.kallocP, cands[i].eP, &(*createdAtVP)[j]));
       (*distVP)[j] = cands[i].dist;
     }
