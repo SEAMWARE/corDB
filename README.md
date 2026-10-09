@@ -47,8 +47,8 @@ corrupts memory. Both sides carry a stamp of those headers and refuse a mismatch
   (a broker older than the check) or different
 
 Either way the message names both stamps: rebuild the plugin against the broker's source, or install
-matching versions. A coraine checkout without `tools/dbAbiStamp.sh` gives plugins without the stamp
-(`make` says so), which a broker with the check refuses.
+matching versions. A coraine checkout without `tools/dbAbiStamp.sh` is older than the stamp: `make`
+stops with an error.
 
 ### System timestamps - one per created entity
 

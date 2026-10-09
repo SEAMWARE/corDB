@@ -53,9 +53,7 @@
 #include "corDB/corDbRegistrationDelete.h"    // corDbRegistrationDelete
 #endif
 #include "corDB/corDbGeoMatch.h"             // corDbGeoMatch
-#if COR_DB_ABI_STAMP
 #include "shared/dbPluginAbi.h"                          // dbPluginAbiBrokerCheck
-#endif
 
 
 
@@ -97,9 +95,7 @@ static int corDbTenantSetup(Tenant* tenantP)
 //
 void dbRegister(DbDriver* driverP)
 {
-#if COR_DB_ABI_STAMP
   dbPluginAbiBrokerCheck("DB");                     // exits on a broker built against another interface
-#endif
 
 #if COR_DB_RAM_ONLY
   driverP->alias           = "ramDB";
