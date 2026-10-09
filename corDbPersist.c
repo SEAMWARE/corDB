@@ -1355,6 +1355,197 @@ static bool mkdirs(const char* path)
 
 // -----------------------------------------------------------------------------
 //
+// The storage format of the store (doc/persistence.md § 4a) - one integer, in <--dbDir>/_storageFormat,
+// as text. A corDB refuses a --dbDir in a newer format than the newest it knows: what a newer release
+// wrote, an older one misreads - a record of a newer version is not even recognised as one, and a log's
+// last segment is cut at the first record it does not recognise.
+//
+// '_' is escaped in a tenant's directory name (%5F), so no tenant's directory is called that.
+//
+// -----------------------------------------------------------------------------
+//
+// StorageFormat - one format this corDB reads and writes, and the step that brings a store in the
+// format before it up to it
+//
+// A change to the files that a corDB before it would misread is a new line here, newest last - and
+// its upgrade step, if a store in the older format is not read as it is.
+//
+typedef struct StorageFormat
+{
+  int          version;
+  const char*  what;
+  bool       (*upgrade)(void);                         // NULL: the format before it is read as it is
+} StorageFormat;
+
+static const StorageFormat formatV[] =
+{
+  { 1, "records of version 1 (doc/persistence.md § 4), snapshots and history segments as coraine 0.5.0 writes them", NULL }
+};
+
+
+
+
+// -----------------------------------------------------------------------------
+//
+// storageFormatRead - the version in <--dbDir>/_storageFormat: 0 if there is no such file, -1 if it cannot
+// be read or is not a version (said why)
+//
+static int storageFormatRead(const char* path)
+{
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+
+  if (fd < 0)
+  {
+    if (errno == ENOENT)
+      return 0;
+
+    COR_E("corDB: '%s': %s", path, strerror(errno));
+    return -1;
+  }
+
+  char    buf[32];
+  ssize_t n = read(fd, buf, sizeof(buf) - 1);
+
+  close(fd);
+
+  if (n <= 0)
+  {
+    COR_E("corDB: '%s': empty, or not readable - a storage format version is expected", path);
+    return -1;
+  }
+
+  buf[n] = 0;
+
+  char* endP;
+  long  version = strtol(buf, &endP, 10);
+
+  if ((endP == buf) || ((*endP != 0) && (*endP != '\n')) || (version <= 0) || (version > 0x7FFFFFFF))
+  {
+    COR_E("corDB: '%s': '%s' is not a storage format version", path, buf);
+    return -1;
+  }
+
+  return (int) version;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// storageFormatWrite - the version in <--dbDir>/_storageFormat: a .tmp written, synced, renamed
+//
+static bool storageFormatWrite(const char* path, int version)
+{
+  char tmp[608];                                       // the path (at most 599 bytes) + ".tmp"
+  char text[32];
+  int  len = snprintf(text, sizeof(text), "%d\n", version);
+
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+  int  fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  bool ok = (fd >= 0) && writeAll(fd, text, len) && (fsync(fd) == 0);
+
+  if (fd >= 0)
+    ok = (close(fd) == 0) && ok;
+
+  if ((ok == false) || (rename(tmp, path) != 0))
+  {
+    COR_E("corDB: '%s': %s", path, strerror(errno));
+    unlink(tmp);
+    return false;
+  }
+
+  syncDir(corDbDir);
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// storageFormatHasData - anything in --dbDir but the storage format file?
+//
+static bool storageFormatHasData(void)
+{
+  DIR*  dirP = opendir(corDbDir);
+  bool  data = false;
+
+  for (struct dirent* entryP = (dirP != NULL) ? readdir(dirP) : NULL; entryP != NULL; entryP = readdir(dirP))
+  {
+    if ((strcmp(entryP->d_name, ".") != 0) && (strcmp(entryP->d_name, "..") != 0) && (strncmp(entryP->d_name, "_storageFormat", 14) != 0))
+      data = true;
+  }
+
+  if (dirP != NULL)
+    closedir(dirP);
+
+  return data;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// storageFormat - --dbDir's storage format checked, upgraded to this corDB's and recorded; false: a newer
+// format than this corDB knows, or the file could not be read or written (said why) - not to be used
+//
+static bool storageFormat(void)
+{
+  int  newest = formatV[sizeof(formatV) / sizeof(formatV[0]) - 1].version;
+  char path[600];
+
+  if (snprintf(path, sizeof(path), "%s/_storageFormat", corDbDir) >= (int) sizeof(path))
+  {
+    COR_E("corDB: --dbDir '%s' too long", corDbDir);
+    return false;
+  }
+
+  int found = storageFormatRead(path);
+
+  if (found < 0)
+    return false;
+
+  if (found > newest)
+  {
+    COR_E("corDB: --dbDir '%s' is in storage format %d - this build of corDB knows formats up to %d. "
+          "It was written by a newer release of coraine, and this one would misread it: run the release that wrote it, or a newer one. "
+          "A downgrade is not supported once a newer release has written to a store",
+          corDbDir, found, newest);
+    return false;
+  }
+
+  if (found == newest)
+    return true;
+
+  if ((found == 0) && (storageFormatHasData() == false))
+    COR_I("corDB: --dbDir '%s' is new - storage format %d", corDbDir, newest);
+  else
+  {
+    //
+    // The upgrade steps of every format after the one found, in order
+    //
+    for (unsigned int ix = 0; ix < sizeof(formatV) / sizeof(formatV[0]); ix++)
+    {
+      if ((formatV[ix].version > found) && (formatV[ix].upgrade != NULL) && (formatV[ix].upgrade() == false))
+      {
+        COR_E("corDB: --dbDir '%s': the upgrade to storage format %d (%s) failed", corDbDir, formatV[ix].version, formatV[ix].what);
+        return false;
+      }
+    }
+
+    if (found == 0)
+      COR_I("corDB: --dbDir '%s' has no storage format recorded (written before formats were) - read as it is, now storage format %d", corDbDir, newest);
+    else
+      COR_I("corDB: --dbDir '%s' upgraded from storage format %d to %d", corDbDir, found, newest);
+  }
+
+  return storageFormatWrite(path, newest);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbPersistInit -
 //
 bool corDbPersistInit(void)
@@ -1382,6 +1573,12 @@ bool corDbPersistInit(void)
     COR_E("corDB: --dbDir '%s': %s", corDbDir, strerror(errno));
     return false;
   }
+
+  //
+  // Before anything in it is read or written: a store in a newer format is left as it is
+  //
+  if (storageFormat() == false)
+    return false;
 
   pthread_condattr_t attr;
 
@@ -2509,8 +2706,8 @@ void corDbPersistTenants(void)
 
   while ((entryP = readdir(dirP)) != NULL)
   {
-    if ((entryP->d_name[0] == '.') || (strcmp(entryP->d_name, "_") == 0))
-      continue;
+    if ((entryP->d_name[0] == '.') || (strcmp(entryP->d_name, "_") == 0) || (strncmp(entryP->d_name, "_storageFormat", 14) == 0))
+      continue;                                        // not a tenant: the default tenant's, the storage format (and its .tmp)
 
     char name[256];
 

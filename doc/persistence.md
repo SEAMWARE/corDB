@@ -38,7 +38,8 @@ Each needs the log; none changes its format (§ 7).
 ```
 
 **One directory per tenant** (`<--dbDir>/<tenant>/`, `_` for the default tenant): the lock, the store
-and the files are all per tenant already, and a tenant drop becomes a directory delete.
+and the files are all per tenant already, and a tenant drop becomes a directory delete. Beside them,
+`<--dbDir>/_storageFormat`: the version of the files' format (§ 4a).
 
 ```
   snap-000041.cor     the tree as of log sequence 41 (complete, or not there at all)
@@ -109,6 +110,33 @@ is a state the broker could have been in.
   detected, never applied. Body first, header second: a write whose entity exists before the write
   lock (create, replace, batch create and update) encodes the body and takes its CRC before the lock;
   under it only the header (sequence, time, the CRC finished over 24 bytes) and a copy of the body.
+
+## 4a. The storage format of a store
+
+`<--dbDir>/_storageFormat` holds one integer, as text: the storage format of the files under
+`--dbDir`. `_` is escaped in a tenant's directory name (`%5F`), so no tenant's directory has that name.
+
+| version | written by | what |
+|---|---|---|
+| 1 | coraine 0.5.0 | records of version 1 (§ 4), snapshots and history segments as 0.5.0 writes them |
+
+At start, before anything under `--dbDir` is read or written (`corDbPersist.c`, `storageFormat`):
+
+- **no file, nothing else in `--dbDir`**: a new store - this corDB's version is written;
+- **no file, files in `--dbDir`**: a store written before the version was recorded - read as it is, and
+  this corDB's version is written;
+- **a version up to this corDB's**: read; a lower one is brought up to this corDB's (the upgrade steps
+  of the formats after it, in order) and this corDB's version is written;
+- **a version above this corDB's**: the broker does not start. The error names the version found and
+  the newest this corDB knows: the store was written by a newer release, and is to be run by that
+  release or a newer one. A downgrade is not supported once a newer release has written to a store.
+
+A record of a version this corDB does not know would not be recognised as a record: in a log's last
+segment, recovery would cut the log there (§ 6). The version file refuses the store before that.
+
+The file is written as a `.tmp`, synced and renamed. A change to the files that an older corDB would
+misread is a new version, a new line in `formatV` (`corDbPersist.c`) and, if a store in the older
+format is not read as it is, its upgrade step.
 
 ## 5. Writing: a copy into the page cache, group commit on a timer
 
