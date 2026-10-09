@@ -183,16 +183,26 @@ $(OBJDIR)/dbPluginAbi.o: $(ABI_PLUGIN) $(OBJDIR)/dbAbiStamp.h $(OBJDIR)/.flags
 
 install: all
 	mkdir -p $(PLUGIN_DIR)/db/currentState $(PLUGIN_DIR)/troe/temporal
-	cp -p $(PLUGIN)      $(PLUGIN_DIR)/db/currentState/corDB.so
-	cp -p $(TROE_PLUGIN) $(PLUGIN_DIR)/troe/temporal/ramDB.so
+	$(call installFile,$(PLUGIN),$(PLUGIN_DIR)/db/currentState/corDB.so)
+	$(call installFile,$(TROE_PLUGIN),$(PLUGIN_DIR)/troe/temporal/ramDB.so)
 	rm -f $(PLUGIN_DIR)/troe/temporal/corDB.so                  # the ring's old name: --troe corDB is corDB.so's own now
-	cp -p $(RAM_PLUGIN)  $(PLUGIN_DIR)/db/currentState/ramDB.so
+	$(call installFile,$(RAM_PLUGIN),$(PLUGIN_DIR)/db/currentState/ramDB.so)
 
 i:     install
 di:    install
 ci:    clean install
 cdi:   clean install
 debug: all
+
+#
+# installFile <file> <path> - a NEW file at <path>: copied beside it, then renamed over it.
+#
+# Never `cp` onto an installed plugin: cp rewrites the existing file in place - the same inode - and
+# a running broker has that inode mapped (dlopen). Its code then changes under it, and the broker
+# dies of SIGSEGV within seconds, in whichever thread next runs plugin code (corPeriodic, once a
+# second). A rename leaves the running broker its old file; the next start loads the new one.
+#
+installFile = cp -p $(1) $(dir $(2)).$(notdir $(2)).new && mv -f $(dir $(2)).$(notdir $(2)).new $(2)
 
 clean:
 	rm -rf obj *~
