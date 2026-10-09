@@ -394,6 +394,25 @@ static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayP
       }
 #endif
 
+#ifdef DB_QUERY_FILTER_IDS_ONLY
+      //
+      // The ids of the matches and nothing else (DbQueryFilter.idsOnly - an EntityMap): no copy of the
+      // entity, under the lock or after it.
+      //
+      if (filterP->idsOnly)
+      {
+        CorNode* idP = corTreeLookup(cands[i].eP, "id");
+
+        if ((idP != NULL) && (idP->type == CorString))
+        {
+          CorNode* stubP = corTreeObject(corRest.kallocP, NULL);
+          corTreeChildAdd(stubP, corTreeString(corRest.kallocP, "id", idP->value.s));
+          corTreeChildAdd(arrayP, stubP);
+        }
+        continue;
+      }
+#endif
+
       corTreeChildAdd(arrayP, corDbEntityCopy(corRest.kallocP, cands[i].eP, &(*createdAtVP)[j]));
       (*distVP)[j] = cands[i].dist;
     }
@@ -418,6 +437,11 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
 
   if ((r != DB_OK) || (createdAtV == NULL))
     return r;
+
+#ifdef DB_QUERY_FILTER_IDS_ONLY
+  if ((filterP != NULL) && filterP->idsOnly)          // ids only: nothing to finish
+    return r;
+#endif
 
   int j = 0;
   for (CorNode* eP = (*arrayPP)->value.head; eP != NULL; eP = eP->next, j++)
