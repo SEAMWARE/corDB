@@ -35,9 +35,7 @@
 #include "corTree/CorNode.h"                              // CorNode
 
 #include "troe/TroeDriver.h"                              // TroeDriver
-#if COR_DB_ABI_STAMP
 #include "shared/dbPluginAbi.h"                          // dbPluginAbiBrokerCheck
-#endif
 
 
 
@@ -193,9 +191,7 @@ static void corDbTroeDumpInfo(CorAlloc* allocP, CorNode* root)
 //
 void troeRegister(TroeDriver* driverP)
 {
-#if COR_DB_ABI_STAMP
   dbPluginAbiBrokerCheck("TRoE");                     // exits on a broker built against another interface
-#endif
 
   driverP->alias        = "ramDB";
   driverP->version      = PLUGIN_VERSION;

@@ -43,7 +43,7 @@ COR_FEATURE_SUBSCRIPTIONS ?= 1
 COR_FEATURE_REGISTRATIONS ?= 1
 
 INCLUDE       = -I$(COR_LIBS) -I$(CORAINE)/src/lib -I$(CORAINE)/src/plugins
-DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_DB_ABI_STAMP=$(COR_DB_ABI_STAMP)
+DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS)
 # The current-state plugin's version; troe/corDbRegister.c defines its own
 VERSION_DEF   = -DPLUGIN_VERSION=\"0.2.0\"
 CFLAGS        = -Wall -Werror -Wundef -fPIC $(INCLUDE) $(DEFINES) -MMD -MP $(EXTRA_CFLAGS)
@@ -89,21 +89,12 @@ GEOMATCH      = $(CORAINE)/src/plugins/shared/geoMatch.c
 # on every make, rewritten only when it changed. Every plugin here exports it (dbPluginAbi) from the
 # broker's shared/dbPluginAbi.c, and every register function checks the broker's against it first: a
 # plugin and a broker built against different headers refuse each other instead of corrupting memory.
-#
-# A coraine checkout from before the stamp has no tools/dbAbiStamp.sh: the plugins are built without it
-# (COR_DB_ABI_STAMP=0), as they were before - unchecked, which only a broker as old as that checkout
-# loads.
+# A coraine checkout without tools/dbAbiStamp.sh is older than the stamp: an error - a plugin built against
+# it would carry no stamp, and check no broker's.
 #
 ABI_STAMP_SH  = $(CORAINE)/tools/dbAbiStamp.sh
 ABI_PLUGIN    = $(CORAINE)/src/plugins/shared/dbPluginAbi.c
-
-ifneq ($(wildcard $(ABI_STAMP_SH)),)
-COR_DB_ABI_STAMP = 1
 ABI_OBJECT    = $(OBJDIR)/dbPluginAbi.o
-else
-COR_DB_ABI_STAMP = 0
-ABI_OBJECT    =
-endif
 
 OBJECTS       = $(SOURCES:%.c=$(OBJDIR)/%.o) $(OBJDIR)/geoMatch.o $(ABI_OBJECT)
 TROE_OBJECTS  = $(OBJDIR)/troe/ramDbRegister.o $(ABI_OBJECT)
@@ -134,10 +125,13 @@ clean:
 .PHONY: all install i di ci cdi debug clean
 else
 
-all: $(PLUGIN) $(TROE_PLUGIN) $(RAM_PLUGIN)
-ifeq ($(COR_DB_ABI_STAMP),0)
-	@echo "corDB: WARNING - $(ABI_STAMP_SH) not found: the plugins carry no DB plugin interface stamp and check no broker's"
+ifeq ($(wildcard $(ABI_STAMP_SH)),)
+ifneq ($(MAKECMDGOALS),clean)
+$(error corDB: $(ABI_STAMP_SH) not found - the coraine checkout beside corDB is older than the DB plugin interface stamp)
 endif
+endif
+
+all: $(PLUGIN) $(TROE_PLUGIN) $(RAM_PLUGIN)
 
 $(RAM_PLUGIN): $(RAM_OBJECTS)
 	@mkdir -p $(dir $@)
