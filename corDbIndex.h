@@ -59,4 +59,14 @@ extern void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP);
 //
 extern CorNode* corDbIndexLookup(CorDbStore* storeP, const char* entityId);
 
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbIndexPrev - the entity before this one in the store's list, or NULL when it is the first
+//
+// Call with the store lock held (read or write). O(1): the index maps an id to its predecessor.
+//
+extern CorNode* corDbIndexPrev(CorDbStore* storeP, CorNode* entityP);
+
 #endif  // CORDB_CORDBINDEX_H_

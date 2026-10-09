@@ -570,3 +570,24 @@ CorNode* corDbIndexLookup(CorDbStore* storeP, const char* entityId)
 
   return (prevEntityP != NULL) ? entityAfter(prevEntityP) : NULL;
 }
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbIndexPrev - the entity before this one in the store's list, or NULL (it is the first, or not indexed)
+//
+// The index holds exactly that - an entity's predecessor - so it is one hash lookup. For walking the
+// store backwards (a page before a position - DbQueryFilter.seekBefore).
+//
+CorNode* corDbIndexPrev(CorDbStore* storeP, CorNode* entityP)
+{
+  const char* id = (entityP != NULL) ? corDbEntityId(entityP) : NULL;
+
+  if ((storeP == NULL) || (storeP->idToPrevEntity == NULL) || (id == NULL))
+    return NULL;
+
+  CorNode* prevEntityP = tableLookup(storeP, id);
+
+  return ((prevEntityP == NULL) || (prevEntityP->type == CorArray)) ? NULL : prevEntityP;
+}

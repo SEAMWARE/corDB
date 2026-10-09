@@ -25,7 +25,8 @@
 
 #include "db/DbDriver.h"                              // DB_OK, Tenant
 #include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut
-#include "corDB/corDbStore.h"          // corDbEntities
+#include "corDB/corDbStore.h"          // corDbEntities, corDbStoreOf
+#include "corDB/corDbIndex.h"          // corDbIndexLookup, corDbIndexPrev, corDbEntityId
 #include "corDB/corDbGeoMatch.h"       // corDbGeoMatch
 #include "corDB/corDbEntityQuery.h"    // Own interface
 
@@ -138,6 +139,125 @@ static bool qSubTimesUsed(LdQNode* nodeP)
 
 // -----------------------------------------------------------------------------
 //
+// entityMatch - does the stored entity match the query's filters? *geoDistanceP: its distance (-1: none)
+//
+static bool entityMatch(CorNode* eP, DbQueryFilter* filterP, DbQueryFilter* distFilterP, bool qSubTimes, double* geoDistanceP)
+{
+  CorNode* entityIdP = corTreeLookup(eP, "id");
+  const char* entityId = (entityIdP != NULL && entityIdP->type == CorString) ? entityIdP->value.s : NULL;
+
+  //
+  // Filter by id
+  //
+  if (filterP != NULL && filterP->idV != NULL)
+  {
+    if (entityId == NULL || !matchStringV(entityId, filterP->idV))
+      return false;
+  }
+
+  //
+  // Filter by idPattern
+  //
+  if (filterP != NULL && filterP->idPattern != NULL)
+  {
+    regex_t re;
+
+    if (entityId == NULL || regcomp(&re, filterP->idPattern, REG_EXTENDED | REG_NOSUB) != 0 || regexec(&re, entityId, 0, NULL, 0) != 0)
+    {
+      regfree(&re);
+      return false;
+    }
+
+    regfree(&re);
+  }
+
+  //
+  // Filter by type
+  //
+  if (filterP != NULL && filterP->typeExpr != NULL)
+  {
+    CorNode* typeP = corTreeLookup(eP, "type");
+
+    if (!ldEntityMatchType(typeP, filterP->typeExpr))
+      return false;
+  }
+  else if (filterP != NULL && filterP->typeV != NULL)
+  {
+    CorNode* typeP = corTreeLookup(eP, "type");
+
+    if (typeP == NULL)
+      return false;
+
+    // Simple OR: entity type (string or array) must contain at least one of typeV
+    bool found = false;
+
+    if (typeP->type == CorString)
+      found = matchStringV(typeP->value.s, filterP->typeV);
+    else if (typeP->type == CorArray)
+    {
+      for (CorNode* elemP = typeP->value.head; elemP != NULL && !found; elemP = elemP->next)
+      {
+        if (elemP->type == CorString)
+          found = matchStringV(elemP->value.s, filterP->typeV);
+      }
+    }
+
+    if (!found)
+      return false;
+  }
+
+  //
+  // Filter by scope (scopeQ)
+  //
+  if (filterP != NULL && filterP->scopeExpr != NULL)
+  {
+    CorNode* scopeP = corTreeLookup(eP, LD_VOCAB_SCOPE);
+
+    if (!ldEntityMatchScope(scopeP, filterP->scopeExpr))
+      return false;
+  }
+
+  //
+  // Filter by q expression
+  //
+  if (filterP != NULL && filterP->qExpr != NULL)
+  {
+    //
+    // A q on the entity's modifiedAt or an attribute's own createdAt / modifiedAt reads what the store
+    // may leave out - it is matched against the entity with every time in place (corDbSysTimes.h).
+    // Rare: a copy each.
+    //
+    CorNode* matchP = (qSubTimes == true) ? corDbTreeOut(corRest.kallocP, eP, 0) : eP;
+
+    if (!ldEntityMatchQ(matchP, filterP->qExpr))
+      return false;
+  }
+
+  //
+  // Geo-query filter (GEOS) — geoDistance is set for near queries, -1 otherwise
+  //
+  double geoDistance = -1;
+  if (filterP != NULL && filterP->geoRel != NULL)
+  {
+    if (!corDbGeoMatch(eP, filterP, &geoDistance))
+      return false;
+  }
+  else if (distFilterP != NULL)
+  {
+    // § 7.6.2.2 sort-by-distance (no filtering): distance from orderFrom to the
+    // named GeoProperty. A missing/non-Point GeoProperty leaves geoDistance -1
+    // (the entity is kept but ranks last).
+    corDbGeoMatch(eP, distFilterP, &geoDistance);
+  }
+
+  *geoDistanceP = geoDistance;
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // entityQuery - under the store's read lock: the page's entities copied as corTreeClone copies them, and
 // for each, what corDbEntityCopyFinish needs and its geoDistance (-1: none) - both put in after the lock
 //
@@ -215,114 +335,54 @@ static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayP
     distFilterP            = &distFilter;
   }
 
-  for (CorNode* eP = entities->value.head; eP != NULL; eP = eP->next)
+#ifdef DB_QUERY_FILTER_SEEK
+  //
+  // A page from a position (DbQueryFilter.seekId): the store's list is in creation order, the order of
+  // the pages. The position's entity is found by its id (the index, O(1)) and the walk starts right
+  // after it - or, a page before the position, right before it and backwards, one index lookup per
+  // step (corDbIndexPrev). An entity that is gone since (deleted, or deleted and created again - its
+  // createdAt differs): the walk from the start of the list to where its createdAt is, O(position) as
+  // an offset is - entities of one batch share a createdAt, and among those the id decides.
+  //
+  CorDbStore* storeP  = corDbStoreOf(tenantP);
+  bool        seek    = (filterP != NULL) && (filterP->seekId != NULL);
+  bool        back    = seek && filterP->seekBefore;
+  CorNode*    startP  = entities->value.head;
+
+  if (seek)
   {
-    CorNode* entityIdP = corTreeLookup(eP, "id");
-    const char* entityId = (entityIdP != NULL && entityIdP->type == CorString) ? entityIdP->value.s : NULL;
+    CorNode* posP = corDbIndexLookup(storeP, filterP->seekId);
 
-    //
-    // Filter by id
-    //
-    if (filterP != NULL && filterP->idV != NULL)
+    if ((posP != NULL) && (corDbCreatedAt(posP, 0) == filterP->seekCreatedAt))
+      startP = back ? corDbIndexPrev(storeP, posP) : posP->next;
+    else
     {
-      if (entityId == NULL || !matchStringV(entityId, filterP->idV))
-        continue;
-    }
+      CorNode* lastBeforeP = NULL;
 
-    //
-    // Filter by idPattern
-    //
-    if (filterP != NULL && filterP->idPattern != NULL)
-    {
-      regex_t re;
-
-      if (entityId == NULL || regcomp(&re, filterP->idPattern, REG_EXTENDED | REG_NOSUB) != 0 || regexec(&re, entityId, 0, NULL, 0) != 0)
+      for (startP = entities->value.head; startP != NULL; startP = startP->next)
       {
-        regfree(&re);
-        continue;
+        int64_t     c  = corDbCreatedAt(startP, 0);
+        const char* id = corDbEntityId(startP);
+
+        if ((c > filterP->seekCreatedAt) || ((c == filterP->seekCreatedAt) && (id != NULL) && (strcmp(id, filterP->seekId) > 0)))
+          break;
+        lastBeforeP = startP;
       }
 
-      regfree(&re);
+      if (back)
+        startP = lastBeforeP;
     }
+  }
 
-    //
-    // Filter by type
-    //
-    if (filterP != NULL && filterP->typeExpr != NULL)
-    {
-      CorNode* typeP = corTreeLookup(eP, "type");
-
-      if (!ldEntityMatchType(typeP, filterP->typeExpr))
-        continue;
-    }
-    else if (filterP != NULL && filterP->typeV != NULL)
-    {
-      CorNode* typeP = corTreeLookup(eP, "type");
-
-      if (typeP == NULL)
-        continue;
-
-      // Simple OR: entity type (string or array) must contain at least one of typeV
-      bool found = false;
-
-      if (typeP->type == CorString)
-        found = matchStringV(typeP->value.s, filterP->typeV);
-      else if (typeP->type == CorArray)
-      {
-        for (CorNode* elemP = typeP->value.head; elemP != NULL && !found; elemP = elemP->next)
-        {
-          if (elemP->type == CorString)
-            found = matchStringV(elemP->value.s, filterP->typeV);
-        }
-      }
-
-      if (!found)
-        continue;
-    }
-
-    //
-    // Filter by scope (scopeQ)
-    //
-    if (filterP != NULL && filterP->scopeExpr != NULL)
-    {
-      CorNode* scopeP = corTreeLookup(eP, LD_VOCAB_SCOPE);
-
-      if (!ldEntityMatchScope(scopeP, filterP->scopeExpr))
-        continue;
-    }
-
-    //
-    // Filter by q expression
-    //
-    if (filterP != NULL && filterP->qExpr != NULL)
-    {
-      //
-      // A q on the entity's modifiedAt or an attribute's own createdAt / modifiedAt reads what the store
-      // may leave out - it is matched against the entity with every time in place (corDbSysTimes.h).
-      // Rare: a copy each.
-      //
-      CorNode* matchP = (qSubTimes == true) ? corDbTreeOut(corRest.kallocP, eP, 0) : eP;
-
-      if (!ldEntityMatchQ(matchP, filterP->qExpr))
-        continue;
-    }
-
-    //
-    // Geo-query filter (GEOS) — geoDistance is set for near queries, -1 otherwise
-    //
+  for (CorNode* eP = startP; eP != NULL; eP = back ? corDbIndexPrev(storeP, eP) : eP->next)
+#else
+  for (CorNode* eP = entities->value.head; eP != NULL; eP = eP->next)
+#endif
+  {
     double geoDistance = -1;
-    if (filterP != NULL && filterP->geoRel != NULL)
-    {
-      if (!corDbGeoMatch(eP, filterP, &geoDistance))
-        continue;
-    }
-    else if (distFilterP != NULL)
-    {
-      // § 7.6.2.2 sort-by-distance (no filtering): distance from orderFrom to the
-      // named GeoProperty. A missing/non-Point GeoProperty leaves geoDistance -1
-      // (the entity is kept but ranks last).
-      corDbGeoMatch(eP, distFilterP, &geoDistance);
-    }
+
+    if (entityMatch(eP, filterP, distFilterP, qSubTimes, &geoDistance) == false)
+      continue;
 
     cands[nCand].eP   = eP;
     cands[nCand].dist = geoDistance;
@@ -431,6 +491,11 @@ static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayP
 //
 int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
 {
+#ifdef DB_QUERY_FILTER_SEEK
+  if (filterP != NULL)
+    filterP->seekable = true;          // a page from a position (DbQueryFilter.seekId) - see entityQuery
+#endif
+
   int64_t* createdAtV = NULL;
   double*  distV      = NULL;
   int      r          = entityQuery(tenantP, filterP, arrayPP, &createdAtV, &distV);
