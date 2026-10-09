@@ -31,6 +31,25 @@ A plugin is built with the broker's feature switches: `COR_FEATURE_SUBSCRIPTIONS
 `COR_FEATURE_REGISTRATIONS=0` for a broker built without them. `OBJDIR` and `OUT` build a variant
 elsewhere. Needs `libgeos_c` (geo-queries).
 
+### The DB plugin interface stamp
+
+The plugins share structs with the broker by layout (`DbDriver`, `DbQueryFilter`, `Tenant`,
+`TroeDriver`, `CorNode`, ...), so a plugin built against other headers than the broker that loads it
+corrupts memory. Both sides carry a stamp of those headers and refuse a mismatch - coraine's
+[plugin architecture](https://github.com/SEAMWARE/coraine/blob/main/doc/plugin-architecture.md),
+"The DB plugin interface stamp":
+
+- the makefile runs `../coraine/tools/dbAbiStamp.sh` on every `make` (into `obj/<BUILD>/dbAbiStamp.h`,
+  rewritten only when the stamp changed), and every plugin here - `corDB.so`, `ramDB.so`,
+  `troe/ramDB.so` - exports it as `dbPluginAbi`, compiled from coraine's `src/plugins/shared/dbPluginAbi.c`
+- the broker refuses a plugin without `dbPluginAbi` or with another stamp than its own `coraineDbAbi`
+- `dbRegister` / `troeRegister` first check the broker's `coraineDbAbi`, and exit 1 when it is missing
+  (a broker older than the check) or different
+
+Either way the message names both stamps: rebuild the plugin against the broker's source, or install
+matching versions. A coraine checkout without `tools/dbAbiStamp.sh` gives plugins without the stamp
+(`make` says so), which a broker with the check refuses.
+
 ### System timestamps - one per created entity
 
 corNgsild gives the entity, every attribute instance and every sub-attribute a `createdAt` and a

@@ -42,6 +42,9 @@
 #include "corDB/corDbHistoryWrite.h"                   // corDbHistoryDrain
 #include "corDB/corDbTroeWrite.h"                      // corDbTroeCreate, ...
 #include "corDB/corDbStore.h"                          // corDbStoreOf
+#if COR_DB_ABI_STAMP
+#include "shared/dbPluginAbi.h"                          // dbPluginAbiBrokerCheck
+#endif
 
 
 
@@ -1198,6 +1201,10 @@ static void corDbTroeClose(void) { }
 //
 void troeRegister(TroeDriver* driverP)
 {
+#if COR_DB_ABI_STAMP
+  dbPluginAbiBrokerCheck("TRoE");                     // exits on a broker built against another interface
+#endif
+
   corDbHistoryOn = true;
 
   driverP->alias                  = "corDB";
