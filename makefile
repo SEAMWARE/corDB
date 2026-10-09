@@ -43,7 +43,7 @@ COR_FEATURE_SUBSCRIPTIONS ?= 1
 COR_FEATURE_REGISTRATIONS ?= 1
 
 INCLUDE       = -I$(COR_LIBS) -I$(CORAINE)/src/lib -I$(CORAINE)/src/plugins
-DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS)
+DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_DB_ABI_STAMP=$(COR_DB_ABI_STAMP)
 # The current-state plugin's version; troe/corDbRegister.c defines its own
 VERSION_DEF   = -DPLUGIN_VERSION=\"0.2.0\"
 CFLAGS        = -Wall -Werror -Wundef -fPIC $(INCLUDE) $(DEFINES) -MMD -MP $(EXTRA_CFLAGS)
@@ -82,8 +82,31 @@ endif
 #
 GEOMATCH      = $(CORAINE)/src/plugins/shared/geoMatch.c
 
-OBJECTS       = $(SOURCES:%.c=$(OBJDIR)/%.o) $(OBJDIR)/geoMatch.o
-TROE_OBJECTS  = $(OBJDIR)/troe/ramDbRegister.o
+#
+# The DB plugin interface stamp (coraine's doc/plugin-architecture.md, "The DB plugin interface stamp"):
+# a hash of the headers the broker and its DB / TRoE plugins share structs through, by coraine's
+# tools/dbAbiStamp.sh - the one definition the broker's CMake uses too. Written into $(OBJDIR)/dbAbiStamp.h
+# on every make, rewritten only when it changed. Every plugin here exports it (dbPluginAbi) from the
+# broker's shared/dbPluginAbi.c, and every register function checks the broker's against it first: a
+# plugin and a broker built against different headers refuse each other instead of corrupting memory.
+#
+# A coraine checkout from before the stamp has no tools/dbAbiStamp.sh: the plugins are built without it
+# (COR_DB_ABI_STAMP=0), as they were before - unchecked, which only a broker as old as that checkout
+# loads.
+#
+ABI_STAMP_SH  = $(CORAINE)/tools/dbAbiStamp.sh
+ABI_PLUGIN    = $(CORAINE)/src/plugins/shared/dbPluginAbi.c
+
+ifneq ($(wildcard $(ABI_STAMP_SH)),)
+COR_DB_ABI_STAMP = 1
+ABI_OBJECT    = $(OBJDIR)/dbPluginAbi.o
+else
+COR_DB_ABI_STAMP = 0
+ABI_OBJECT    =
+endif
+
+OBJECTS       = $(SOURCES:%.c=$(OBJDIR)/%.o) $(OBJDIR)/geoMatch.o $(ABI_OBJECT)
+TROE_OBJECTS  = $(OBJDIR)/troe/ramDbRegister.o $(ABI_OBJECT)
 
 #
 # ramDB - corDB in RAM only: the same sources built with COR_DB_RAM_ONLY=1 - no disk options, no
@@ -92,7 +115,7 @@ TROE_OBJECTS  = $(OBJDIR)/troe/ramDbRegister.o
 #
 RAM_OBJDIR    = $(OBJDIR)/ram
 RAM_SOURCES   = $(filter-out corDbTroe.c corDbTroeWrite.c,$(SOURCES))
-RAM_OBJECTS   = $(RAM_SOURCES:%.c=$(RAM_OBJDIR)/%.o) $(OBJDIR)/geoMatch.o
+RAM_OBJECTS   = $(RAM_SOURCES:%.c=$(RAM_OBJDIR)/%.o) $(OBJDIR)/geoMatch.o $(ABI_OBJECT)
 
 DEPS          = $(OBJECTS:.o=.d) $(TROE_OBJECTS:.o=.d) $(RAM_SOURCES:%.c=$(RAM_OBJDIR)/%.d)
 
@@ -112,6 +135,9 @@ clean:
 else
 
 all: $(PLUGIN) $(TROE_PLUGIN) $(RAM_PLUGIN)
+ifeq ($(COR_DB_ABI_STAMP),0)
+	@echo "corDB: WARNING - $(ABI_STAMP_SH) not found: the plugins carry no DB plugin interface stamp and check no broker's"
+endif
 
 $(RAM_PLUGIN): $(RAM_OBJECTS)
 	@mkdir -p $(dir $@)
@@ -147,6 +173,13 @@ $(RAM_OBJDIR)/%.o: %.c $(OBJDIR)/.flags
 
 $(OBJDIR)/geoMatch.o: $(GEOMATCH) $(OBJDIR)/.flags
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR)/dbAbiStamp.h: FORCE
+	@mkdir -p $(OBJDIR)
+	@COR_LIBS=$(COR_LIBS) $(ABI_STAMP_SH) --header $@
+
+$(OBJDIR)/dbPluginAbi.o: $(ABI_PLUGIN) $(OBJDIR)/dbAbiStamp.h $(OBJDIR)/.flags
+	$(CC) $(CFLAGS) -I$(OBJDIR) -c $< -o $@
 
 install: all
 	mkdir -p $(PLUGIN_DIR)/db/currentState $(PLUGIN_DIR)/troe/temporal
