@@ -1832,7 +1832,8 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
   }
 
   closedir(dirP);
-  qsort(logV, logs, sizeof(unsigned int), uintCompare);
+  if (logs > 1)                                      // qsort(NULL, 0) is undefined: a store with no log yet
+    qsort(logV, logs, sizeof(unsigned int), uintCompare);
 
   struct timespec t0;
   struct timespec t1;
@@ -1887,7 +1888,8 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
   // The history: every segment, oldest first - no snapshot bounds it (retention will). Without
   // --troe corDB a history found here is left alone: it is not this run's to read, nor to drop.
   //
-  qsort(histV, hists, sizeof(unsigned int), uintCompare);
+  if (hists > 1)                                     // qsort(NULL, 0) is undefined: a store with no history
+    qsort(histV, hists, sizeof(unsigned int), uintCompare);
 
   if ((ok == true) && (hists > 0) && (storeP->historyP == NULL))
     COR_W("corDB: tenant '%s' has a history (%d segments) and this broker runs without --troe corDB - left as it is", pP->tenant, hists);
