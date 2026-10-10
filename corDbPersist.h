@@ -98,12 +98,24 @@ typedef struct CorDbPersist
 
   //
   // The tenant was dropped (corDbPersistDrop): its files are gone, the flusher, the snapshotter and the
-  // close at a stop pass it by. It stays in the list - the flusher and the snapshotter walk the list
-  // without the lock, so nothing is ever taken out of it.
+  // close at a stop pass it by. It stays in the list until the tenant is released (corDbPersistRelease).
   //
   bool                  dropped;
 
-  struct CorDbPersist*  next;                          // every tenant's, for the flusher
+  //
+  // The tenant was released (corDbPersistRelease): the log closed, the node out of the list - or on its
+  // way out, while a walk that took it before is still on it. Passed by as a dropped one is.
+  //
+  bool                  closed;
+
+  //
+  // Every tenant's, for the flusher and the snapshotter. They walk it WITHOUT the lock: a node is added at
+  // the head only, and one taken out (corDbPersistRelease) is freed only when no walk is under way
+  // (corDbPersist.c, walkBegin / walkEnd) - one that started before it was taken out may be standing on
+  // it. Read and written atomically.
+  //
+  struct CorDbPersist*  next;
+  struct CorDbPersist*  reapNext;                      // taken out of the list, waiting to be freed (flushMutex)
 } CorDbPersist;
 
 
@@ -235,5 +247,19 @@ extern void corDbPersistClose(void);
 // by now - corDbTenantDrop), the segments closed, every file and the directory deleted
 //
 extern void corDbPersistDrop(CorDbPersist* pP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistRelease - a tenant's log closed for good: a snapshot in progress waited for, what is
+// buffered written and synced, the segments closed (all of it already done for a dropped one), the node
+// taken out of the flusher's list and freed - at once, or by the next walk to end if one is under way.
+// The files stay (a dropped tenant's are gone already).
+//
+// The tenant's store is the caller's to free, after this: no thread of this file touches it any more.
+// NULL: nothing to do.
+//
+extern void corDbPersistRelease(CorDbPersist* pP);
 
 #endif  // CORDB_CORDBPERSIST_H_

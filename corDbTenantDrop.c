@@ -19,7 +19,7 @@
 #include "db/Tenant.h"                                   // Tenant
 #include "corDB/corDbHistoryWrite.h"                     // corDbHistoryDrop
 #include "corDB/corDbPersist.h"                          // corDbPersistDrop
-#include "corDB/corDbStore.h"                            // CorDbStore
+#include "corDB/corDbStore.h"                            // CorDbStore, corDbStoreRetire
 #include "corDB/corDbTenantDrop.h"                       // Own interface
 
 
@@ -54,7 +54,9 @@ static void containerEmpty(CorNode* containerP)
 // corDbTenantDrop -
 //
 // The store struct is not freed: a request that took it before the drop may still be waiting for its lock,
-// and finds it empty. The tenant forgets it, so the next use builds a new one (corDbStoreOf).
+// and finds it empty. The tenant forgets it, so the next use builds a new one (corDbStoreOf), and the store
+// is RETIRED - kept, with its log's node, until the broker releases the tenant (corDbTenantRelease), when
+// nothing can reach either any more.
 //
 int corDbTenantDrop(Tenant* tenantP)
 {
@@ -96,6 +98,9 @@ int corDbTenantDrop(Tenant* tenantP)
 
   corDbPersistDrop(persistP);                          // its files and its directory
   __atomic_store_n(&tenantP->pluginData, NULL, __ATOMIC_RELEASE);
+
+  storeP->droppedPersistP = persistP;                  // the node stays in the flusher's list until the release
+  corDbStoreRetire(tenantP, storeP);
 
   COR_T(0, "corDB: tenant '%s' dropped", tenantP->name);
   return DB_OK;
