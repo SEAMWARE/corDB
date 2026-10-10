@@ -15,12 +15,13 @@
 #include "corTree/corTreeBuilder.h"                  // corTreeObject, corTreeArray, corTreeChildAdd
 #include "corTree/corTreeFree.h"                     // corTreeFree
 #include "corTree/corTreeLookup.h"                   // corTreeLookup
+#include "corHash/corHash.h"                         // corHashRelease
 
 #include "db/Tenant.h"                               // Tenant
 
-#include "corDB/corDbHistory.h"                      // CorDbHistory, corDbHistoryOn
+#include "corDB/corDbHistory.h"                      // CorDbHistory, corDbHistoryOn, corDbHistoryFree
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryDrain
-#include "corDB/corDbPersist.h"                      // corDbPersistOpen, corDbPersistSyncWait
+#include "corDB/corDbPersist.h"                      // corDbPersistOpen, corDbPersistSyncWait, corDbPersistRelease
 #include "corDB/corDbGlobals.h"                       // corDbLockWriters
 #include "corDB/corDbStore.h"         // Own interface
 
@@ -96,6 +97,9 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->historyP   = corDbHistoryOn ? (struct CorDbHistory*) calloc(1, sizeof(CorDbHistory)) : NULL;
   storeP->histQHead  = NULL;
   storeP->histQTail  = NULL;
+  storeP->retiredOwnerP   = NULL;
+  storeP->retiredNext     = NULL;
+  storeP->droppedPersistP = NULL;
   pthread_mutex_init(&storeP->histQMutex, NULL);
   pthread_mutex_init(&storeP->histMutex, NULL);
   {
@@ -119,6 +123,123 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   pthread_mutex_unlock(&createMutex);
 
   return storeP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// The retired stores - dropped, not yet released (CorDbStore.retiredOwnerP). A list, not a field of the
+// tenant: a tenant dropped and used again builds a new store, and may be dropped again before it is
+// released - each drop retires one.
+//
+static pthread_mutex_t retiredMutex = PTHREAD_MUTEX_INITIALIZER;
+static CorDbStore*     retiredList  = NULL;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreFree -
+//
+void corDbStoreFree(CorDbStore* storeP)
+{
+  if (storeP == NULL)
+    return;
+
+  if (storeP->idToPrevEntity != NULL)
+    corHashRelease(storeP->idToPrevEntity);
+
+  if (storeP->idxOld != NULL)
+    corHashRelease(storeP->idxOld);
+
+  corTreeFree(storeP->tree);
+
+  if (storeP->historyP != NULL)
+  {
+    corDbHistoryFree(storeP->historyP);
+    free(storeP->historyP);
+  }
+
+  pthread_mutex_destroy(&storeP->histQMutex);
+  pthread_mutex_destroy(&storeP->histMutex);
+  pthread_rwlock_destroy(&storeP->lock);
+  free(storeP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreRetire -
+//
+void corDbStoreRetire(Tenant* tenantP, CorDbStore* storeP)
+{
+  pthread_mutex_lock(&retiredMutex);
+  storeP->retiredOwnerP = tenantP;
+  storeP->retiredNext   = retiredList;
+  retiredList           = storeP;
+  pthread_mutex_unlock(&retiredMutex);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreRetiredRelease -
+//
+void corDbStoreRetiredRelease(Tenant* tenantP)
+{
+  CorDbStore*  mineP = NULL;
+  CorDbStore** prevPP;
+
+  pthread_mutex_lock(&retiredMutex);
+  prevPP = &retiredList;
+  while (*prevPP != NULL)
+  {
+    CorDbStore* storeP = *prevPP;
+
+    if (storeP->retiredOwnerP == tenantP)
+    {
+      *prevPP             = storeP->retiredNext;
+      storeP->retiredNext = mineP;
+      mineP               = storeP;
+    }
+    else
+      prevPP = &storeP->retiredNext;
+  }
+  pthread_mutex_unlock(&retiredMutex);
+
+  while (mineP != NULL)                              // freed outside the mutex: a log node's release may wait for a snapshot's slice
+  {
+    CorDbStore* nextP = mineP->retiredNext;
+
+    corDbPersistRelease(mineP->droppedPersistP);
+    corDbStoreFree(mineP);
+    mineP = nextP;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreRetiredFreeAll -
+//
+void corDbStoreRetiredFreeAll(void)
+{
+  pthread_mutex_lock(&retiredMutex);
+  CorDbStore* storeP = retiredList;
+  retiredList = NULL;
+  pthread_mutex_unlock(&retiredMutex);
+
+  while (storeP != NULL)
+  {
+    CorDbStore* nextP = storeP->retiredNext;
+
+    corDbStoreFree(storeP);                          // its log node went with corDbPersistClose
+    storeP = nextP;
+  }
 }
 
 

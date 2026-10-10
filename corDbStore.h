@@ -96,6 +96,18 @@ typedef struct CorDbStore
   pthread_mutex_t       histMutex;
   struct CorDbHistItem* histQHead;
   struct CorDbHistItem* histQTail;
+
+  //
+  // A DROPPED store (corDbTenantDrop): emptied, its log dropped, and forgotten by its tenant - but not
+  // freed. A request that took it before the drop may still hold its lock or wait for it, and the drop
+  // cannot know. So it goes on the retired list (corDbStoreRetire), with its log's node (droppedPersistP,
+  // the flusher's list still links it), and is freed when the broker RELEASES the tenant
+  // (corDbTenantRelease) - which the broker does only once nothing can reach the tenant any more: for a
+  // Snapshot's tenant, at the snapshot's last unpin. Under retiredMutex (corDbStore.c).
+  //
+  Tenant*               retiredOwnerP;
+  struct CorDbStore*    retiredNext;
+  struct CorDbPersist*  droppedPersistP;
 } CorDbStore;
 
 
@@ -179,5 +191,41 @@ extern CorNode* corDbRegistrations(Tenant* tenantP);
 // The caller holds the store's lock - a write lock to create. NULL: no such collection yet.
 //
 extern CorNode* corDbStoreDocs(CorDbStore* storeP, const char* collection, bool create);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreFree - a store's memory: its tree, its index, its history, its locks, the struct
+//
+// Nobody may hold it, wait for its lock or reach it any more - not its log either: the caller has closed
+// or dropped that (corDbPersistRelease / corDbPersistDrop) and released its node.
+//
+extern void corDbStoreFree(CorDbStore* storeP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreRetire - a dropped store put aside until its tenant is released (see retiredOwnerP above)
+//
+extern void corDbStoreRetire(Tenant* tenantP, CorDbStore* storeP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreRetiredRelease - the tenant's retired stores freed, their log nodes with them
+//
+extern void corDbStoreRetiredRelease(Tenant* tenantP);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreRetiredFreeAll - at a stop, after corDbPersistClose (which freed every log node): what is
+// still retired - a tenant dropped and never released - freed
+//
+extern void corDbStoreRetiredFreeAll(void);
 
 #endif  // CORDB_CORDBSTORE_H_

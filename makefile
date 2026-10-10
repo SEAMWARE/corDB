@@ -43,7 +43,7 @@ COR_FEATURE_SUBSCRIPTIONS ?= 1
 COR_FEATURE_REGISTRATIONS ?= 1
 
 INCLUDE       = -I$(COR_LIBS) -I$(CORAINE)/src/lib -I$(CORAINE)/src/plugins
-DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS)
+DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_DB_TENANT_RELEASE=$(COR_DB_TENANT_RELEASE)
 # The current-state plugin's version; troe/corDbRegister.c defines its own
 VERSION_DEF   = -DPLUGIN_VERSION=\"0.2.0\"
 CFLAGS        = -Wall -Werror -Wundef -fPIC $(INCLUDE) $(DEFINES) -MMD -MP $(EXTRA_CFLAGS)
@@ -61,7 +61,7 @@ endif
 
 LIBS          = -lgeos_c -lm
 
-SOURCES       = corDbGlobals.c corDbIndex.c corDbStore.c corDbLog.c corDbPersist.c corDbReplay.c corDbHistory.c corDbHistoryWrite.c corDbTroe.c corDbTroeWrite.c corDbRegister.c corDbInit.c corDbClose.c corDbSnapshot.c corDbTenantDrop.c corDbContext.c corDbSubscriptionStatsFlush.c \
+SOURCES       = corDbGlobals.c corDbIndex.c corDbStore.c corDbLog.c corDbPersist.c corDbReplay.c corDbHistory.c corDbHistoryWrite.c corDbTroe.c corDbTroeWrite.c corDbRegister.c corDbInit.c corDbClose.c corDbSnapshot.c corDbTenantDrop.c corDbTenantRelease.c corDbContext.c corDbSubscriptionStatsFlush.c \
                 corDbEntityCreate.c corDbEntityBulkCreate.c corDbEntityBulkUpdate.c corDbEntityBulkMerge.c \
                 corDbEntityBulkDelete.c corDbEntityRetrieve.c corDbEntityQuery.c corDbEntityDelete.c \
                 corDbEntityMerge.c corDbEntityReplace.c corDbEntityAttrsSet.c corDbTypeList.c corDbAttrList.c \
@@ -81,6 +81,14 @@ endif
 # The geo matcher is the broker's, shared with its mongoc plugin: compiled from the coraine checkout
 #
 GEOMATCH      = $(CORAINE)/src/plugins/shared/geoMatch.c
+
+#
+# DbDriver.tenantRelease - the broker's call to free what a plugin hung on a Tenant, right before the Tenant
+# is freed. corDB registers corDbTenantRelease when the DbDriver.h beside it has the field
+# (COR_DB_TENANT_RELEASE=1); a coraine checkout from before it builds the plugin without - as before,
+# a released tenant's store is then not freed.
+#
+COR_DB_TENANT_RELEASE = $(if $(shell grep -s -l 'DbTenantReleaseFunc' $(CORAINE)/src/lib/db/DbDriver.h),1,0)
 
 #
 # The DB plugin interface stamp (coraine's doc/plugin-architecture.md, "The DB plugin interface stamp"):

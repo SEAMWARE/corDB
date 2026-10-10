@@ -19,6 +19,7 @@
 #include "corDB/corDbSubscriptionStatsFlush.h"       // corDbSubscriptionStatsFlush
 #include "corDB/corDbSnapshot.h"                     // corDbSnapshotCreate, ...Query, ...Update, ...Delete
 #include "corDB/corDbTenantDrop.h"                   // corDbTenantDrop
+#include "corDB/corDbTenantRelease.h"                // corDbTenantRelease
 #include "corDB/corDbGlobals.h"        // corDbArgV
 #include "corDB/corDbInit.h"           // corDbInit
 #include "corDB/corDbClose.h"          // corDbClose
@@ -159,6 +160,9 @@ void dbRegister(DbDriver* driverP)
   driverP->snapshotUpdate  = corDbSnapshotUpdate;
   driverP->snapshotDelete  = corDbSnapshotDelete;
   driverP->tenantDrop      = corDbTenantDrop;
+#if COR_DB_TENANT_RELEASE
+  driverP->tenantRelease   = corDbTenantRelease;
+#endif
   driverP->docCreate       = corDbDocCreate;
   driverP->docRetrieve     = corDbDocRetrieve;
   driverP->docQuery        = corDbDocQuery;

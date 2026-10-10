@@ -74,11 +74,16 @@ typedef enum SyncMode
 
 // -----------------------------------------------------------------------------
 //
-// The flusher's state. 'flushMutex' guards the list head, 'kicked' and 'stopping'; the list only
-// grows (at its head) until corDbPersistClose, so the flusher walks it without the mutex.
+// The flusher's state. 'flushMutex' guards the list head, 'kicked' and 'stopping', 'walkers' and
+// 'reapList'. The flusher and the snapshotter walk the list WITHOUT the mutex: a node is added at the
+// head only, and a node taken out (corDbPersistRelease) goes to 'reapList', freed when no walk is under
+// way - a walk that took the head before the node was taken out may be standing on it, and goes on from
+// its 'next', which is left as it was. A walk that starts later cannot reach it.
 //
 static SyncMode         syncMode     = SyncInterval;
 static CorDbPersist*    persistList  = NULL;
+static int              walkers      = 0;              // walks of persistList under way
+static CorDbPersist*    reapList     = NULL;           // out of persistList, freed when 'walkers' is 0
 static pthread_mutex_t  flushMutex   = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t   kickCond;                     // the flusher waits on it: the interval, or a kick
 static pthread_cond_t   syncedCond   = PTHREAD_COND_INITIALIZER;   // --dbSync request waits on it
@@ -112,6 +117,76 @@ static uint64_t nowNs(void)
 
   clock_gettime(CLOCK_REALTIME, &ts);
   return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// walkBegin / walkNext / walkEnd - a walk of persistList without flushMutex (see 'reapList' above)
+//
+// walkBegin and walkEnd are called holding flushMutex. walkEnd hands back the nodes that can be freed
+// now - the caller frees them (reapFree) after it has let the mutex go.
+//
+static CorDbPersist* walkBegin(void)
+{
+  ++walkers;
+  return persistList;
+}
+
+static CorDbPersist* walkNext(CorDbPersist* pP)
+{
+  return (CorDbPersist*) __atomic_load_n(&pP->next, __ATOMIC_ACQUIRE);
+}
+
+static CorDbPersist* walkEnd(void)
+{
+  CorDbPersist* deadP = NULL;
+
+  if ((--walkers == 0) && (reapList != NULL))
+  {
+    deadP    = reapList;
+    reapList = NULL;
+  }
+
+  return deadP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// persistFree - a node's memory; its segments are closed already
+//
+static void persistFree(CorDbPersist* pP)
+{
+  free(pP->histBuf.buf);
+  free(pP->buf.buf);
+  pthread_mutex_destroy(&pP->mutex);
+  pthread_mutex_destroy(&pP->ioMutex);
+  free(pP);
+}
+
+static void reapFree(CorDbPersist* deadP)
+{
+  while (deadP != NULL)
+  {
+    CorDbPersist* nextP = deadP->reapNext;
+
+    persistFree(deadP);
+    deadP = nextP;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// passedBy - dropped or released: no flush, no snapshot
+//
+static bool passedBy(CorDbPersist* pP)
+{
+  return (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == true) || (__atomic_load_n(&pP->closed, __ATOMIC_ACQUIRE) == true);
 }
 
 
@@ -777,7 +852,7 @@ static void flushLocked(CorDbPersist* pP)
 //
 static void flushOne(CorDbPersist* pP)
 {
-  if (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == true)
+  if (passedBy(pP))
     return;
 
   pthread_mutex_lock(&pP->ioMutex);
@@ -1021,9 +1096,6 @@ static void snapshot(CorDbPersist* pP)
   uint64_t        seq    = 0;
   long            maxUs  = 0;                          // the longest any writer could have waited on it
 
-  if (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == true)
-    return;
-
   //
   // The start. ioMutex first - the flusher waits - then, under the tenant's write lock, only what
   // touches no disk but an open: the sequence, the cursor, and the log switched to a new segment, the
@@ -1033,7 +1105,19 @@ static void snapshot(CorDbPersist* pP)
   // Lock order: ioMutex, then the tenant's lock, then 'mutex' - as everywhere: a writer takes the
   // tenant's lock and 'mutex', the flusher ioMutex and 'mutex'.
   //
+  // The snapshot is CLAIMED under ioMutex, before the store is touched: a drop or a release marks the
+  // node under ioMutex too and then waits for 'snapshotting' to go false - so either this sees the mark
+  // and leaves the store alone, or the drop/release waits until this is done with it.
+  //
   pthread_mutex_lock(&pP->ioMutex);
+
+  if (passedBy(pP))
+  {
+    pthread_mutex_unlock(&pP->ioMutex);
+    return;
+  }
+
+  pP->snapshotting = true;
 
   clock_gettime(CLOCK_MONOTONIC, &t0);
   pthread_rwlock_wrlock(&storeP->lock);
@@ -1209,18 +1293,19 @@ static void snapshot(CorDbPersist* pP)
 static void flushAll(void)
 {
   pthread_mutex_lock(&flushMutex);
-  CorDbPersist* headP = persistList;
+  CorDbPersist* headP = walkBegin();
   pthread_mutex_unlock(&flushMutex);
 
-  for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
+  for (CorDbPersist* pP = headP; pP != NULL; pP = walkNext(pP))
     flushOne(pP);
 
   bool due = false;
 
-  for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
-    due = due || pP->snapshotDue;
+  for (CorDbPersist* pP = headP; pP != NULL; pP = walkNext(pP))
+    due = due || (pP->snapshotDue && (passedBy(pP) == false));
 
   pthread_mutex_lock(&flushMutex);
+  CorDbPersist* deadP = walkEnd();
   pthread_cond_broadcast(&syncedCond);
   if (due || compressDue)
   {
@@ -1228,6 +1313,8 @@ static void flushAll(void)
     pthread_cond_signal(&snapCond);                    // the snapshots are the snapshotter's - a sync never waits behind one
   }
   pthread_mutex_unlock(&flushMutex);
+
+  reapFree(deadP);
 }
 
 
@@ -1254,18 +1341,21 @@ static void* snapshotter(void* unused)
     if (stopping)
       break;
 
-    CorDbPersist* headP = persistList;
+    CorDbPersist* headP = walkBegin();
     pthread_mutex_unlock(&flushMutex);
 
-    for (CorDbPersist* pP = headP; pP != NULL; pP = pP->next)
+    for (CorDbPersist* pP = headP; pP != NULL; pP = walkNext(pP))
     {
-      if ((pP->snapshotDue) && (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == false))
-        snapshot(pP);
+      if ((pP->snapshotDue) && (passedBy(pP) == false))
+        snapshot(pP);                                  // claims it, or passes it by - see snapshot()
     }
 
     pthread_mutex_lock(&flushMutex);
     compressDue = false;
+    CorDbPersist* deadP = walkEnd();
     pthread_mutex_unlock(&flushMutex);
+
+    reapFree(deadP);
 
     compressDrain();                                 // after the snapshots: what they dropped is not compressed for nothing
 
@@ -2230,7 +2320,7 @@ CorDbPersist* corDbPersistOpen(Tenant* tenantP, CorDbStore* storeP)
   }
 
   pthread_mutex_lock(&flushMutex);
-  pP->next    = persistList;
+  __atomic_store_n(&pP->next, persistList, __ATOMIC_RELEASE);
   persistList = pP;
   pthread_mutex_unlock(&flushMutex);
 
@@ -2761,7 +2851,7 @@ void corDbPersistClose(void)
 
   for (CorDbPersist* pP = persistList; pP != NULL; pP = pP->next)
   {
-    if ((pP->sinceSnapBytes != 0) && (pP->dropped == false))   // written since the last snapshot
+    if ((pP->sinceSnapBytes != 0) && (passedBy(pP) == false))   // written since the last snapshot
       snapshot(pP);
   }
 
@@ -2776,18 +2866,26 @@ void corDbPersistClose(void)
       segFinish(&pP->log, true);                       // cut to its records, synced whatever --dbSync says
       segFinish(&pP->hist, true);
     }
-    free(pP->histBuf.buf);
 
     if (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true)
       COR_E("corDB: the log of '%s' had a write error - what it lost is in the errors above", pP->tenant);
 
-    free(pP->buf.buf);
-    pthread_mutex_destroy(&pP->mutex);
-    pthread_mutex_destroy(&pP->ioMutex);
-    free(pP);
+    //
+    // Its store forgets it: a tenant released after the stop (a Snapshot's, by a capture that ends late)
+    // finds no log to release
+    //
+    if (pP->dropped)
+      pP->storeP->droppedPersistP = NULL;
+    else
+      pP->storeP->persistP = NULL;
+
+    persistFree(pP);
   }
 
   persistList = NULL;
+
+  reapFree(reapList);                                  // released, and no walk ended since: none runs now
+  reapList = NULL;
   COR_I("corDB: logs written and synced");
 }
 
@@ -2802,7 +2900,9 @@ void corDbPersistDrop(CorDbPersist* pP)
   if (pP == NULL)
     return;
 
+  pthread_mutex_lock(&pP->ioMutex);                    // see snapshot(): the claim and the mark under one mutex
   __atomic_store_n(&pP->dropped, true, __ATOMIC_RELEASE);
+  pthread_mutex_unlock(&pP->ioMutex);
 
   //
   // A snapshot in progress ends at its next slice - the store was emptied and its cursor cleared under
@@ -2858,4 +2958,89 @@ void corDbPersistDrop(CorDbPersist* pP)
     COR_W("corDB: dropping tenant '%s': its directory '%s' not deleted: %s", pP->tenant, pP->dir, strerror(errno));
   else
     COR_I("corDB: tenant '%s' dropped - its directory '%s' deleted", pP->tenant, pP->dir);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistRelease -
+//
+void corDbPersistRelease(CorDbPersist* pP)
+{
+  if (pP == NULL)
+    return;
+
+  //
+  // Marked under ioMutex, then a snapshot that claimed the node before the mark is waited for - see
+  // snapshot(). After that no thread of this file touches the tenant's store.
+  //
+  pthread_mutex_lock(&pP->ioMutex);
+  __atomic_store_n(&pP->closed, true, __ATOMIC_RELEASE);
+  pthread_mutex_unlock(&pP->ioMutex);
+
+  for (;;)
+  {
+    pthread_mutex_lock(&pP->ioMutex);
+    bool snapshotting = pP->snapshotting;
+    pthread_mutex_unlock(&pP->ioMutex);
+
+    if (snapshotting == false)
+      break;
+
+    struct timespec pause = { 0, 1000 * 1000 };
+    nanosleep(&pause, NULL);
+  }
+
+  //
+  // A tenant that was not dropped keeps its files: what is buffered is written and synced, the segments
+  // cut and closed - as corDbPersistClose does for every tenant at a stop
+  //
+  if (__atomic_load_n(&pP->dropped, __ATOMIC_ACQUIRE) == false)
+  {
+    pthread_mutex_lock(&pP->ioMutex);
+    flushLocked(pP);
+
+    pthread_mutex_lock(&pP->mutex);
+    segFinish(&pP->log,  true);
+    segFinish(&pP->hist, true);
+    for (int ix = 0; ix < pP->retiredN; ix++)
+      segFinish(&pP->retired[ix], true);
+    pP->retiredN = 0;
+    pthread_mutex_unlock(&pP->mutex);
+    pthread_mutex_unlock(&pP->ioMutex);
+
+    if (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true)
+      COR_E("corDB: the log of '%s' had a write error - what it lost is in the errors above", pP->tenant);
+  }
+
+  COR_T(0, "corDB: the log of '%s' released", pP->tenant);
+
+  //
+  // Out of the list. Freed now if no walk is under way, else by the last walk to end (walkEnd)
+  //
+  CorDbPersist* deadP = NULL;
+
+  pthread_mutex_lock(&flushMutex);
+
+  CorDbPersist** prevPP = &persistList;
+
+  while ((*prevPP != NULL) && (*prevPP != pP))
+    prevPP = &(*prevPP)->next;
+
+  if (*prevPP == pP)
+    __atomic_store_n(prevPP, (CorDbPersist*) __atomic_load_n(&pP->next, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+
+  pP->reapNext = reapList;
+  reapList     = pP;
+
+  if (walkers == 0)
+  {
+    deadP    = reapList;
+    reapList = NULL;
+  }
+
+  pthread_mutex_unlock(&flushMutex);
+
+  reapFree(deadP);                                     // pP among them, perhaps - not to be touched below
 }
