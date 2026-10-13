@@ -114,6 +114,7 @@ void dbRegister(DbDriver* driverP)
   driverP->entityBulkChangesApply = corDbEntityBulkChangesApply;
   driverP->entityBulkDelete = corDbEntityBulkDelete;
   driverP->entityRetrieve  = corDbEntityRetrieve;
+  driverP->entityTypes     = corDbEntityTypes;
   driverP->entityQuery     = corDbEntityQuery;
   driverP->entityDelete    = corDbEntityDelete;
   driverP->entityChangesApply = corDbEntityChangesApply;

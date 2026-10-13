@@ -82,3 +82,37 @@ int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityP
 
   return r;
 }
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityTypes - the entity's "type" alone (DbDriver.entityTypes), cloned under the store's read lock:
+// no copy of its attributes. The entity's type is stored as it is given (only an attribute's lives in the
+// node - corDbSysTimes.c), so the clone is what corDbEntityRetrieve's tree has
+//
+int corDbEntityTypes(Tenant* tenantP, const char* entityId, CorNode** typePP)
+{
+  COR_DB_READ(tenantP);
+
+  CorNode* hitP = corDbIndexLookup(corDbStoreOf(tenantP), entityId);
+
+  if ((hitP == NULL) && (corDbStoreOf(tenantP)->idToPrevEntity == NULL))   // no index: the walk
+  {
+    for (CorNode* eP = corDbEntities(tenantP)->value.head; (eP != NULL) && (hitP == NULL); eP = eP->next)
+    {
+      CorNode* idP = corTreeLookup(eP, "id");
+
+      if ((idP != NULL) && (idP->type == CorString) && (strcmp(idP->value.s, entityId) == 0))
+        hitP = eP;
+    }
+  }
+
+  if (hitP == NULL)
+    return DB_NOT_FOUND;
+
+  CorNode* typeP = corTreeLookup(hitP, "type");
+
+  *typePP = (typeP != NULL) ? corTreeClone(corRest.kallocP, typeP) : NULL;
+  return DB_OK;
+}
