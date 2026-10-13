@@ -21,4 +21,12 @@
 //
 extern int corDbEntityRetrieve(Tenant* tenantP, const char* entityId, CorNode** entityPP);
 
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityTypes - the entity's "type" alone (DbDriver.entityTypes)
+//
+extern int corDbEntityTypes(Tenant* tenantP, const char* entityId, CorNode** typePP);
+
 #endif  // CORDB_CORDBENTITYRETRIEVE_H_
