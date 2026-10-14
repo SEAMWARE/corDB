@@ -53,9 +53,9 @@ int corDbInit(void)
   corDbGeoInit();
 
 #if COR_DB_RAM_ONLY
-  COR_I("ramDB: in-memory store ready, in RAM only - a restart starts empty (per-tenant CorNode trees, GEOS enabled)");
+  COR_I("ramDB: in-memory store ready, in RAM only - a restart starts empty (per-tenant CorNode trees, %s)", (COR_FEATURE_GEOQ == 1) ? "GEOS enabled" : "no geo-queries in this build");
 #else
-  COR_I("corDB: in-memory store ready (per-tenant CorNode trees, GEOS enabled)");
+  COR_I("corDB: in-memory store ready (per-tenant CorNode trees, %s)", (COR_FEATURE_GEOQ == 1) ? "GEOS enabled" : "no geo-queries in this build");
 #endif
   return 0;
 }
