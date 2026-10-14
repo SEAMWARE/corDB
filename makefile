@@ -42,8 +42,18 @@ HAVE_CORAINE  = $(wildcard $(CORAINE)/src/lib/db/DbDriver.h)
 COR_FEATURE_SUBSCRIPTIONS ?= 1
 COR_FEATURE_REGISTRATIONS ?= 1
 
+#
+# COR_WITH_GEOQ - 1 | 0, as the broker's makefile passes it: geo-queries. 0 compiles the broker's
+# shared/geoMatch.c without GEOS (every geo match false, every geometry valid - the broker refuses
+# geo-queries itself) and links without libgeos_c
+#
+COR_WITH_GEOQ ?= 1
+ifeq ($(filter $(COR_WITH_GEOQ),0 1),)
+$(error COR_WITH_GEOQ is 1 or 0, not '$(COR_WITH_GEOQ)')
+endif
+
 INCLUDE       = -I$(COR_LIBS) -I$(CORAINE)/src/lib -I$(CORAINE)/src/plugins
-DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_DB_TENANT_RELEASE=$(COR_DB_TENANT_RELEASE)
+DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_FEATURE_GEOQ=$(COR_WITH_GEOQ) -DCOR_DB_TENANT_RELEASE=$(COR_DB_TENANT_RELEASE)
 # The current-state plugin's version; troe/corDbRegister.c defines its own
 VERSION_DEF   = -DPLUGIN_VERSION=\"0.2.0\"
 CFLAGS        = -Wall -Werror -Wundef -fPIC $(INCLUDE) $(DEFINES) -MMD -MP $(EXTRA_CFLAGS)
@@ -59,7 +69,11 @@ else
 $(error BUILD must be debug, release or coverage, not '$(BUILD)')
 endif
 
+ifeq ($(COR_WITH_GEOQ),1)
 LIBS          = -lgeos_c -lm
+else
+LIBS          = -lm
+endif
 
 SOURCES       = corDbGlobals.c corDbIndex.c corDbStore.c corDbLog.c corDbPersist.c corDbReplay.c corDbHistory.c corDbHistoryWrite.c corDbTroe.c corDbTroeWrite.c corDbRegister.c corDbInit.c corDbClose.c corDbSnapshot.c corDbTenantDrop.c corDbTenantRelease.c corDbContext.c corDbSubscriptionStatsFlush.c \
                 corDbEntityCreate.c corDbEntityBulkCreate.c corDbEntityBulkUpdate.c corDbEntityBulkMerge.c \
