@@ -187,8 +187,15 @@ $(RAM_OBJDIR)/%.o: %.c $(OBJDIR)/.flags
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(VERSION_DEF) -DCOR_DB_RAM_ONLY=1 -c $< -o $@
 
+#
+# geoMatch.o and dbPluginAbi.o are compiled from the coraine checkout ($(CORAINE)) - which coraine's makefile
+# names, and which may be a worktree that is gone by the next build. -MP gives each header of the .d file a
+# rule of its own; the source gets one here, so a .d naming a checkout that is no more is no error: the
+# object is rebuilt anyway, CORAINE being in the flags
+#
 $(OBJDIR)/geoMatch.o: $(GEOMATCH) $(OBJDIR)/.flags
 	$(CC) $(CFLAGS) -c $< -o $@
+	@echo '$<:' >> $(@:.o=.d)
 
 $(OBJDIR)/dbAbiStamp.h: FORCE
 	@mkdir -p $(OBJDIR)
@@ -196,6 +203,7 @@ $(OBJDIR)/dbAbiStamp.h: FORCE
 
 $(OBJDIR)/dbPluginAbi.o: $(ABI_PLUGIN) $(OBJDIR)/dbAbiStamp.h $(OBJDIR)/.flags
 	$(CC) $(CFLAGS) -I$(OBJDIR) -c $< -o $@
+	@echo '$<:' >> $(@:.o=.d)
 
 install: all
 	mkdir -p $(PLUGIN_DIR)/db/currentState $(PLUGIN_DIR)/troe/temporal
