@@ -258,16 +258,15 @@ static bool entityMatch(CorNode* eP, DbQueryFilter* filterP, DbQueryFilter* dist
 
 // -----------------------------------------------------------------------------
 //
-// entityQuery - under the store's read lock: the page's entities copied as corTreeClone copies them, and
-// for each, what corDbEntityCopyFinish needs and its geoDistance (-1: none) - both put in after the lock
+// entityQueryOver - the query over a list of entities: the store's (storeP, under its read lock), or the
+// caller's (storeP NULL - corDbEntityQueryList: no seek, there is no index). The page's entities copied
+// as corTreeClone copies them, and for each, what corDbEntityCopyFinish needs and its geoDistance (-1:
+// none) - both put in after the lock
 //
-static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP, int64_t** createdAtVP, double** distVP)
+static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter* filterP, CorNode** arrayPP, int64_t** createdAtVP, double** distVP)
 {
   bool qSubTimes = (filterP != NULL) && qSubTimesUsed(filterP->qExpr);   // once per query
 
-  COR_DB_READ(tenantP);
-
-  CorNode* entities = corDbEntities(tenantP);
   CorNode* arrayP  = corTreeArray(corRest.kallocP, NULL);
   int     limit    = (filterP != NULL) ? filterP->limit  : 0;
   bool    unpaged  = (filterP != NULL) ? filterP->unpaged : false;
@@ -344,8 +343,7 @@ static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayP
   // createdAt differs): the walk from the start of the list to where its createdAt is, O(position) as
   // an offset is - entities of one batch share a createdAt, and among those the id decides.
   //
-  CorDbStore* storeP  = corDbStoreOf(tenantP);
-  bool        seek    = (filterP != NULL) && (filterP->seekId != NULL);
+  bool        seek    = (storeP != NULL) && (filterP != NULL) && (filterP->seekId != NULL);
   bool        back    = seek && filterP->seekBefore;
   CorNode*    startP  = entities->value.head;
 
@@ -486,20 +484,23 @@ static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayP
 
 // -----------------------------------------------------------------------------
 //
-// corDbEntityQuery - the copies under the store's lock, their inherited times (and geoDistance, after them)
-// put in after it
+// entityQuery - the store's entities, under its read lock
 //
-int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
+static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP, int64_t** createdAtVP, double** distVP)
 {
-#ifdef DB_QUERY_FILTER_SEEK
-  if (filterP != NULL)
-    filterP->seekable = true;          // a page from a position (DbQueryFilter.seekId) - see entityQuery
-#endif
+  COR_DB_READ(tenantP);
 
-  int64_t* createdAtV = NULL;
-  double*  distV      = NULL;
-  int      r          = entityQuery(tenantP, filterP, arrayPP, &createdAtV, &distV);
+  return entityQueryOver(corDbStoreOf(tenantP), corDbEntities(tenantP), filterP, arrayPP, createdAtVP, distVP);
+}
 
+
+
+// -----------------------------------------------------------------------------
+//
+// finish - the copies' inherited times and geoDistance, put in after the lock
+//
+static int finish(int r, DbQueryFilter* filterP, CorNode** arrayPP, int64_t* createdAtV, double* distV)
+{
   if ((r != DB_OK) || (createdAtV == NULL))
     return r;
 
@@ -518,4 +519,41 @@ int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
   }
 
   return r;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityQueryList - the store's query over the caller's entities, in the store's model (the entities
+// at a point in time - corDbTimepoint.c): the same matching, ordering, paging and count
+//
+int corDbEntityQueryList(CorNode* listP, DbQueryFilter* filterP, CorNode** arrayPP)
+{
+  int64_t* createdAtV = NULL;
+  double*  distV      = NULL;
+  int      r          = entityQueryOver(NULL, listP, filterP, arrayPP, &createdAtV, &distV);
+
+  return finish(r, filterP, arrayPP, createdAtV, distV);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityQuery - the copies under the store's lock, their inherited times (and geoDistance, after them)
+// put in after it
+//
+int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP)
+{
+#ifdef DB_QUERY_FILTER_SEEK
+  if (filterP != NULL)
+    filterP->seekable = true;          // a page from a position (DbQueryFilter.seekId) - see entityQuery
+#endif
+
+  int64_t* createdAtV = NULL;
+  double*  distV      = NULL;
+  int      r          = entityQuery(tenantP, filterP, arrayPP, &createdAtV, &distV);
+
+  return finish(r, filterP, arrayPP, createdAtV, distV);
 }

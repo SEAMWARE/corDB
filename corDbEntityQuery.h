@@ -22,4 +22,13 @@
 //
 extern int corDbEntityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayPP);
 
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbEntityQueryList - the store's query over the caller's entities (in the store's model, in the
+// request's arena): the same matching, ordering, paging and count, no lock taken
+//
+extern int corDbEntityQueryList(CorNode* listP, DbQueryFilter* filterP, CorNode** arrayPP);
+
 #endif  // CORDB_CORDBENTITYQUERY_H_

@@ -663,6 +663,29 @@ CorDbInstance* corDbHistoryInstanceAdd(CorDbHistory* hP, CorDbHistEntity* eP, co
 //
 void corDbHistoryEntityEventApply(CorDbHistEntity* eP, const char* entityOp, uint64_t atNs)
 {
+  //
+  // The event kept in the entity's lifecycle, for "the entity at T". Out of memory: not kept - an
+  // entity with an incomplete list answers from createdAtNs/deletedAtNs, as one with none does
+  //
+  if (eP->lifeN == eP->lifeSize)
+  {
+    int            size  = (eP->lifeSize == 0) ? 2 : eP->lifeSize * 2;
+    CorDbHistLife* lifeV = (CorDbHistLife*) realloc(eP->lifeV, size * sizeof(CorDbHistLife));
+
+    if (lifeV != NULL)
+    {
+      eP->lifeV    = lifeV;
+      eP->lifeSize = size;
+    }
+  }
+
+  if (eP->lifeN < eP->lifeSize)
+  {
+    eP->lifeV[eP->lifeN].atNs = atNs;
+    eP->lifeV[eP->lifeN].op   = (entityOp[0] == 'd') ? 'd' : ((entityOp[0] == 'r') ? 'r' : 'c');
+    ++eP->lifeN;
+  }
+
   if (strcmp(entityOp, "deleted") == 0)
     eP->deletedAtNs = atNs;
   else
@@ -833,6 +856,7 @@ void corDbHistoryEntityRemove(CorDbHistory* hP, CorDbHistEntity* eP)
     attrFree(aP);
   }
 
+  free(eP->lifeV);
   free(eP->typeV);
   free(eP->id);
   free(eP);
@@ -1021,6 +1045,7 @@ void corDbHistoryFree(CorDbHistory* hP)
       free(aP);                                      // its name is interned: freed below
     }
 
+    free(eP->lifeV);
     free(eP->typeV);
     free(eP->id);
     free(eP);
