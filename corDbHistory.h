@@ -61,6 +61,17 @@ typedef struct CorDbHistAttr
   CorDbInstance          inlineV[2];                   // the first two instances: no array to allocate for most attributes
 } CorDbHistAttr;
 
+//
+// CorDbHistLife - one entity event, in the order applied: what the entity was at a time T (it existed,
+// and since when) is the last of them at or before T (corDbTimepoint.c). createdAtNs and deletedAtNs
+// below are only the latest - a delete and a create again overwrite them.
+//
+typedef struct CorDbHistLife
+{
+  uint64_t  atNs;
+  char      op;                                        // 'c' created, 'r' replaced, 'd' deleted
+} CorDbHistLife;
+
 typedef struct CorDbHistEntity
 {
   char*                    id;
@@ -70,6 +81,9 @@ typedef struct CorDbHistEntity
   int                      typeSize;
   uint64_t                 createdAtNs;
   uint64_t                 deletedAtNs;                // != 0: deleted from current state (its history stays)
+  CorDbHistLife*           lifeV;                      // every created / replaced / deleted, in order - malloc'd
+  int                      lifeN;
+  int                      lifeSize;
   CorDbHistAttr*           attrs;
   CorDbHistAttr*           lastAttr;
   struct CorDbHistEntity*  next;                       // creation order

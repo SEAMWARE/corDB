@@ -42,6 +42,7 @@
 #include "corDB/corDbHistoryWrite.h"                   // corDbHistoryDrain
 #include "corDB/corDbTroeWrite.h"                      // corDbTroeCreate, ...
 #include "corDB/corDbStore.h"                          // corDbStoreOf
+#include "corDB/corDbTimepoint.h"                      // corDbTimepointRetrieve, corDbTimepointQuery
 #include "shared/dbPluginAbi.h"                          // dbPluginAbiBrokerCheck
 
 
@@ -1218,5 +1219,9 @@ void troeRegister(TroeDriver* driverP)
   driverP->entityTemporalInstanceDelete = corDbTroeInstanceDelete;
 #ifdef TROE_DRIVER_HISTORY_IMPORT
   driverP->historyImport                = corDbTroeHistoryImport;   // a broker header without it: no import
+#endif
+#ifdef TROE_DRIVER_ENTITY_AT
+  driverP->entityAtRetrieve             = corDbTimepointRetrieve;   // the entity at a point in time (corDbTimepoint.c)
+  driverP->entityAtQuery                = corDbTimepointQuery;
 #endif
 }
