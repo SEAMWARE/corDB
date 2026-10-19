@@ -74,6 +74,7 @@ typedef struct CorDbTypeIndex
   RefBlock*       blocks;
   int             blockUsed;                         // refs handed out of the first block
   CorDbTypeRef*   freeRefs;                          // freed refs, chained through 'next'
+  CorDbTypeList*  lastListP;                         // the list a link found last (listGet)
 } CorDbTypeIndex;
 
 
@@ -281,9 +282,24 @@ static CorDbTypeRef* mapRemove(CorDbTypeIndex* ixP, CorNode* entityP)
 //
 // The lists
 //
+
+//
+// listGet - the type's list; create: made if there is none (a link, the write lock held)
+//
+// A link checks the list it found last before the table: creates come in runs of one type, and the table
+// costs a hash over the whole expanded type name - most of a link's time, which is spent under the write
+// lock. Only a link reads and sets lastListP: a query's lookup (create false) runs under the read lock,
+// beside other queries.
+//
 static CorDbTypeList* listGet(CorDbTypeIndex* ixP, const char* type, bool create)
 {
+  if ((create == true) && (ixP->lastListP != NULL) && (strcmp(ixP->lastListP->type, type) == 0))
+    return ixP->lastListP;
+
   CorDbTypeList* listP = (CorDbTypeList*) corHashItemLookup(ixP->lists, type);
+
+  if (create == true)
+    ixP->lastListP = listP;
 
   if ((listP != NULL) || (create == false))
     return listP;
@@ -302,6 +318,7 @@ static CorDbTypeList* listGet(CorDbTypeIndex* ixP, const char* type, bool create
     return NULL;
   }
 
+  ixP->lastListP = listP;
   return listP;
 }
 
@@ -350,6 +367,9 @@ static void listRemove(CorDbTypeIndex* ixP, CorDbTypeRef* refP)
 
   if (listP->count == 0)
   {
+    if (ixP->lastListP == listP)
+      ixP->lastListP = NULL;
+
     corHashItemRemove(ixP->lists, listP->type);
     free(listP->type);
     free(listP);
