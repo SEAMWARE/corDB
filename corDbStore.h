@@ -72,6 +72,16 @@ typedef struct CorDbStore
   //
   struct CorDbPersist*  persistP;
 
+#if COR_FEATURE_TYPE_INDEX
+  //
+  // The type index (corDbTypeIndex.h): every type's entities, in the store's order. NULL until the first
+  // query that can use it builds it - under the READ lock, so the build is serialised by typeIndexMutex and
+  // the pointer published once the index is whole. Changed by writers, under the write lock.
+  //
+  struct CorDbTypeIndex*  typeIndexP;
+  pthread_mutex_t         typeIndexMutex;
+#endif
+
   //
   // A snapshot in progress (corDbPersist.c): the next entity it encodes. A snapshot reads the store
   // in slices, under the READ lock, and writers run between them - so a writer that takes this entity

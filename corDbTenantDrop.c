@@ -20,6 +20,9 @@
 #include "corDB/corDbHistoryWrite.h"                     // corDbHistoryDrop
 #include "corDB/corDbPersist.h"                          // corDbPersistDrop
 #include "corDB/corDbStore.h"                            // CorDbStore, corDbStoreRetire
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                         // corDbTypeIndexFree
+#endif
 #include "corDB/corDbTenantDrop.h"                       // Own interface
 
 
@@ -88,6 +91,9 @@ int corDbTenantDrop(Tenant* tenantP)
 
   storeP->idToPrevEntity = NULL;
   storeP->idxOld         = NULL;
+#if COR_FEATURE_TYPE_INDEX
+  corDbTypeIndexFree(storeP);                        // its refs name the entities just emptied
+#endif
   storeP->idxSlots       = 0;
   storeP->idxCount       = 0;
   storeP->idxOldMoved    = 0;

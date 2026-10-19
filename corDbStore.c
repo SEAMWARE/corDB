@@ -23,6 +23,9 @@
 #include "corDB/corDbHistoryWrite.h"                 // corDbHistoryDrain
 #include "corDB/corDbPersist.h"                      // corDbPersistOpen, corDbPersistSyncWait, corDbPersistRelease
 #include "corDB/corDbGlobals.h"                       // corDbLockWriters
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexFree
+#endif
 #include "corDB/corDbStore.h"         // Own interface
 
 
@@ -102,6 +105,10 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->droppedPersistP = NULL;
   pthread_mutex_init(&storeP->histQMutex, NULL);
   pthread_mutex_init(&storeP->histMutex, NULL);
+#if COR_FEATURE_TYPE_INDEX
+  storeP->typeIndexP = NULL;                         // built by the first query that can use it
+  pthread_mutex_init(&storeP->typeIndexMutex, NULL);
+#endif
   {
     pthread_rwlockattr_t lockAttr;                     // --dbLockPrefer (corDbInit)
 
@@ -152,6 +159,11 @@ void corDbStoreFree(CorDbStore* storeP)
 
   if (storeP->idxOld != NULL)
     corHashRelease(storeP->idxOld);
+
+#if COR_FEATURE_TYPE_INDEX
+  corDbTypeIndexFree(storeP);
+  pthread_mutex_destroy(&storeP->typeIndexMutex);
+#endif
 
   corTreeFree(storeP->tree);
 

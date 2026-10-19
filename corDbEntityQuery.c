@@ -16,6 +16,7 @@
 #include "corTree/corTreeClone.h"                     // corTreeClone
 #include "corJson/corJsonRenderSize.h"                // corJsonFastRenderSize
 #include "corTree/corTreeLookup.h"                    // corTreeLookup
+#include "corLog/corLog.h"                            // COR_E
 #include "corRest/CorRestState.h"                       // corRest
 #include "corNgsild/LdQ.h"                              // LdQNode
 #include "corNgsild/LdVocab.h"                         // LD_VOCAB_SCOPE
@@ -28,6 +29,9 @@
 #include "corDB/corDbStore.h"          // corDbEntities, corDbStoreOf
 #include "corDB/corDbIndex.h"          // corDbIndexLookup, corDbIndexPrev, corDbEntityId
 #include "corDB/corDbGeoMatch.h"       // corDbGeoMatch
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexOf, corDbTypeIndexHead, corDbTypeIndexRef
+#endif
 #include "corDB/corDbEntityQuery.h"    // Own interface
 
 
@@ -258,6 +262,84 @@ static bool entityMatch(CorNode* eP, DbQueryFilter* filterP, DbQueryFilter* dist
 
 // -----------------------------------------------------------------------------
 //
+// candTake - a candidate of the walk: matched, it is kept; true: everything the request can use is in hand
+// (see `needed` in entityQueryOver)
+//
+static inline bool candTake(CorNode* eP, DbQueryFilter* filterP, DbQueryFilter* distFilterP, bool qSubTimes, GeoCand* cands, int* nCandP, int needed)
+{
+  double geoDistance = -1;
+
+  if (entityMatch(eP, filterP, distFilterP, qSubTimes, &geoDistance) == false)
+    return false;
+
+  cands[*nCandP].eP   = eP;
+  cands[*nCandP].dist = geoDistance;
+  *nCandP += 1;
+
+  return (needed != 0) && (*nCandP >= needed);
+}
+
+
+
+#if COR_FEATURE_TYPE_INDEX
+// -----------------------------------------------------------------------------
+//
+// indexType - the type whose list the query walks (corDbTypeIndex.h), or NULL: the store's list
+//
+// A type every matching entity has: the one type of a query by one type, or - an AND group, `(A;B)` - the
+// member with the shortest list. A query by several types in OR (`A,B`, `A|(B;C)`) walks the store. *countP:
+// the list's length (0 for a type no entity has - nothing matches).
+//
+static const char* indexType(CorDbStore* storeP, DbQueryFilter* filterP, struct CorDbTypeIndex** ixPP, int* countP)
+{
+  char** typeV = NULL;
+
+  if ((storeP == NULL) || (filterP == NULL))
+    return NULL;
+
+  if (filterP->typeExpr != NULL)
+  {
+    if (filterP->typeExpr->groupCount != 1)
+      return NULL;
+    typeV = filterP->typeExpr->groupV[0].typeV;
+  }
+  else if ((filterP->typeV != NULL) && (filterP->typeV[0] != NULL) && (filterP->typeV[1] == NULL))
+    typeV = filterP->typeV;
+
+  if ((typeV == NULL) || (typeV[0] == NULL))
+    return NULL;
+
+  struct CorDbTypeIndex* ixP = corDbTypeIndexOf(storeP);
+
+  if (ixP == NULL)
+    return NULL;
+
+  const char* bestType  = NULL;
+  int         bestCount = 0;
+
+  for (int i = 0; typeV[i] != NULL; i++)
+  {
+    int count = 0;
+
+    corDbTypeIndexHead(ixP, typeV[i], &count);
+
+    if ((bestType == NULL) || (count < bestCount))
+    {
+      bestType  = typeV[i];
+      bestCount = count;
+    }
+  }
+
+  *ixPP   = ixP;
+  *countP = bestCount;
+  return bestType;
+}
+#endif
+
+
+
+// -----------------------------------------------------------------------------
+//
 // entityQueryOver - the query over a list of entities: the store's (storeP, under its read lock), or the
 // caller's (storeP NULL - corDbEntityQueryList: no seek, there is no index). The page's entities copied
 // as corTreeClone copies them, and for each, what corDbEntityCopyFinish needs and its geoDistance (-1:
@@ -309,8 +391,22 @@ static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter*
   //
   int total = 0;
 
+#if COR_FEATURE_TYPE_INDEX
+  //
+  // A query by type walks its type's list - every entity it can match is in it, in the store's order
+  //
+  struct CorDbTypeIndex* ixP     = NULL;
+  int                    ixCount = 0;
+  const char*            ixType  = indexType(storeP, filterP, &ixP, &ixCount);
+#endif
+
   if (needed == 0)
   {
+#if COR_FEATURE_TYPE_INDEX
+    if (ixType != NULL)
+      total = ixCount;
+    else
+#endif
     for (CorNode* eP = entities->value.head; eP != NULL; eP = eP->next) total++;
   }
   else
@@ -334,6 +430,13 @@ static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter*
     distFilterP            = &distFilter;
   }
 
+  bool        seek    = false;
+  bool        back    = false;
+  CorNode*    startP  = entities->value.head;
+#if COR_FEATURE_TYPE_INDEX
+  CorDbTypeRef* startRefP = (ixType != NULL) ? corDbTypeIndexHead(ixP, ixType, &ixCount) : NULL;
+#endif
+
 #ifdef DB_QUERY_FILTER_SEEK
   //
   // A page from a position (DbQueryFilter.seekId): the store's list is in creation order, the order of
@@ -343,16 +446,31 @@ static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter*
   // createdAt differs): the walk from the start of the list to where its createdAt is, O(position) as
   // an offset is - entities of one batch share a createdAt, and among those the id decides.
   //
-  bool        seek    = (storeP != NULL) && (filterP != NULL) && (filterP->seekId != NULL);
-  bool        back    = seek && filterP->seekBefore;
-  CorNode*    startP  = entities->value.head;
+  // In a type's list, the walk starts at the position's ref there: after it, or before it and backwards.
+  // A position that is gone, or no longer of the type: the store's list, as above.
+  //
+  seek = (storeP != NULL) && (filterP != NULL) && (filterP->seekId != NULL);
+  back = seek && filterP->seekBefore;
 
   if (seek)
   {
     CorNode* posP = corDbIndexLookup(storeP, filterP->seekId);
 
     if ((posP != NULL) && (corDbCreatedAt(posP, 0) == filterP->seekCreatedAt))
+    {
       startP = back ? corDbIndexPrev(storeP, posP) : posP->next;
+#if COR_FEATURE_TYPE_INDEX
+      if (ixType != NULL)
+      {
+        CorDbTypeRef* posRefP = corDbTypeIndexRef(ixP, posP, ixType);
+
+        if (posRefP != NULL)
+          startRefP = back ? posRefP->prev : posRefP->next;
+        else
+          ixType = NULL;
+      }
+#endif
+    }
     else
     {
       CorNode* lastBeforeP = NULL;
@@ -369,25 +487,63 @@ static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter*
 
       if (back)
         startP = lastBeforeP;
+#if COR_FEATURE_TYPE_INDEX
+      ixType = NULL;
+#endif
     }
   }
-
-  for (CorNode* eP = startP; eP != NULL; eP = back ? corDbIndexPrev(storeP, eP) : eP->next)
-#else
-  for (CorNode* eP = entities->value.head; eP != NULL; eP = eP->next)
 #endif
+
+  (void) seek;
+
+#if COR_FEATURE_TYPE_INDEX
+  if (ixType != NULL)
   {
-    double geoDistance = -1;
+    for (CorDbTypeRef* refP = startRefP; refP != NULL; refP = back ? refP->prev : refP->next)
+    {
+      if (candTake(refP->entityP, filterP, distFilterP, qSubTimes, cands, &nCand, needed) == true)
+        break;
+    }
 
-    if (entityMatch(eP, filterP, distFilterP, qSubTimes, &geoDistance) == false)
-      continue;
+#ifdef DEBUG
+    //
+    // DEBUG builds: the store's walk too - the same candidates, in the same order, or the index is wrong
+    // (an entity's types changed at a write site that does not tell it). Every functional test checks it.
+    //
+    int  checkN   = 0;
+    bool mismatch = false;
 
-    cands[nCand].eP   = eP;
-    cands[nCand].dist = geoDistance;
-    nCand++;
+    for (CorNode* eP = startP; eP != NULL; eP = back ? corDbIndexPrev(storeP, eP) : eP->next)
+    {
+      double geoDistance = -1;
 
-    // Everything this request can use is in hand - see `needed` above.
-    if ((needed != 0) && (nCand >= needed))
+      if (entityMatch(eP, filterP, distFilterP, qSubTimes, &geoDistance) == false)
+        continue;
+
+      if ((checkN >= nCand) || (cands[checkN].eP != eP))
+      {
+        mismatch = true;
+        break;
+      }
+
+      ++checkN;
+
+      if ((needed != 0) && (checkN >= needed))
+        break;
+    }
+
+    if ((mismatch == true) || (checkN != nCand))
+    {
+      COR_E("corDB type index: type '%s' - %d candidates from its list, the store's walk differs (at %d)", ixType, nCand, checkN);
+      abort();
+    }
+#endif
+  }
+  else
+#endif
+  for (CorNode* eP = startP; eP != NULL; eP = back ? corDbIndexPrev(storeP, eP) : eP->next)
+  {
+    if (candTake(eP, filterP, distFilterP, qSubTimes, cands, &nCand, needed) == true)
       break;
   }
 
