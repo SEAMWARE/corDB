@@ -149,6 +149,27 @@ The NGSI-LD and Cor-Lib functions the plugins call are resolved from the broker 
 linked `-rdynamic`), so a plugin links none of them - and is the same for both of coraine's HTTP
 servers.
 
+## Queries by type - the type index
+
+Every entity type has a list of its entities, in the store's order (`corDbTypeIndex.h`). A query by one
+type, or by one AND group of types (`(A;B)`: the member with the shortest list), walks that list instead
+of the store: a page of a type that is 0.1 % of the store no longer costs the store up to where the page
+ends. A query with no type, or with types in OR (`A,B`), walks the store. Either way the answer is the
+same, in the same order; a debug build walks the store too for every query by type, and aborts on a
+difference.
+
+- **Built by the first query that can use it**, under the read lock, from the store's list. A store that
+  is only written pays nothing until then, and a store loaded from the disk is indexed by its first such
+  query. The index is not on disk.
+- **Kept** by the three functions that link, unlink and swap an entity in the store's list
+  (`corDbIndex.c`), and where an entity's types change in place: a merge, a batch upsert, a replayed
+  record.
+- **Out of memory:** the index is dropped, and queries walk the store.
+- **What it costs:** 48 bytes for each type of each entity, plus the entity map's buckets; about
+  0.2 µs of write-lock time for each created entity. Measured in coraine's
+  [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB's type index".
+- **`make COR_FEATURE_TYPE_INDEX=0`** leaves it out of the build (8 KiB of `.text`).
+
 ## Tested
 
 Through the broker: coraine's functional suite run with `-db corDB` (`corTest`), and in coraine's CI.
