@@ -1203,14 +1203,26 @@ static void snapshot(CorDbPersist* pP)
       maxUs = us;
 
     //
-    // A breath between two slices. glibc's rwlock prefers readers: released and taken straight back,
-    // the read lock went to this thread again before a woken writer ran, and the writers of a growing
-    // store got a fraction of the lock while a snapshot lasted
+    // The writers in between two slices. glibc's rwlock prefers readers: released and taken straight
+    // back, the read lock went to this thread again before a woken writer ran. A fixed 50 us pause let
+    // two or three batches in per slice of a millisecond - writers had 5 % of the lock while a snapshot
+    // lasted, and a write that held it 3 us longer lost a third of its rate (coraine doc/performance.md,
+    // "corDB's type index"). Now the snapshot waits until no writer waits, for three times as long as
+    // its slice took at most: writers get three quarters of the lock or more, and the snapshot goes on
+    // under a steady stream of them. With no writer waiting it goes on at once, as fast as before.
     //
     if (done == false)
     {
-      struct timespec pause = { 0, 50 * 1000 };
-      nanosleep(&pause, NULL);
+      struct timespec pause = { 0, 10 * 1000 };
+      struct timespec now;
+      long            waitedUs = 0;
+
+      do
+      {
+        nanosleep(&pause, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        waitedUs = (now.tv_sec - t1.tv_sec) * 1000000 + (now.tv_nsec - t1.tv_nsec) / 1000;
+      } while ((__atomic_load_n(&storeP->writersWaiting, __ATOMIC_RELAXED) > 0) && (waitedUs < 3 * us));
     }
   }
 

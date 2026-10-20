@@ -91,6 +91,12 @@ typedef struct CorDbStore
   CorNode*            snapCursor;
 
   //
+  // The writers waiting for 'lock' (corDbStoreWrite): between two slices, a snapshot lets them in
+  // before it takes the read lock again (corDbPersist.c, snapshot)
+  //
+  int                 writersWaiting;
+
+  //
   // The tenant's temporal history (corDbHistory.h) - NULL without `--troe corDB`. Written by the
   // same write sites, under the same lock: current state overwrites, history appends.
   //
