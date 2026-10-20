@@ -186,7 +186,9 @@ to what is written), and at a clean shutdown:
    (N = M + 1, opened and mapped), the sequence taken, a cursor set on the first entity. After the
    lock, `log-M.cor` is synced and cut to its records
 2. **the store**, in slices of 1000 entities, each under the **read lock** - readers run beside it,
-   writers between the slices (a writer that takes or swaps the cursor's entity moves it). Every
+   writers between the slices (a writer that takes or swaps the cursor's entity moves it). Between two
+   slices the snapshot waits until no writer waits for the write lock, for at most three times as long
+   as its slice took: writers have three quarters of the lock or more while a snapshot lasts. Every
    entity, subscription and registration as a PUT record, so a snapshot replays with the same loop as
    a log, into buffers of 64 MiB
 3. **the file**: `snap-N.tmp`, `fdatasync`, `rename` to `snap-N.cor`, `fsync` the directory; then the

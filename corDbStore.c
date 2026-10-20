@@ -97,6 +97,7 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->idxOld = NULL;
   storeP->idxOldMoved = 0;
   storeP->snapCursor = NULL;
+  storeP->writersWaiting = 0;
   storeP->historyP   = corDbHistoryOn ? (struct CorDbHistory*) calloc(1, sizeof(CorDbHistory)) : NULL;
   storeP->histQHead  = NULL;
   storeP->histQTail  = NULL;
@@ -281,7 +282,11 @@ CorDbStore* corDbStoreWrite(Tenant* tenantP)
   CorDbStore* storeP = corDbStoreOf(tenantP);
 
   if (storeP != NULL)
+  {
+    __atomic_add_fetch(&storeP->writersWaiting, 1, __ATOMIC_RELAXED);
     pthread_rwlock_wrlock(&storeP->lock);
+    __atomic_sub_fetch(&storeP->writersWaiting, 1, __ATOMIC_RELAXED);
+  }
 
   return storeP;
 }
