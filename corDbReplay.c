@@ -17,6 +17,9 @@
 #include "corTree/corTreeFree.h"                       // corTreeFree
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexRetype
+#endif
 #include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbCreatedAt
 #include "corDB/corDbIndex.h"                          // corDbIndexLookup, corDbIndexLink, corDbIndexReplace, corDbIndexUnlink
 #include "corDB/corDbLog.h"                            // CorDbLogRecord
@@ -191,6 +194,9 @@ bool corDbReplay(CorDbStore* storeP, CorDbLogRecord* recP)
       }
     }
 
+#if COR_FEATURE_TYPE_INDEX
+    corDbTypeIndexRetype(storeP, entityP);           // the record may have changed its "type"
+#endif
     return true;
   }
 

@@ -19,6 +19,9 @@
 #include "corNgsild/LdVocab.h"                         // LD_VOCAB_MODIFIED_AT, LD_VOCAB_SCOPE
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexRetype
+#endif
 #include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView, corDbAttrFold
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
@@ -100,6 +103,9 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
         names[n++] = LD_VOCAB_SCOPE;
         corDbPersistAppendAttrs(corDbLockedStore->persistP, eP, names, n);
       }
+#if COR_FEATURE_TYPE_INDEX
+      corDbTypeIndexRetype(corDbLockedStore, eP);   // a merge may change the entity's types
+#endif
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }

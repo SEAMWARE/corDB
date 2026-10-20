@@ -20,6 +20,9 @@
 #include <stddef.h>                                       // NULL
 #include <string.h>                                       // strcmp
 
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexRetype
+#endif
 #include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"                         // corDbIndexLookup
 #include <stdlib.h>                                       // calloc, free
@@ -224,6 +227,9 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       {
         corDbApplyReportToLive(live, mergedTargetsV[i], &reportsV[i]);
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
+#if COR_FEATURE_TYPE_INDEX
+        corDbTypeIndexRetype(corDbLockedStore, live);   // a merge may change the entity's types
+#endif
         corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
         anyOk = true;
         continue;
@@ -263,6 +269,9 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       else
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
 
+#if COR_FEATURE_TYPE_INDEX
+      corDbTypeIndexRetype(corDbLockedStore, live);   // a merge may change the entity's types
+#endif
       corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
       anyOk = true;
     }

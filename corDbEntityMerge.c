@@ -34,6 +34,9 @@
 
 #include "db/DbDriver.h"                              // DB_OK, DB_NOT_FOUND, DB_INVALID_GEOMETRY, Tenant
 #include "shared/geoMatch.h"                          // geoEntityValidate
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexRetype
+#endif
 #include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
 #include "corDB/corDbIndex.h"        // corDbIndexLookup
 #include "corDB/corDbPersist.h"                      // corDbPersistAppend
@@ -368,6 +371,9 @@ static int changesApply(Tenant* tenantP, const char* entityId, CorNode* mergedEn
     {
       applyPrepared(eP, prepP, reportP);
       corDbPersistMerged(corDbLockedStore->persistP, eP, reportP);
+#if COR_FEATURE_TYPE_INDEX
+      corDbTypeIndexRetype(corDbLockedStore, eP);   // a merge may change the entity's types
+#endif
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }

@@ -19,6 +19,9 @@
 #include "corTree/corTreeLookup.h"                   // corTreeLookup
 
 #include "corNgsild/ldTermId.h"                      // ldTermId, CorTerm*
+#if COR_FEATURE_TYPE_INDEX
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexLink, corDbTypeIndexUnlink, corDbTypeIndexReplace
+#endif
 #include "corDB/corDbIndex.h"           // Own interface
 
 
@@ -396,6 +399,9 @@ void corDbIndexLink(CorDbStore* storeP, CorNode* entityP)
   CorNode* prevEntityP = (entities->value.tail != NULL) ? entities->value.tail : entities;
 
   corTreeChildAdd(entities, entityP);
+#if COR_FEATURE_TYPE_INDEX
+  corDbTypeIndexLink(storeP, entityP);               // at the end of its types' lists, as in the store
+#endif
 
   //
   // The entity is in the list BEFORE it is in the table - the table is built from the list when it
@@ -438,6 +444,10 @@ void corDbIndexUnlink(CorDbStore* storeP, CorNode* entityP)
 
   if (storeP->snapCursor == entityP)                 // a snapshot's next entity goes: it goes on with the one after
     storeP->snapCursor = entityP->next;
+
+#if COR_FEATURE_TYPE_INDEX
+  corDbTypeIndexUnlink(storeP, entityP);
+#endif
 
   CorNode*    entities = storeP->entities;
   const char* id       = corDbEntityId(entityP);
@@ -519,6 +529,9 @@ void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
     corTreeChildReplace(entities, oldP, newP);       // not in the table: the walk, as before
     if (storeP->idToPrevEntity != NULL)
       indexRebuild(storeP, storeP->idxSlots);
+#if COR_FEATURE_TYPE_INDEX
+    corDbTypeIndexReplace(storeP, oldP, newP);
+#endif
     return;
   }
 
@@ -550,6 +563,10 @@ void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
     corHashItemAdd(storeP->idToPrevEntity, nextId, newP);
     storeP->idxCount += 1;
   }
+
+#if COR_FEATURE_TYPE_INDEX
+  corDbTypeIndexReplace(storeP, oldP, newP);         // newP in place: its types' lists see it where oldP was
+#endif
 
   indexCheck(storeP, newP,  "replace");
   indexCheck(storeP, nextP, "replace");
