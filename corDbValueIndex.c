@@ -72,13 +72,22 @@ typedef struct VxEntry
 
 // -----------------------------------------------------------------------------
 //
-// VxEntity - an entity of the store: its place, its entries
+// VxEntity - an entity of the store with a value of a declared attribute: its place, its entries
 //
+// Only those: an entity with none of them - nearly every entity, for a rare attribute - costs the index
+// nothing. Their places are numbers in the store's order, SEQ_GAP apart when they are given at the end, the
+// middle of the gap when an entity gains a value where it is (seqBefore); a gap used up numbers them all
+// again (seqRenumber).
+//
+#define SEQ_GAP  ((int64_t) 1 << 20)
+
 typedef struct VxEntity
 {
   CorNode*          entityP;
   int64_t           seq;                             // its place in the store's list
   struct VxEntity*  mapNext;
+  struct VxEntity*  orderPrev;                       // the index's entities in the store's order
+  struct VxEntity*  orderNext;
   VxEntry*          entries;                         // by declaration, in the order the values are found
 } VxEntity;
 
@@ -141,7 +150,9 @@ typedef struct CorDbValueIndex
   EntityBlock*   blocks;
   int            blockUsed;
   VxEntity*      freeEntities;                       // chained through mapNext
-  int64_t        nextSeq;
+  VxEntity*      orderHead;
+  VxEntity*      orderTail;
+  int64_t        storeN;                             // the store's entities - the planner's n
   uint64_t       rand;                               // the skip lists' levels
 } CorDbValueIndex;
 
@@ -701,6 +712,93 @@ static void entriesRemove(CorDbValueIndex* vxP, VxEntity* entP)
 
 // -----------------------------------------------------------------------------
 //
+// keysAny - has the entity a value of a declared attribute - would it have entries? A walk that compares
+// with no entries stops at the first value.
+//
+static bool keysAny(CorDbValueIndex* vxP, CorNode* entityP)
+{
+  KeyWalk w = { vxP, NULL, 0, false, NULL, NULL, NULL, false };
+
+  for (w.declIx = 0; (w.declIx < vxP->declN) && (w.stop == false); w.declIx++)
+    keysEach(&w, entityP);
+
+  return w.stop;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// seqRenumber - the index's entities numbered again, SEQ_GAP apart, in their order; their entries' copies too
+// (the order of a skip list does not change: every number keeps its place among the others)
+//
+static void seqRenumber(CorDbValueIndex* vxP)
+{
+  int64_t seq = 0;
+
+  for (VxEntity* entP = vxP->orderHead; entP != NULL; entP = entP->orderNext)
+  {
+    seq      += SEQ_GAP;
+    entP->seq = seq;
+
+    for (VxEntry* eP = entP->entries; eP != NULL; eP = eP->sibling)
+      eP->seq = seq;
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// orderInsert - the entity into the order, before nextP (NULL: at the end), and its place
+//
+static void orderInsert(CorDbValueIndex* vxP, VxEntity* entP, VxEntity* nextP)
+{
+  VxEntity* prevP = (nextP != NULL) ? nextP->orderPrev : vxP->orderTail;
+
+  if (nextP == NULL)
+    entP->seq = ((prevP != NULL) ? prevP->seq : 0) + SEQ_GAP;
+  else
+  {
+    if (nextP->seq - ((prevP != NULL) ? prevP->seq : 0) < 2)
+      seqRenumber(vxP);
+
+    int64_t lo = (prevP != NULL) ? prevP->seq : 0;
+
+    entP->seq = lo + (nextP->seq - lo) / 2;
+  }
+
+  entP->orderPrev = prevP;
+  entP->orderNext = nextP;
+
+  if (prevP != NULL)
+    prevP->orderNext = entP;
+  else
+    vxP->orderHead = entP;
+
+  if (nextP != NULL)
+    nextP->orderPrev = entP;
+  else
+    vxP->orderTail = entP;
+}
+
+static void orderRemove(CorDbValueIndex* vxP, VxEntity* entP)
+{
+  if (entP->orderPrev != NULL)
+    entP->orderPrev->orderNext = entP->orderNext;
+  else
+    vxP->orderHead = entP->orderNext;
+
+  if (entP->orderNext != NULL)
+    entP->orderNext->orderPrev = entP->orderPrev;
+  else
+    vxP->orderTail = entP->orderPrev;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // updatesCount - one write more for every declaration the entity has entries of (grouped by declaration)
 //
 static void updatesCount(CorDbValueIndex* vxP, VxEntity* entP)
@@ -904,8 +1002,13 @@ static CorDbValueIndex* indexBuild(CorDbStore* storeP, Tenant* tenantP)
     return NULL;
   }
 
+  vxP->storeN = n;
+
   for (CorNode* eP = storeP->entities->value.head; eP != NULL; eP = eP->next)
   {
+    if (keysAny(vxP, eP) == false)
+      continue;
+
     VxEntity* entP = entityAlloc(vxP);
 
     if (entP == NULL)
@@ -915,7 +1018,7 @@ static CorDbValueIndex* indexBuild(CorDbStore* storeP, Tenant* tenantP)
     }
 
     entP->entityP = eP;
-    entP->seq     = vxP->nextSeq++;
+    orderInsert(vxP, entP, NULL);
     mapAdd(vxP, entP);
 
     if (entriesAdd(vxP, entP) == false)
@@ -1267,7 +1370,7 @@ int corDbValueIndexCandidates(CorDbValueIndex* vxP, DbQueryFilter* filterP, int 
 
   if (needed > 0)
   {
-    double max = sqrt((double) needed * (double) vxP->mapCount);
+    double max = sqrt((double) needed * (double) vxP->storeN);
 
     set.max = (max < 64) ? 64 : (max > INT32_MAX) ? INT32_MAX : (int) max;
   }
@@ -1327,7 +1430,51 @@ static void indexOff(CorDbStore* storeP)
 
 // -----------------------------------------------------------------------------
 //
-// corDbValueIndexLink -
+// entityIn - an entity with a value of a declared attribute, not in the index yet, in it: its place before the
+// next of the index's entities after it in the store (fromP: the store's entity after it). false: out of memory
+//
+// The one write that walks the store: from the entity to the next one with a declared value. An entity
+// created with one is the store's last - nothing to walk.
+//
+static bool entityIn(CorDbValueIndex* vxP, CorNode* entityP, CorNode* fromP)
+{
+  VxEntity* nextP = NULL;
+
+  for (CorNode* eP = fromP; (eP != NULL) && (nextP == NULL); eP = eP->next)
+    nextP = mapFind(vxP, eP);
+
+  VxEntity* entP = entityAlloc(vxP);
+
+  if (entP == NULL)
+    return false;
+
+  entP->entityP = entityP;
+  orderInsert(vxP, entP, nextP);
+  mapAdd(vxP, entP);
+
+  if (entriesAdd(vxP, entP) == false)
+    return false;
+
+  updatesCount(vxP, entP);
+  return true;
+}
+
+//
+// entityOut - the entity's entries, its place, out of the index
+//
+static void entityOut(CorDbValueIndex* vxP, VxEntity* entP)
+{
+  updatesCount(vxP, entP);
+  entriesRemove(vxP, entP);
+  orderRemove(vxP, entP);
+  entityFree(vxP, entP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbValueIndexLink - an entity without a value of a declared attribute: nothing but the count
 //
 void corDbValueIndexLink(CorDbStore* storeP, CorNode* entityP)
 {
@@ -1336,22 +1483,13 @@ void corDbValueIndexLink(CorDbStore* storeP, CorNode* entityP)
   if ((vxP == NULL) || (vxP->declN == 0))
     return;
 
-  VxEntity* entP = entityAlloc(vxP);
+  vxP->storeN += 1;
 
-  if (entP == NULL)
-  {
-    indexOff(storeP);
+  if (keysAny(vxP, entityP) == false)
     return;
-  }
 
-  entP->entityP = entityP;
-  entP->seq     = vxP->nextSeq++;
-  mapAdd(vxP, entP);
-
-  if (entriesAdd(vxP, entP) == false)
+  if (entityIn(vxP, entityP, NULL) == false)
     indexOff(storeP);
-  else
-    updatesCount(vxP, entP);
 }
 
 
@@ -1367,21 +1505,27 @@ void corDbValueIndexUnlink(CorDbStore* storeP, CorNode* entityP)
   if ((vxP == NULL) || (vxP->declN == 0))
     return;
 
+  vxP->storeN -= 1;
+
+  if (keysAny(vxP, entityP) == false)                // not in the index
+    return;
+
   VxEntity* entP = mapRemove(vxP, entityP);
 
   if (entP == NULL)
+  {
+    indexOff(storeP);                                // in it, if it said the truth
     return;
+  }
 
-  updatesCount(vxP, entP);
-  entriesRemove(vxP, entP);
-  entityFree(vxP, entP);
+  entityOut(vxP, entP);
 }
 
 
 
 // -----------------------------------------------------------------------------
 //
-// corDbValueIndexReplace - newP takes oldP's place in the store, and so its sequence number
+// corDbValueIndexReplace - newP takes oldP's place in the store, and so oldP's place in the index
 //
 void corDbValueIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
 {
@@ -1390,11 +1534,30 @@ void corDbValueIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
   if ((vxP == NULL) || (vxP->declN == 0))
     return;
 
-  VxEntity* entP = mapRemove(vxP, oldP);
+  bool wasIn = keysAny(vxP, oldP);
+  bool isIn  = keysAny(vxP, newP);
 
-  if (entP == NULL)
+  if ((wasIn == false) && (isIn == false))           // nearly every replace, for a rare attribute
+    return;
+
+  VxEntity* entP = (wasIn == true) ? mapRemove(vxP, oldP) : NULL;
+
+  if ((wasIn == true) && (entP == NULL))
   {
-    indexOff(storeP);                                // not in the index: it cannot say where newP is
+    indexOff(storeP);
+    return;
+  }
+
+  if (entP == NULL)                                  // it gains a value: its place, where it is
+  {
+    if (entityIn(vxP, newP, newP->next) == false)
+      indexOff(storeP);
+    return;
+  }
+
+  if (isIn == false)
+  {
+    entityOut(vxP, entP);
     return;
   }
 
@@ -1448,14 +1611,25 @@ void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP, const char** n
 
   VxEntity* entP = mapFind(vxP, entityP);
 
-  if (entP == NULL)
+  if (entP == NULL)                                  // not in the index: in it if it gained a value
+  {
+    if ((keysAny(vxP, entityP) == true) && (entityIn(vxP, entityP, entityP->next) == false))
+      indexOff(storeP);
+    return;
+  }
+
+  if (entriesRefresh(vxP, entP) == false)
   {
     indexOff(storeP);
     return;
   }
 
-  if (entriesRefresh(vxP, entP) == false)
-    indexOff(storeP);
+  if (entP->entries == NULL)                         // it lost its last value: out of the index
+  {
+    mapRemove(vxP, entityP);
+    orderRemove(vxP, entP);
+    entityFree(vxP, entP);
+  }
 }
 
 
