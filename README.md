@@ -237,7 +237,7 @@ coraine --database corDB --dbDir /var/lib/coraine
 | `--dbSnapshotEvery` | 64 | MiB of log (and at least as much as the last snapshot) |
 | `--dbCompress` | off | snapshots and finished segments compressed (zstd, loaded only then); read with or without it |
 | `--dbLockPrefer` | `reads` | whom a tenant's store lock lets in first when readers and writers both wait: `writes` (also for `ramDB`). Which is faster is the workload's - coraine's performance.md, "Writes that notify, and which writer the lock lets in first" |
-| `--dbValueIndexes` | none | declared indexes (also for `ramDB`): attribute names, comma-separated, or a JSON array of `{ "attribute", "type"?, "tenant"? }` - [Queries by value](#queries-by-value---declared-indexes) |
+| `--dbValueIndexes` | none | declared indexes (also for `ramDB`): the attributes expanded (IRIs; a short name is an error), comma-separated, or a JSON array of `{ "attribute", "type"?, "tenant"? }` - [Queries by value](#queries-by-value---declared-indexes) |
 
 [The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
 [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".
