@@ -42,7 +42,7 @@ CorArg corDbArgV[] =
 {
   { "--dbLockPrefer",    "-dbLockPrefer",    CorArgString, _vp &corDbLockPrefer, CorArgOpt, _vp "reads",    NULL,  NULL,       "reads|writes - whom a tenant's store lock lets in first when both wait (doc/performance.md in coraine)" },
 #if COR_FEATURE_DB_INDEXES
-  { "--dbValueIndexes",       "-dbValueIndexes",       CorArgString, _vp &corDbIndexesOption, CorArgOpt, NULL,         NULL,  NULL,       "declared indexes - the attributes whose q an index serves: names, comma-separated, or a JSON array of {attribute, type, tenant}" },
+  { "--dbValueIndexes",       "-dbValueIndexes",       CorArgString, _vp &corDbIndexesOption, CorArgOpt, NULL,         NULL,  NULL,       "declared indexes - the attributes whose q an index serves, expanded (IRIs): comma-separated, or a JSON array of {attribute, type, tenant}" },
 #endif
   CORARGS_END
 };
@@ -56,7 +56,7 @@ CorArg corDbArgV[] =
   { "--dbCompress",     "-dbCompress",     CorArgBool,   _vp &corDbCompress,     CorArgOpt, _vp false,      _vp false, _vp true, "compress the snapshots and the finished log segments (zstd, on the snapshot thread - the open segment never)" },
   { "--dbLockPrefer",    "-dbLockPrefer",    CorArgString, _vp &corDbLockPrefer, CorArgOpt, _vp "reads",    NULL,  NULL,       "reads|writes - whom a tenant's store lock lets in first when both wait (doc/performance.md in coraine)" },
 #if COR_FEATURE_DB_INDEXES
-  { "--dbValueIndexes",       "-dbValueIndexes",       CorArgString, _vp &corDbIndexesOption, CorArgOpt, NULL,         NULL,  NULL,       "declared indexes - the attributes whose q an index serves: names, comma-separated, or a JSON array of {attribute, type, tenant}" },
+  { "--dbValueIndexes",       "-dbValueIndexes",       CorArgString, _vp &corDbIndexesOption, CorArgOpt, NULL,         NULL,  NULL,       "declared indexes - the attributes whose q an index serves, expanded (IRIs): comma-separated, or a JSON array of {attribute, type, tenant}" },
 #endif
   CORARGS_END
 };
