@@ -84,12 +84,15 @@ extern int64_t corDbValueIndexSeq(struct CorDbValueIndex* vxP, CorNode* entityP)
 // corDbValueIndexLink    - the entity, appended to the store's list
 // corDbValueIndexUnlink  - the entity, about to be taken out of it
 // corDbValueIndexReplace - newP, in oldP's place
-// corDbValueIndexChanged - the entity, changed in place (a merge, a replayed attribute record)
+// corDbValueIndexChanged - the entity, changed in place (a merge, a replayed attribute record): namesV, the
+//                          members the write changed (namesN -1: not known), retyped: its types changed (or
+//                          not known) - nothing to do when it wrote no declared attribute and no declaration
+//                          narrowed to a type can have gained or lost it
 //
 extern void corDbValueIndexLink(CorDbStore* storeP, CorNode* entityP);
 extern void corDbValueIndexUnlink(CorDbStore* storeP, CorNode* entityP);
 extern void corDbValueIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP);
-extern void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP);
+extern void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP, const char** namesV, int namesN, bool retyped);
 
 
 

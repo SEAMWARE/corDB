@@ -368,7 +368,11 @@ static int changesApply(Tenant* tenantP, const char* entityId, CorNode* mergedEn
     {
       applyPrepared(eP, prepP, reportP);
       corDbPersistMerged(corDbLockedStore->persistP, eP, reportP);
-      corDbIndexChanged(corDbLockedStore, eP);   // what the type and value indexes hold of it
+
+      const char* names[64];
+      int         n = corDbMergedNames(reportP, names, 64);
+
+      corDbIndexChanged(corDbLockedStore, eP, names, n);   // what the type and value indexes hold of it
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }

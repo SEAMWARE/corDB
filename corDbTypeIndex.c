@@ -787,12 +787,12 @@ void corDbTypeIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
 //
 // corDbTypeIndexRetype -
 //
-void corDbTypeIndexRetype(CorDbStore* storeP, CorNode* entityP)
+bool corDbTypeIndexRetype(CorDbStore* storeP, CorNode* entityP)
 {
   CorDbTypeIndex* ixP = storeP->typeIndexP;
 
   if (ixP == NULL)
-    return;
+    return true;
 
   //
   // Nearly every merge leaves the types as they were: then nothing changes - every ref's type is the
@@ -814,6 +814,8 @@ void corDbTypeIndexRetype(CorDbStore* storeP, CorNode* entityP)
 
   if (same == false)
     corDbTypeIndexReplace(storeP, entityP, entityP);
+
+  return (same == false);
 }
 
 

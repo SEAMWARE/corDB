@@ -1409,13 +1409,41 @@ void corDbValueIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
 
 // -----------------------------------------------------------------------------
 //
+// declTouched - can a write of these members (or of the entity's types) have changed a declaration's entries?
+//
+static bool declTouched(CorDbValueIndex* vxP, const char** namesV, int namesN, bool retyped)
+{
+  for (int ix = 0; ix < vxP->declN; ix++)
+  {
+    VxDecl* dP = &vxP->declV[ix];
+
+    if ((dP->decl.type != NULL) && (retyped == true))
+      return true;
+
+    for (int n = 0; n < namesN; n++)
+    {
+      if (strcmp(namesV[n], dP->decl.attr) == 0)
+        return true;
+    }
+  }
+
+  return false;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbValueIndexChanged -
 //
-void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP)
+void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP, const char** namesV, int namesN, bool retyped)
 {
   CorDbValueIndex* vxP = storeP->valueIndexP;
 
   if ((vxP == NULL) || (vxP->declN == 0))
+    return;
+
+  if ((namesN >= 0) && (declTouched(vxP, namesV, namesN, retyped) == false))   // nearly every write: no declared attribute
     return;
 
   VxEntity* entP = mapFind(vxP, entityP);

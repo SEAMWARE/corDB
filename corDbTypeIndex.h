@@ -88,9 +88,9 @@ extern void corDbTypeIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* ne
 // -----------------------------------------------------------------------------
 //
 // corDbTypeIndexRetype - the entity's "type" changed in place (a merge, a replayed attribute record); the
-// write lock held
+// write lock held. true: its types are not the ones the index had - or the index is not built, not known
 //
-extern void corDbTypeIndexRetype(CorDbStore* storeP, CorNode* entityP);
+extern bool corDbTypeIndexRetype(CorDbStore* storeP, CorNode* entityP);
 
 
 

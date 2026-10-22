@@ -191,7 +191,7 @@ bool corDbReplay(CorDbStore* storeP, CorDbLogRecord* recP)
       }
     }
 
-    corDbIndexChanged(storeP, entityP);   // what the type and value indexes hold of it
+    corDbIndexChanged(storeP, entityP, NULL, -1);   // what the type and value indexes hold of it
     return true;
   }
 

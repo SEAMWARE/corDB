@@ -630,15 +630,21 @@ CorNode* corDbIndexPrev(CorDbStore* storeP, CorNode* entityP)
 //
 // corDbIndexChanged -
 //
-void corDbIndexChanged(CorDbStore* storeP, CorNode* entityP)
+void corDbIndexChanged(CorDbStore* storeP, CorNode* entityP, const char** namesV, int namesN)
 {
   if ((storeP == NULL) || (entityP == NULL))
     return;
 
+  bool retyped = true;                               // without the type index: not known
+
 #if COR_FEATURE_TYPE_INDEX
-  corDbTypeIndexRetype(storeP, entityP);
+  retyped = corDbTypeIndexRetype(storeP, entityP);
 #endif
 #if COR_FEATURE_DB_INDEXES
-  corDbValueIndexChanged(storeP, entityP);
+  corDbValueIndexChanged(storeP, entityP, namesV, namesN, retyped);
+#else
+  (void) namesV;
+  (void) namesN;
+  (void) retyped;
 #endif
 }

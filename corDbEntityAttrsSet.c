@@ -100,7 +100,7 @@ int corDbEntityAttrsSet(Tenant* tenantP, const char* entityId,
         names[n++] = LD_VOCAB_SCOPE;
         corDbPersistAppendAttrs(corDbLockedStore->persistP, eP, names, n);
       }
-      corDbIndexChanged(corDbLockedStore, eP);   // what the type and value indexes hold of it
+      corDbIndexChanged(corDbLockedStore, eP, names, many ? -1 : n);   // what the type and value indexes hold of it
       corDbHistoryMerged(corDbLockedStore, eP, reportP, corRest.kallocP);
       return DB_OK;
     }

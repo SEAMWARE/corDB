@@ -224,7 +224,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       {
         corDbApplyReportToLive(live, mergedTargetsV[i], &reportsV[i]);
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
-        corDbIndexChanged(corDbLockedStore, live);   // what the type and value indexes hold of it
+        corDbIndexChanged(corDbLockedStore, live, NULL, -1);   // what the type and value indexes hold of it - that many members
         corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
         anyOk = true;
         continue;
@@ -264,7 +264,10 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       else
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
 
-      corDbIndexChanged(corDbLockedStore, live);   // what the type and value indexes hold of it
+      const char* names[64];
+      int         nn = corDbMergedNames(&reportsV[i], names, 64);
+
+      corDbIndexChanged(corDbLockedStore, live, names, nn);   // what the type and value indexes hold of it
       corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
       anyOk = true;
     }
