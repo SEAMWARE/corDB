@@ -95,10 +95,11 @@ extern void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP);
 
 // -----------------------------------------------------------------------------
 //
-// corDbValueIndexStats - what the store's index of a declaration holds: false: none (not built, or the
-// declaration does not cover the tenant). Under the store's lock, read or write.
+// corDbValueIndexStats - what the store's index of a declaration holds, the q terms it served and the writes
+// that changed it (an entity with the attribute created or deleted, its values changed) since it was built:
+// false: none (not built, or the declaration does not cover the tenant). Under the store's lock, read or write.
 //
-extern bool corDbValueIndexStats(CorDbStore* storeP, const char* declId, int64_t* entriesP, int64_t* bytesP, int64_t* accessesP);
+extern bool corDbValueIndexStats(CorDbStore* storeP, const char* declId, int64_t* entriesP, int64_t* bytesP, int64_t* accessesP, int64_t* updatesP);
 
 
 

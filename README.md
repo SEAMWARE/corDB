@@ -186,13 +186,19 @@ the answer is the walk's, in the same order, and a debug build walks the store t
 An AND takes its term with the fewest candidates; an OR is served when all its members are. A declaration
 narrowed to a type serves a query of that type (or of an AND group of types with it). Not served: `!=`, `~=`,
 `!~=`, existence, a sub-attribute, a `[member]` path - the query walks, or takes its type's list, as without.
-A query by type whose type's list is shorter than the candidates walks that list.
+A query by type whose type's list is shorter than the candidates walks that list. A page (offset + limit
+matches) whose candidates exceed `sqrt(page * entities)`, at least 64, walks the store: the walk stops at the
+page, the index gathers and sorts every candidate. A count, or a query that wants every match, takes the
+index whatever its candidates.
 
 - **Built by the first query that can use it**, under the read lock - and at once in every store when the
   admin API declares one. Not on disk.
 - **Kept** by the functions that link, unlink and swap an entity in the store's list, and by
-  `corDbIndexChanged` wherever an entity changes in place (a merge, a batch upsert, a replayed record): an
-  entity's values are compared with its entries, and only a difference changes the skip list.
+  `corDbIndexChanged` wherever an entity changes in place (a merge, a batch upsert, a replayed record): each
+  declaration's values of the entity are compared with its entries, and only a declaration whose values
+  differ changes its skip list.
+- **Counted**, per declaration and store, since it was built: `accesses`, the `q` terms it served, and
+  `updates`, the writes that changed it - an entity with the attribute created or deleted, its values changed.
 - **A change of the declarations** drops every store's index; the next query that can use one builds it.
 - **Out of memory:** the index is dropped, and queries walk the store.
 - **`make COR_FEATURE_DB_INDEXES=0`** leaves it out of the build: 23,616 bytes of `corDB.so` (`.text` +

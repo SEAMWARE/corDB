@@ -234,6 +234,7 @@ static bool statsIn(Tenant* tenantP, CorDbStore* storeP, void* dataP)
   int64_t     entries  = 0;
   int64_t     bytes    = 0;
   int64_t     accesses = 0;
+  int64_t     updates  = 0;
   bool        built;
 
   (void) storeP;
@@ -244,7 +245,7 @@ static bool statsIn(Tenant* tenantP, CorDbStore* storeP, void* dataP)
   {
     CorDbStore* lockedP = corDbStoreRead(tenantP);
 
-    built = (lockedP != NULL) && corDbValueIndexStats(lockedP, wP->declP->id, &entries, &bytes, &accesses);
+    built = (lockedP != NULL) && corDbValueIndexStats(lockedP, wP->declP->id, &entries, &bytes, &accesses, &updates);
     corDbStoreUnlock(&lockedP);
   }
 
@@ -257,6 +258,7 @@ static bool statsIn(Tenant* tenantP, CorDbStore* storeP, void* dataP)
   corTreeChildAdd(tP, corTreeInteger(corRest.kallocP, "entries", entries));
   corTreeChildAdd(tP, corTreeInteger(corRest.kallocP, "bytes", bytes));
   corTreeChildAdd(tP, corTreeInteger(corRest.kallocP, "accesses", accesses));
+  corTreeChildAdd(tP, corTreeInteger(corRest.kallocP, "updates", updates));
   corTreeChildAdd(wP->tenantsP, tP);
 
   return true;

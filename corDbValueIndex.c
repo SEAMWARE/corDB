@@ -96,6 +96,7 @@ typedef struct VxDecl
   int64_t         entries;
   int64_t         bytes;
   int64_t         accesses;                          // the queries it served - atomic
+  int64_t         updates;                           // the writes that changed it - under the write lock
 } VxDecl;
 
 
@@ -661,22 +662,6 @@ static void keysEach(KeyWalk* wP, CorNode* entityP)
 
 // -----------------------------------------------------------------------------
 //
-// entriesSame - are the entity's entries its values as it now is?
-//
-static bool entriesSame(CorDbValueIndex* vxP, VxEntity* entP)
-{
-  KeyWalk w = { vxP, entP, 0, false, NULL, entP->entries, NULL, false };
-
-  for (w.declIx = 0; (w.declIx < vxP->declN) && (w.stop == false); w.declIx++)
-    keysEach(&w, entP->entityP);
-
-  return (w.stop == false) && (w.cursorP == NULL);
-}
-
-
-
-// -----------------------------------------------------------------------------
-//
 // entriesAdd - the entity's entries, from its values; false: out of memory
 //
 static bool entriesAdd(CorDbValueIndex* vxP, VxEntity* entP)
@@ -710,6 +695,100 @@ static void entriesRemove(CorDbValueIndex* vxP, VxEntity* entP)
   }
 
   entP->entries = NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// updatesCount - one write more for every declaration the entity has entries of (grouped by declaration)
+//
+static void updatesCount(CorDbValueIndex* vxP, VxEntity* entP)
+{
+  int declIx = -1;
+
+  for (VxEntry* eP = entP->entries; eP != NULL; eP = eP->sibling)
+  {
+    if (eP->declIx != declIx)
+    {
+      declIx = eP->declIx;
+      vxP->declV[declIx].updates += 1;
+    }
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// entriesRefresh - the entity's entries, as its values now are: a declaration whose values are as they were
+// keeps its entries - nearly every write - and the others' are taken out and added again; false: out of memory
+//
+// The entries are grouped by declaration, in the declarations' order: a declaration's are a segment of the
+// entity's list.
+//
+static bool entriesRefresh(CorDbValueIndex* vxP, VxEntity* entP)
+{
+  VxEntry* oldP  = entP->entries;
+  VxEntry* tailP = NULL;
+
+  entP->entries = NULL;
+
+  for (int declIx = 0; declIx < vxP->declN; declIx++)
+  {
+    VxEntry* segP = ((oldP != NULL) && (oldP->declIx == declIx)) ? oldP : NULL;
+    VxEntry* lastP = NULL;
+
+    for (VxEntry* eP = segP; (eP != NULL) && (eP->declIx == declIx); eP = eP->sibling)
+      lastP = eP;
+
+    VxEntry* restP = (lastP != NULL) ? lastP->sibling : oldP;
+    KeyWalk  same  = { vxP, entP, declIx, false, NULL, segP, NULL, false };
+
+    keysEach(&same, entP->entityP);
+
+    if ((same.stop == false) && ((same.cursorP == NULL) || (same.cursorP->declIx != declIx)))
+    {
+      if (segP != NULL)                              // as it was: the segment stays
+      {
+        if (tailP == NULL)
+          entP->entries = segP;
+        else
+          tailP->sibling = segP;
+        tailP          = lastP;
+        lastP->sibling = NULL;
+      }
+    }
+    else
+    {
+      for (VxEntry* eP = segP; (eP != NULL) && (eP != restP); )
+      {
+        VxEntry* nextP = eP->sibling;
+
+        listRemove(vxP, eP);
+        eP = nextP;
+      }
+
+      KeyWalk add = { vxP, entP, declIx, true, NULL, NULL, tailP, false };
+
+      keysEach(&add, entP->entityP);
+      tailP = add.tailP;
+      vxP->declV[declIx].updates += 1;
+
+      if (add.stop == true)                          // out of memory: the rest's entries out too
+      {
+        if (tailP != NULL)
+          tailP->sibling = restP;
+        else
+          entP->entries = restP;
+        return false;
+      }
+    }
+
+    oldP = restP;
+  }
+
+  return true;
 }
 
 
@@ -1271,6 +1350,8 @@ void corDbValueIndexLink(CorDbStore* storeP, CorNode* entityP)
 
   if (entriesAdd(vxP, entP) == false)
     indexOff(storeP);
+  else
+    updatesCount(vxP, entP);
 }
 
 
@@ -1291,6 +1372,7 @@ void corDbValueIndexUnlink(CorDbStore* storeP, CorNode* entityP)
   if (entP == NULL)
     return;
 
+  updatesCount(vxP, entP);
   entriesRemove(vxP, entP);
   entityFree(vxP, entP);
 }
@@ -1319,12 +1401,7 @@ void corDbValueIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
   entP->entityP = newP;
   mapAdd(vxP, entP);
 
-  if (entriesSame(vxP, entP) == true)
-    return;
-
-  entriesRemove(vxP, entP);
-
-  if (entriesAdd(vxP, entP) == false)
+  if (entriesRefresh(vxP, entP) == false)
     indexOff(storeP);
 }
 
@@ -1349,12 +1426,7 @@ void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP)
     return;
   }
 
-  if (entriesSame(vxP, entP) == true)                // nearly every write: the values of a declared attribute as they were
-    return;
-
-  entriesRemove(vxP, entP);
-
-  if (entriesAdd(vxP, entP) == false)
+  if (entriesRefresh(vxP, entP) == false)
     indexOff(storeP);
 }
 
@@ -1364,7 +1436,7 @@ void corDbValueIndexChanged(CorDbStore* storeP, CorNode* entityP)
 //
 // corDbValueIndexStats -
 //
-bool corDbValueIndexStats(CorDbStore* storeP, const char* declId, int64_t* entriesP, int64_t* bytesP, int64_t* accessesP)
+bool corDbValueIndexStats(CorDbStore* storeP, const char* declId, int64_t* entriesP, int64_t* bytesP, int64_t* accessesP, int64_t* updatesP)
 {
   CorDbValueIndex* vxP = __atomic_load_n(&storeP->valueIndexP, __ATOMIC_ACQUIRE);
 
@@ -1377,6 +1449,7 @@ bool corDbValueIndexStats(CorDbStore* storeP, const char* declId, int64_t* entri
       *entriesP  = dP->entries;
       *bytesP    = dP->bytes;
       *accessesP = __atomic_load_n(&dP->accesses, __ATOMIC_RELAXED);
+      *updatesP  = dP->updates;
       return true;
     }
   }
