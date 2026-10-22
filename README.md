@@ -203,7 +203,11 @@ index whatever its candidates.
   store from it to the next entity it holds.
 - **Counted**, per declaration and store, since it was built: `accesses`, the `q` terms it served, and
   `updates`, the writes that changed it - an entity with the attribute created or deleted, its values changed.
-- **A change of the declarations** drops every store's index; the next query that can use one builds it.
+- **A change of the declarations** (the admin API) drops every store's index - one index a store holds every
+  declaration - and builds it again: at once for a declaration made, by the next query that can use it for one
+  taken away; the counters start from 0. About 0.5 µs an entity and declaration (1 000 000 entities, two
+  declarations: 0.87 s), under the store's read lock - the store's writes wait. Declare the indexes at start
+  (`--dbIndexes`); coraine's [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md#building-a-declared-index).
 - **Out of memory:** the index is dropped, and queries walk the store.
 - **`make COR_FEATURE_DB_INDEXES=0`** leaves it out of the build: 23,616 bytes of `corDB.so` (`.text` +
   `.data`, release).
