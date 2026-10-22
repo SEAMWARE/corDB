@@ -49,6 +49,12 @@ COR_FEATURE_REGISTRATIONS ?= 1
 COR_FEATURE_TYPE_INDEX ?= 1
 
 #
+# COR_FEATURE_DB_INDEXES - 1 | 0, as the broker's: declared indexes (--dbIndexes, the admin API's
+# /admin/indexes) - a value index of a declared attribute in every store (corDbValueIndex.h). 0 leaves them out
+#
+COR_FEATURE_DB_INDEXES ?= 1
+
+#
 # COR_WITH_GEOQ - 1 | 0, as the broker's makefile passes it: geo-queries. 0 compiles the broker's
 # shared/geoMatch.c without GEOS (every geo match false, every geometry valid - the broker refuses
 # geo-queries itself) and links without libgeos_c
@@ -59,7 +65,7 @@ $(error COR_WITH_GEOQ is 1 or 0, not '$(COR_WITH_GEOQ)')
 endif
 
 INCLUDE       = -I$(COR_LIBS) -I$(CORAINE)/src/lib -I$(CORAINE)/src/plugins
-DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_FEATURE_TYPE_INDEX=$(COR_FEATURE_TYPE_INDEX) -DCOR_FEATURE_GEOQ=$(COR_WITH_GEOQ) -DCOR_DB_TENANT_RELEASE=$(COR_DB_TENANT_RELEASE)
+DEFINES       = -DLOG_ON -DCOR_FEATURE_SUBSCRIPTIONS=$(COR_FEATURE_SUBSCRIPTIONS) -DCOR_FEATURE_REGISTRATIONS=$(COR_FEATURE_REGISTRATIONS) -DCOR_FEATURE_TYPE_INDEX=$(COR_FEATURE_TYPE_INDEX) -DCOR_FEATURE_DB_INDEXES=$(COR_FEATURE_DB_INDEXES) -DCOR_FEATURE_GEOQ=$(COR_WITH_GEOQ) -DCOR_DB_TENANT_RELEASE=$(COR_DB_TENANT_RELEASE)
 # The current-state plugin's version; troe/corDbRegister.c defines its own
 VERSION_DEF   = -DPLUGIN_VERSION=\"0.2.0\"
 CFLAGS        = -Wall -Werror -Wundef -fPIC $(INCLUDE) $(DEFINES) -MMD -MP $(EXTRA_CFLAGS)
@@ -89,6 +95,10 @@ SOURCES       = corDbGlobals.c corDbIndex.c corDbStore.c corDbLog.c corDbPersist
 
 ifeq ($(COR_FEATURE_TYPE_INDEX),1)
 SOURCES      += corDbTypeIndex.c
+endif
+
+ifeq ($(COR_FEATURE_DB_INDEXES),1)
+SOURCES      += corDbIndexes.c corDbValueIndex.c
 endif
 
 ifeq ($(COR_FEATURE_SUBSCRIPTIONS),1)

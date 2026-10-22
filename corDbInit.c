@@ -15,6 +15,9 @@
 #include "corDB/corDbStore.h"             // corDbTenantStore
 #include "corDB/corDbPersist.h"                  // corDbPersistInit
 #include "corDB/corDbGeoMatch.h"          // corDbGeoInit
+#if COR_FEATURE_DB_INDEXES
+#include "corDB/corDbIndexes.h"           // corDbIndexesInit
+#endif
 #include "corDB/corDbInit.h"              // Own interface
 
 
@@ -50,6 +53,14 @@ int corDbInit(void)
   //
   corDbTenantStore(&tenant0);
   corDbPersistTenants();                             // and every other tenant --dbDir knows
+
+#if COR_FEATURE_DB_INDEXES
+  //
+  // The declared indexes: --dbIndexes, and the admin API's, kept in the default tenant's store - loaded now
+  //
+  if (corDbIndexesInit() == false)
+    return -1;
+#endif
   corDbGeoInit();
 
 #if COR_DB_RAM_ONLY

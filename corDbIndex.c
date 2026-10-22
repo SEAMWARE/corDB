@@ -20,7 +20,10 @@
 
 #include "corNgsild/ldTermId.h"                      // ldTermId, CorTerm*
 #if COR_FEATURE_TYPE_INDEX
-#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexLink, corDbTypeIndexUnlink, corDbTypeIndexReplace
+#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexLink, corDbTypeIndexUnlink, corDbTypeIndexReplace, corDbTypeIndexRetype
+#endif
+#if COR_FEATURE_DB_INDEXES
+#include "corDB/corDbValueIndex.h"                   // corDbValueIndexLink, corDbValueIndexUnlink, corDbValueIndexReplace, corDbValueIndexChanged
 #endif
 #include "corDB/corDbIndex.h"           // Own interface
 
@@ -402,6 +405,9 @@ void corDbIndexLink(CorDbStore* storeP, CorNode* entityP)
 #if COR_FEATURE_TYPE_INDEX
   corDbTypeIndexLink(storeP, entityP);               // at the end of its types' lists, as in the store
 #endif
+#if COR_FEATURE_DB_INDEXES
+  corDbValueIndexLink(storeP, entityP);              // the last place in the store
+#endif
 
   //
   // The entity is in the list BEFORE it is in the table - the table is built from the list when it
@@ -447,6 +453,9 @@ void corDbIndexUnlink(CorDbStore* storeP, CorNode* entityP)
 
 #if COR_FEATURE_TYPE_INDEX
   corDbTypeIndexUnlink(storeP, entityP);
+#endif
+#if COR_FEATURE_DB_INDEXES
+  corDbValueIndexUnlink(storeP, entityP);
 #endif
 
   CorNode*    entities = storeP->entities;
@@ -532,6 +541,9 @@ void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
 #if COR_FEATURE_TYPE_INDEX
     corDbTypeIndexReplace(storeP, oldP, newP);
 #endif
+#if COR_FEATURE_DB_INDEXES
+    corDbValueIndexReplace(storeP, oldP, newP);
+#endif
     return;
   }
 
@@ -566,6 +578,9 @@ void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP)
 
 #if COR_FEATURE_TYPE_INDEX
   corDbTypeIndexReplace(storeP, oldP, newP);         // newP in place: its types' lists see it where oldP was
+#endif
+#if COR_FEATURE_DB_INDEXES
+  corDbValueIndexReplace(storeP, oldP, newP);        // newP has oldP's place
 #endif
 
   indexCheck(storeP, newP,  "replace");
@@ -607,4 +622,23 @@ CorNode* corDbIndexPrev(CorDbStore* storeP, CorNode* entityP)
   CorNode* prevEntityP = tableLookup(storeP, id);
 
   return ((prevEntityP == NULL) || (prevEntityP->type == CorArray)) ? NULL : prevEntityP;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbIndexChanged -
+//
+void corDbIndexChanged(CorDbStore* storeP, CorNode* entityP)
+{
+  if ((storeP == NULL) || (entityP == NULL))
+    return;
+
+#if COR_FEATURE_TYPE_INDEX
+  corDbTypeIndexRetype(storeP, entityP);
+#endif
+#if COR_FEATURE_DB_INDEXES
+  corDbValueIndexChanged(storeP, entityP);
+#endif
 }

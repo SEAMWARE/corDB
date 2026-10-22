@@ -37,6 +37,9 @@
 #include "corDB/corDbEntityAttrsSet.h" // corDbEntityAttrsSet
 #include "corDB/corDbTypeList.h"       // corDbTypeList
 #include "corDB/corDbAttrList.h"       // corDbAttrList
+#if COR_FEATURE_DB_INDEXES
+#include "corDB/corDbIndexes.h"        // corDbIndexList, corDbIndexAdd, corDbIndexDelete
+#endif
 #if COR_FEATURE_SUBSCRIPTIONS
 #include "corDB/corDbSubscriptionCreate.h"    // corDbSubscriptionCreate
 #include "corDB/corDbSubscriptionRetrieve.h"  // corDbSubscriptionRetrieve
@@ -122,6 +125,11 @@ void dbRegister(DbDriver* driverP)
   driverP->entityAttrsSet  = corDbEntityAttrsSet;
   driverP->typeList        = corDbTypeList;
   driverP->attrList        = corDbAttrList;
+#if COR_FEATURE_DB_INDEXES
+  driverP->indexList       = corDbIndexList;
+  driverP->indexAdd        = corDbIndexAdd;
+  driverP->indexDelete     = corDbIndexDelete;
+#endif
   //
   // With COR_FEATURE_SUBSCRIPTIONS off these sources leave the plugin build
   // (CMakeLists.txt) and the slots stay NULL - the driver-slot convention for
