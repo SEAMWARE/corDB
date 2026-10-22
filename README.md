@@ -197,6 +197,10 @@ index whatever its candidates.
   `corDbIndexChanged` wherever an entity changes in place (a merge, a batch upsert, a replayed record): each
   declaration's values of the entity are compared with its entries, and only a declaration whose values
   differ changes its skip list.
+- **Only the entities with a value of a declared attribute** are in the index. Another entity costs a create,
+  a replace or a delete a check of its declared attributes, a merge of no declared attribute a comparison of
+  names. An entity that gains a value where it is takes its place in the store's order: the index walks the
+  store from it to the next entity it holds.
 - **Counted**, per declaration and store, since it was built: `accesses`, the `q` terms it served, and
   `updates`, the writes that changed it - an entity with the attribute created or deleted, its values changed.
 - **A change of the declarations** drops every store's index; the next query that can use one builds it.
