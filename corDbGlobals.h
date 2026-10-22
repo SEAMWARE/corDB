@@ -35,7 +35,7 @@ extern bool  corDbCompress;                            // snapshots and finished
 extern char* corDbLockPrefer;                          // --dbLockPrefer reads|writes
 extern bool  corDbLockWriters;                         // true: a store's lock lets writers in first (corDbInit)
 #if COR_FEATURE_DB_INDEXES
-extern char* corDbIndexesOption;                       // --dbIndexes (corDbIndexes.h)
+extern char* corDbIndexesOption;                       // --dbValueIndexes (corDbIndexes.h)
 #endif
 
 #endif  // CORDB_CORDBGLOBALS_H_

@@ -11,7 +11,7 @@
 //
 // The declared indexes (COR_FEATURE_DB_INDEXES - coraine doc/installation.md, "Declared indexes"): an
 // attribute - narrowed to an entity type, to a tenant, if so declared - whose q value terms an index serves.
-// Declared at start (--dbIndexes) or through the admin API (/admin/indexes - DbDriver indexList, indexAdd,
+// Declared at start (--dbValueIndexes) or through the admin API (/admin/indexes - DbDriver indexList, indexAdd,
 // indexDelete), the admin API's kept in the default tenant's document store (collection "dbIndexes", one
 // document per declaration). The index itself is each store's: corDbValueIndex.h.
 //
@@ -38,7 +38,7 @@ typedef struct CorDbIndexDecl
 
 // -----------------------------------------------------------------------------
 //
-// corDbIndexesInit - --dbIndexes, then the admin API's declarations; false: --dbIndexes is wrong (said)
+// corDbIndexesInit - --dbValueIndexes, then the admin API's declarations; false: --dbValueIndexes is wrong (said)
 //
 // After the stores are loaded: the admin API's are in the default tenant's.
 //

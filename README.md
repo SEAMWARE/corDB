@@ -173,7 +173,7 @@ difference.
 ## Queries by value - declared indexes
 
 An attribute whose `q` value terms an index serves is **declared** - narrowed to an entity type, to a tenant,
-if so declared: `--dbIndexes`, or the broker's admin API (`/admin/indexes`, coraine's
+if so declared: `--dbValueIndexes`, or the broker's admin API (`/admin/indexes`, coraine's
 [installation](https://github.com/SEAMWARE/coraine/blob/main/doc/installation.md), "Declared indexes"). The
 admin API's declarations are kept in the default tenant's store (documents of the collection `dbIndexes`) and
 come back with it at a start.
@@ -207,7 +207,7 @@ index whatever its candidates.
   declaration - and builds it again: at once for a declaration made, by the next query that can use it for one
   taken away; the counters start from 0. About 0.5 µs an entity and declaration (1 000 000 entities, two
   declarations: 0.87 s), under the store's read lock - the store's writes wait. Declare the indexes at start
-  (`--dbIndexes`); coraine's [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md#building-a-declared-index).
+  (`--dbValueIndexes`); coraine's [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md#building-a-declared-index).
 - **Out of memory:** the index is dropped, and queries walk the store.
 - **`make COR_FEATURE_DB_INDEXES=0`** leaves it out of the build: 23,616 bytes of `corDB.so` (`.text` +
   `.data`, release).
@@ -237,7 +237,7 @@ coraine --database corDB --dbDir /var/lib/coraine
 | `--dbSnapshotEvery` | 64 | MiB of log (and at least as much as the last snapshot) |
 | `--dbCompress` | off | snapshots and finished segments compressed (zstd, loaded only then); read with or without it |
 | `--dbLockPrefer` | `reads` | whom a tenant's store lock lets in first when readers and writers both wait: `writes` (also for `ramDB`). Which is faster is the workload's - coraine's performance.md, "Writes that notify, and which writer the lock lets in first" |
-| `--dbIndexes` | none | declared indexes (also for `ramDB`): attribute names, comma-separated, or a JSON array of `{ "attribute", "type"?, "tenant"? }` - [Queries by value](#queries-by-value---declared-indexes) |
+| `--dbValueIndexes` | none | declared indexes (also for `ramDB`): attribute names, comma-separated, or a JSON array of `{ "attribute", "type"?, "tenant"? }` - [Queries by value](#queries-by-value---declared-indexes) |
 
 [The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
 [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".
