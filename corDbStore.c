@@ -26,6 +26,9 @@
 #if COR_FEATURE_TYPE_INDEX
 #include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexFree
 #endif
+#if COR_FEATURE_DB_INDEXES
+#include "corDB/corDbValueIndex.h"                   // corDbValueIndexDrop
+#endif
 #include "corDB/corDbStore.h"         // Own interface
 
 
@@ -110,6 +113,10 @@ CorDbStore* corDbStoreOf(Tenant* tenantP)
   storeP->typeIndexP = NULL;                         // built by the first query that can use it
   pthread_mutex_init(&storeP->typeIndexMutex, NULL);
 #endif
+#if COR_FEATURE_DB_INDEXES
+  storeP->valueIndexP = NULL;                        // built by the first query that can use it
+  pthread_mutex_init(&storeP->valueIndexMutex, NULL);
+#endif
   {
     pthread_rwlockattr_t lockAttr;                     // --dbLockPrefer (corDbInit)
 
@@ -164,6 +171,10 @@ void corDbStoreFree(CorDbStore* storeP)
 #if COR_FEATURE_TYPE_INDEX
   corDbTypeIndexFree(storeP);
   pthread_mutex_destroy(&storeP->typeIndexMutex);
+#endif
+#if COR_FEATURE_DB_INDEXES
+  corDbValueIndexDrop(storeP);
+  pthread_mutex_destroy(&storeP->valueIndexMutex);
 #endif
 
   corTreeFree(storeP->tree);

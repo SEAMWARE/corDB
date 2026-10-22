@@ -32,6 +32,9 @@
 #if COR_FEATURE_TYPE_INDEX
 #include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexOf, corDbTypeIndexHead, corDbTypeIndexRef
 #endif
+#if COR_FEATURE_DB_INDEXES
+#include "corDB/corDbValueIndex.h"                   // corDbValueIndexOf, corDbValueIndexCandidates, corDbValueIndexSeq
+#endif
 #include "corDB/corDbEntityQuery.h"    // Own interface
 
 
@@ -340,12 +343,12 @@ static const char* indexType(CorDbStore* storeP, DbQueryFilter* filterP, struct 
 
 // -----------------------------------------------------------------------------
 //
-// entityQueryOver - the query over a list of entities: the store's (storeP, under its read lock), or the
-// caller's (storeP NULL - corDbEntityQueryList: no seek, there is no index). The page's entities copied
-// as corTreeClone copies them, and for each, what corDbEntityCopyFinish needs and its geoDistance (-1:
-// none) - both put in after the lock
+// entityQueryOver - the query over a list of entities: the store's (storeP, under its read lock - tenantP
+// its tenant), or the caller's (storeP NULL - corDbEntityQueryList: no seek, there is no index). The page's
+// entities copied as corTreeClone copies them, and for each, what corDbEntityCopyFinish needs and its
+// geoDistance (-1: none) - both put in after the lock
 //
-static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter* filterP, CorNode** arrayPP, int64_t** createdAtVP, double** distVP)
+static int entityQueryOver(CorDbStore* storeP, Tenant* tenantP, CorNode* entities, DbQueryFilter* filterP, CorNode** arrayPP, int64_t** createdAtVP, double** distVP)
 {
   bool qSubTimes = (filterP != NULL) && qSubTimesUsed(filterP->qExpr);   // once per query
 
@@ -400,8 +403,33 @@ static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter*
   const char*            ixType  = indexType(storeP, filterP, &ixP, &ixCount);
 #endif
 
+#if COR_FEATURE_DB_INDEXES
+  //
+  // A q that a declared index serves: its candidates, in the store's order (corDbValueIndex.h) - unless the
+  // type's list is shorter. vcN -1: not served.
+  //
+  struct CorDbValueIndex* vxP = ((storeP != NULL) && (filterP != NULL) && (filterP->qExpr != NULL)) ? corDbValueIndexOf(storeP, tenantP) : NULL;
+  CorDbValueCand*         vcV = NULL;
+  int                     vcN = (vxP != NULL) ? corDbValueIndexCandidates(vxP, filterP, needed, &vcV) : -1;
+  int                     vcIx = 0;
+
+#if COR_FEATURE_TYPE_INDEX
+  if ((vcN >= 0) && (ixType != NULL) && (ixCount < vcN))
+    vcN = -1;
+  if (vcN >= 0)
+    ixType = NULL;
+#endif
+#else
+  (void) tenantP;
+#endif
+
   if (needed == 0)
   {
+#if COR_FEATURE_DB_INDEXES
+    if (vcN >= 0)
+      total = vcN;
+    else
+#endif
 #if COR_FEATURE_TYPE_INDEX
     if (ixType != NULL)
       total = ixCount;
@@ -459,6 +487,25 @@ static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter*
     if ((posP != NULL) && (corDbCreatedAt(posP, 0) == filterP->seekCreatedAt))
     {
       startP = back ? corDbIndexPrev(storeP, posP) : posP->next;
+#if COR_FEATURE_DB_INDEXES
+      if (vcN >= 0)
+      {
+        //
+        // The candidates after the position's place in the store - or the last before it, backwards
+        //
+        int64_t posSeq = corDbValueIndexSeq(vxP, posP);
+
+        while ((vcIx < vcN) && (vcV[vcIx].seq <= posSeq))
+          ++vcIx;
+
+        if (back)
+        {
+          while ((vcIx > 0) && (vcV[vcIx - 1].seq >= posSeq))
+            --vcIx;
+          vcIx -= 1;                                 // -1: none before it
+        }
+      }
+#endif
 #if COR_FEATURE_TYPE_INDEX
       if (ixType != NULL)
       {
@@ -490,11 +537,61 @@ static int entityQueryOver(CorDbStore* storeP, CorNode* entities, DbQueryFilter*
 #if COR_FEATURE_TYPE_INDEX
       ixType = NULL;
 #endif
+#if COR_FEATURE_DB_INDEXES
+      vcN = -1;
+#endif
     }
   }
 #endif
 
   (void) seek;
+
+#if COR_FEATURE_DB_INDEXES
+  if (vcN >= 0)
+  {
+    for (int ix = vcIx; (ix >= 0) && (ix < vcN); ix += back ? -1 : 1)
+    {
+      if (candTake(vcV[ix].entityP, filterP, distFilterP, qSubTimes, cands, &nCand, needed) == true)
+        break;
+    }
+
+#ifdef DEBUG
+    //
+    // DEBUG builds: the store's walk too - the same candidates, in the same order, or the index is wrong (an
+    // entity's values changed at a write site that does not tell it). Every functional test with a declared
+    // index checks it.
+    //
+    int  checkN   = 0;
+    bool mismatch = false;
+
+    for (CorNode* eP = startP; eP != NULL; eP = back ? corDbIndexPrev(storeP, eP) : eP->next)
+    {
+      double geoDistance = -1;
+
+      if (entityMatch(eP, filterP, distFilterP, qSubTimes, &geoDistance) == false)
+        continue;
+
+      if ((checkN >= nCand) || (cands[checkN].eP != eP))
+      {
+        mismatch = true;
+        break;
+      }
+
+      ++checkN;
+
+      if ((needed != 0) && (checkN >= needed))
+        break;
+    }
+
+    if ((mismatch == true) || (checkN != nCand))
+    {
+      COR_E("corDB value index: %d candidates from it, the store's walk differs (at %d)", nCand, checkN);
+      abort();
+    }
+#endif
+  }
+  else
+#endif
 
 #if COR_FEATURE_TYPE_INDEX
   if (ixType != NULL)
@@ -646,7 +743,7 @@ static int entityQuery(Tenant* tenantP, DbQueryFilter* filterP, CorNode** arrayP
 {
   COR_DB_READ(tenantP);
 
-  return entityQueryOver(corDbStoreOf(tenantP), corDbEntities(tenantP), filterP, arrayPP, createdAtVP, distVP);
+  return entityQueryOver(corDbStoreOf(tenantP), tenantP, corDbEntities(tenantP), filterP, arrayPP, createdAtVP, distVP);
 }
 
 
@@ -688,7 +785,7 @@ int corDbEntityQueryList(CorNode* listP, DbQueryFilter* filterP, CorNode** array
 {
   int64_t* createdAtV = NULL;
   double*  distV      = NULL;
-  int      r          = entityQueryOver(NULL, listP, filterP, arrayPP, &createdAtV, &distV);
+  int      r          = entityQueryOver(NULL, NULL, listP, filterP, arrayPP, &createdAtV, &distV);
 
   return finish(r, filterP, arrayPP, createdAtV, distV);
 }

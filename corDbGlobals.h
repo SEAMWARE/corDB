@@ -34,5 +34,8 @@ extern int   corDbSnapshotEvery;                       // MiB of log
 extern bool  corDbCompress;                            // snapshots and finished segments compressed (zstd)
 extern char* corDbLockPrefer;                          // --dbLockPrefer reads|writes
 extern bool  corDbLockWriters;                         // true: a store's lock lets writers in first (corDbInit)
+#if COR_FEATURE_DB_INDEXES
+extern char* corDbIndexesOption;                       // --dbIndexes (corDbIndexes.h)
+#endif
 
 #endif  // CORDB_CORDBGLOBALS_H_

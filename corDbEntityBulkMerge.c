@@ -20,11 +20,8 @@
 #include <stddef.h>                                       // NULL
 #include <string.h>                                       // strcmp
 
-#if COR_FEATURE_TYPE_INDEX
-#include "corDB/corDbTypeIndex.h"                    // corDbTypeIndexRetype
-#endif
 #include "corDB/corDbSysTimes.h"                      // corDbTreeIn, corDbTreeOut, corDbFullView
-#include "corDB/corDbIndex.h"                         // corDbIndexLookup
+#include "corDB/corDbIndex.h"                         // corDbIndexLookup, corDbIndexChanged
 #include <stdlib.h>                                       // calloc, free
 #include "corTree/corTreeFree.h"                          // corTreeFree
 #include "corTree/corTreeChildReplace.h"                  // corTreeChildReplace
@@ -227,9 +224,7 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       {
         corDbApplyReportToLive(live, mergedTargetsV[i], &reportsV[i]);
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
-#if COR_FEATURE_TYPE_INDEX
-        corDbTypeIndexRetype(corDbLockedStore, live);   // a merge may change the entity's types
-#endif
+        corDbIndexChanged(corDbLockedStore, live, NULL, -1);   // what the type and value indexes hold of it - that many members
         corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
         anyOk = true;
         continue;
@@ -269,9 +264,10 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
       else
         corDbPersistMerged(corDbLockedStore->persistP, live, &reportsV[i]);
 
-#if COR_FEATURE_TYPE_INDEX
-      corDbTypeIndexRetype(corDbLockedStore, live);   // a merge may change the entity's types
-#endif
+      const char* names[64];
+      int         nn = corDbMergedNames(&reportsV[i], names, 64);
+
+      corDbIndexChanged(corDbLockedStore, live, names, nn);   // what the type and value indexes hold of it
       corDbHistoryMerged(corDbLockedStore, live, &reportsV[i], corRest.kallocP);
       anyOk = true;
     }

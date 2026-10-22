@@ -53,6 +53,19 @@ extern void corDbIndexReplace(CorDbStore* storeP, CorNode* oldP, CorNode* newP);
 
 // -----------------------------------------------------------------------------
 //
+// corDbIndexChanged - the entity changed in place (a merge, a replayed attribute record): the indexes of
+// what it holds - its types (corDbTypeIndex.h), the values of its declared attributes (corDbValueIndex.h) -
+// told. Every write that changes a stored entity in place calls it; the write lock held.
+//
+// namesV, namesN - the members the write changed (namesN -1: not known - the value index checks every
+// declaration): a write of no declared attribute leaves the value index alone.
+//
+extern void corDbIndexChanged(CorDbStore* storeP, CorNode* entityP, const char** namesV, int namesN);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbIndexLookup - the entity with this id, or NULL
 //
 // Call with the store lock held (read or write). O(1).

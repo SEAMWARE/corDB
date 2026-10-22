@@ -170,6 +170,40 @@ difference.
   [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB's type index".
 - **`make COR_FEATURE_TYPE_INDEX=0`** leaves it out of the build (8 KiB of `.text`).
 
+## Queries by value - declared indexes
+
+An attribute whose `q` value terms an index serves is **declared** - narrowed to an entity type, to a tenant,
+if so declared: `--dbIndexes`, or the broker's admin API (`/admin/indexes`, coraine's
+[installation](https://github.com/SEAMWARE/coraine/blob/main/doc/installation.md), "Declared indexes"). The
+admin API's declarations are kept in the default tenant's store (documents of the collection `dbIndexes`) and
+come back with it at a start.
+
+A declaration is a value index in the store of every tenant it covers (`corDbValueIndex.h`): a skip list of
+the attribute's values - every instance's, an array's elements; booleans, numbers, strings - each with its
+entity. A query whose `q` has a term on the attribute with `==`, a range, a list, `<`, `<=`, `>` or `>=` takes
+its candidates from the values the term can match, in the store's order, and matches each of them as before:
+the answer is the walk's, in the same order, and a debug build walks the store too and aborts on a difference.
+An AND takes its term with the fewest candidates; an OR is served when all its members are. A declaration
+narrowed to a type serves a query of that type (or of an AND group of types with it). Not served: `!=`, `~=`,
+`!~=`, existence, a sub-attribute, a `[member]` path - the query walks, or takes its type's list, as without.
+A query by type whose type's list is shorter than the candidates walks that list. A page (offset + limit
+matches) whose candidates exceed `sqrt(page * entities)`, at least 64, walks the store: the walk stops at the
+page, the index gathers and sorts every candidate. A count, or a query that wants every match, takes the
+index whatever its candidates.
+
+- **Built by the first query that can use it**, under the read lock - and at once in every store when the
+  admin API declares one. Not on disk.
+- **Kept** by the functions that link, unlink and swap an entity in the store's list, and by
+  `corDbIndexChanged` wherever an entity changes in place (a merge, a batch upsert, a replayed record): each
+  declaration's values of the entity are compared with its entries, and only a declaration whose values
+  differ changes its skip list.
+- **Counted**, per declaration and store, since it was built: `accesses`, the `q` terms it served, and
+  `updates`, the writes that changed it - an entity with the attribute created or deleted, its values changed.
+- **A change of the declarations** drops every store's index; the next query that can use one builds it.
+- **Out of memory:** the index is dropped, and queries walk the store.
+- **`make COR_FEATURE_DB_INDEXES=0`** leaves it out of the build: 23,616 bytes of `corDB.so` (`.text` +
+  `.data`, release).
+
 ## Tested
 
 Through the broker: coraine's functional suite run with `-db corDB` (`corTest`), and in coraine's CI.
@@ -195,6 +229,7 @@ coraine --database corDB --dbDir /var/lib/coraine
 | `--dbSnapshotEvery` | 64 | MiB of log (and at least as much as the last snapshot) |
 | `--dbCompress` | off | snapshots and finished segments compressed (zstd, loaded only then); read with or without it |
 | `--dbLockPrefer` | `reads` | whom a tenant's store lock lets in first when readers and writers both wait: `writes` (also for `ramDB`). Which is faster is the workload's - coraine's performance.md, "Writes that notify, and which writer the lock lets in first" |
+| `--dbIndexes` | none | declared indexes (also for `ramDB`): attribute names, comma-separated, or a JSON array of `{ "attribute", "type"?, "tenant"? }` - [Queries by value](#queries-by-value---declared-indexes) |
 
 [The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
 [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".

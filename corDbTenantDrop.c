@@ -23,6 +23,9 @@
 #if COR_FEATURE_TYPE_INDEX
 #include "corDB/corDbTypeIndex.h"                         // corDbTypeIndexFree
 #endif
+#if COR_FEATURE_DB_INDEXES
+#include "corDB/corDbValueIndex.h"                        // corDbValueIndexDrop
+#endif
 #include "corDB/corDbTenantDrop.h"                       // Own interface
 
 
@@ -93,6 +96,9 @@ int corDbTenantDrop(Tenant* tenantP)
   storeP->idxOld         = NULL;
 #if COR_FEATURE_TYPE_INDEX
   corDbTypeIndexFree(storeP);                        // its refs name the entities just emptied
+#endif
+#if COR_FEATURE_DB_INDEXES
+  corDbValueIndexDrop(storeP);                       // and so do its entries
 #endif
   storeP->idxSlots       = 0;
   storeP->idxCount       = 0;
