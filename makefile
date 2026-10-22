@@ -49,7 +49,7 @@ COR_FEATURE_REGISTRATIONS ?= 1
 COR_FEATURE_TYPE_INDEX ?= 1
 
 #
-# COR_FEATURE_DB_INDEXES - 1 | 0, as the broker's: declared indexes (--dbIndexes, the admin API's
+# COR_FEATURE_DB_INDEXES - 1 | 0, as the broker's: declared indexes (--dbValueIndexes, the admin API's
 # /admin/indexes) - a value index of a declared attribute in every store (corDbValueIndex.h). 0 leaves them out
 #
 COR_FEATURE_DB_INDEXES ?= 1

@@ -56,7 +56,7 @@ int corDbInit(void)
 
 #if COR_FEATURE_DB_INDEXES
   //
-  // The declared indexes: --dbIndexes, and the admin API's, kept in the default tenant's store - loaded now
+  // The declared indexes: --dbValueIndexes, and the admin API's, kept in the default tenant's store - loaded now
   //
   if (corDbIndexesInit() == false)
     return -1;

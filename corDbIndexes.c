@@ -6,7 +6,7 @@
 // Copyright 2026 Seamware
 // SPDX-License-Identifier: Apache-2.0
 //
-// The declarations (corDbIndexes.h): --dbIndexes's first, then the admin API's. A declaration is an index in
+// The declarations (corDbIndexes.h): --dbValueIndexes's first, then the admin API's. A declaration is an index in
 // the store of every tenant it covers (corDbValueIndex.h), built by the first query that can use it - and at
 // once in every store there is, when the admin API declares it. <id> is the declaration's: 8 hex digits of a
 // CRC-32C of its attribute, type and tenant, as the mongoc plugin has it.
@@ -57,14 +57,14 @@ typedef struct IndexDecl
   char*  attr;           // expanded
   char*  type;           // expanded - NULL: every type
   char*  tenant;         // NULL: every tenant
-  bool   api;            // made through /admin/indexes (kept in the default tenant's store) - false: --dbIndexes
+  bool   api;            // made through /admin/indexes (kept in the default tenant's store) - false: --dbValueIndexes
 } IndexDecl;
 
 
 
 // -----------------------------------------------------------------------------
 //
-// declV - the declarations, --dbIndexes's first. declN is read without the mutex, to know there are none.
+// declV - the declarations, --dbValueIndexes's first. declN is read without the mutex, to know there are none.
 //
 static IndexDecl        declV[64];
 static int              declN       = 0;
@@ -133,7 +133,7 @@ static int declAdd(const char* attr, const char* type, const char* tenant, bool 
   int ix = declLookup(d.id);
   if (ix >= 0)
   {
-    snprintf(errorText, errorTextLen, "'%s' is declared already (%s, by %s)", attr, d.id, declV[ix].api? "the admin API" : "--dbIndexes");
+    snprintf(errorText, errorTextLen, "'%s' is declared already (%s, by %s)", attr, d.id, declV[ix].api? "the admin API" : "--dbValueIndexes");
     declFree(&d);
     return DB_ALREADY_EXISTS;
   }
@@ -281,7 +281,7 @@ static CorNode* declToTree(IndexDecl* dP, bool stats)
     corTreeChildAdd(declP, corTreeString(corRest.kallocP, "type", dP->type));
   if (dP->tenant != NULL)
     corTreeChildAdd(declP, corTreeString(corRest.kallocP, "tenant", dP->tenant));
-  corTreeChildAdd(declP, corTreeString(corRest.kallocP, "declaredBy", dP->api? "api" : "dbIndexes"));
+  corTreeChildAdd(declP, corTreeString(corRest.kallocP, "declaredBy", dP->api? "api" : "dbValueIndexes"));
 
   if (stats == true)
   {
@@ -354,7 +354,7 @@ static void declsLoad(void)
 
 // -----------------------------------------------------------------------------
 //
-// optionDeclare - one declaration of --dbIndexes: its names expanded with the core @context (a name
+// optionDeclare - one declaration of --dbValueIndexes: its names expanded with the core @context (a name
 // with a ':' is taken as it is)
 //
 static bool optionDeclare(CorAlloc* allocP, const char* attr, const char* type, const char* tenant)
@@ -365,7 +365,7 @@ static bool optionDeclare(CorAlloc* allocP, const char* attr, const char* type, 
 
   if (declAdd((attrIri != NULL)? attrIri : attr, (typeIri != NULL)? typeIri : type, tenant, false, errorText, sizeof(errorText)) != DB_OK)
   {
-    COR_E("corDB: --dbIndexes: %s", errorText);
+    COR_E("corDB: --dbValueIndexes: %s", errorText);
     return false;
   }
 
@@ -376,7 +376,7 @@ static bool optionDeclare(CorAlloc* allocP, const char* attr, const char* type, 
 
 // -----------------------------------------------------------------------------
 //
-// optionParse - --dbIndexes: attribute names, comma-separated - or a JSON array of
+// optionParse - --dbValueIndexes: attribute names, comma-separated - or a JSON array of
 // { "attribute": , "type"?: , "tenant"?: }
 //
 static bool optionParse(const char* option)
@@ -402,7 +402,7 @@ static bool optionParse(const char* option)
 
     if ((treeP == NULL) || (treeP->type != CorArray))
     {
-      COR_E("corDB: --dbIndexes: not a JSON array of { \"attribute\", \"type\", \"tenant\" }");
+      COR_E("corDB: --dbValueIndexes: not a JSON array of { \"attribute\", \"type\", \"tenant\" }");
       ok = false;
     }
 
@@ -414,7 +414,7 @@ static bool optionParse(const char* option)
 
       if ((attrP == NULL) || (attrP->type != CorString) || ((typeP != NULL) && (typeP->type != CorString)) || ((tenantP != NULL) && (tenantP->type != CorString)))
       {
-        COR_E("corDB: --dbIndexes: each declaration is { \"attribute\": <string>, \"type\"?: <string>, \"tenant\"?: <string> }");
+        COR_E("corDB: --dbValueIndexes: each declaration is { \"attribute\": <string>, \"type\"?: <string>, \"tenant\"?: <string> }");
         ok = false;
       }
       else
@@ -625,7 +625,7 @@ int corDbIndexAdd(const char* attr, const char* type, const char* tenant, CorNod
 // -----------------------------------------------------------------------------
 //
 // corDbIndexDelete - a declaration of the admin API taken away: its document deleted, its indexes dropped.
-// One of --dbIndexes is not (DB_BAD_INPUT): it is the start's, and comes back with it
+// One of --dbValueIndexes is not (DB_BAD_INPUT): it is the start's, and comes back with it
 //
 int corDbIndexDelete(const char* id, char* errorText, int errorTextLen)
 {
@@ -643,7 +643,7 @@ int corDbIndexDelete(const char* id, char* errorText, int errorTextLen)
   }
   else if (declV[ix].api == false)
   {
-    snprintf(errorText, errorTextLen, "'%s' is declared by --dbIndexes - taken out of it, it is gone at the next start", id);
+    snprintf(errorText, errorTextLen, "'%s' is declared by --dbValueIndexes - taken out of it, it is gone at the next start", id);
     rc = DB_BAD_INPUT;
   }
   else
