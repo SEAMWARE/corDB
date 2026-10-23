@@ -17,6 +17,7 @@
 #include "corAlloc/corAlloc.h"                         // corAlloc
 #include "corHash/corHash.h"                           // corHashTableCreate, corHashItemAdd, corHashItemLookup, corHashItemRemove
 #include "corTree/CorNode.h"                           // CorNode
+#include "corTree/corTreeNodeCopy.h"                   // corTreeNodeCopy
 #include "corTree/corTreeBin.h"                        // corTreeBinEncode, corTreeBinDecode, CorBinBuffer
 #include "corTree/corTreeBuilder.h"                    // corTreeObject, corTreeString, corTreeInteger, corTreeChildAdd
 #include "corTree/corTreeClone.h"                      // corTreeClone
@@ -553,7 +554,7 @@ bool corDbHistoryRecordEncode(const char* entityId, const char* entityType, cons
   if ((treeP == NULL) || (wrapP == NULL))
     return false;
 
-  *wrapP      = *instanceP;
+  corTreeNodeCopy(wrapP, instanceP);   // the instance may be the store's: a 32-byte node (CorNode.h)
   wrapP->name = (char*) "instance";
   wrapP->next = NULL;
 

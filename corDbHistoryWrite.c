@@ -16,6 +16,7 @@
 #include "corLog/corLog.h"                             // COR_E
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
 #include "corTree/CorNode.h"                           // CorNode
+#include "corTree/corTreeNodeCopy.h"                   // corTreeNodeCopy
 #include "corTree/corTreeBuilder.h"                    // corTreeObject, corTreeString, corTreeInteger, corTreeChildAdd
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
@@ -461,7 +462,7 @@ static CorNode* scopeInstance(CorNode* scopeP, uint64_t atNs, bool created, CorA
   if ((iP == NULL) || (vP == NULL))
     return NULL;
 
-  *vP      = *scopeP;
+  corTreeNodeCopy(vP, scopeP);         // the store's node: a scalar is 32 bytes (CorNode.h)
   vP->name = (char*) "value";
   vP->next = NULL;
 

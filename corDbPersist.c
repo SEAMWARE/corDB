@@ -43,6 +43,7 @@
 #include "corBase/corCrc32c.h"                         // corCrc32c
 #include "corBase/corCoLoop.h"                         // corCoBlocking
 #include "corTree/CorNode.h"                           // CorNode
+#include "corTree/corTreeNodeCopy.h"                   // corTreeNodeCopy
 #include "corTree/corTreeBuilder.h"                    // corTreeChildRemove, corTreeChildAdd
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 #include "corRest/CorRestState.h"                      // corRestP
@@ -2473,7 +2474,7 @@ static CorNode* attrsBody(CorNode* entityP, const char** names, int n, AttrsBody
     if ((mP->name == NULL) || (strcmp(mP->name, "id") == 0) || (named(mP->name, names, n) == false))
       continue;
 
-    bP->setV[nSet]      = *mP;
+    corTreeNodeCopy(&bP->setV[nSet], mP);   // the store's node: a scalar is 32 bytes (CorNode.h)
     bP->setV[nSet].next = NULL;
     if (nSet > 0)
       bP->setV[nSet - 1].next = &bP->setV[nSet];
