@@ -239,6 +239,10 @@ coraine --database corDB --dbDir /var/lib/coraine
 | `--dbLockPrefer` | `reads` | whom a tenant's store lock lets in first when readers and writers both wait: `writes` (also for `ramDB`). Which is faster is the workload's - coraine's performance.md, "Writes that notify, and which writer the lock lets in first" |
 | `--dbValueIndexes` | none | declared indexes (also for `ramDB`): the attributes expanded (IRIs; a short name is an error), comma-separated, or a JSON array of `{ "attribute", "type"?, "tenant"? }` - [Queries by value](#queries-by-value---declared-indexes) |
 
+`--dbSync`, `--dbSyncInterval`, `--dbSnapshotEvery` and `--dbCompress` act on the disk: given without
+`--dbDir` (on the command line, in the configuration file or in the environment), the broker does not
+start - each one is named. As `ramDB` refuses `--dbDir`, an option it does not have.
+
 [The design](doc/persistence.md), [how it got here](doc/history/persistence.md); what it costs: coraine's
 [performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md), "corDB on disk".
 
