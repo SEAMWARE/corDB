@@ -37,7 +37,8 @@
 #include <unistd.h>                                    // write, fdatasync, close
 
 #include "corLog/corLog.h"                             // COR_E, COR_I, COR_W
-#include "corAlloc/CorAlloc.h"                         // CorAlloc
+#include "corArgs/corArgsInit.h"                       // corArgInfoV
+#include "corAlloc/CorAlloc.h"                      // CorAlloc
 #include "corAlloc/corAllocBufferInit.h"               // corAllocBufferInit
 #include "corAlloc/corAllocBufferReset.h"              // corAllocBufferReset
 #include "corBase/corCrc32c.h"                         // corCrc32c
@@ -1649,12 +1650,45 @@ static bool storageFormat(void)
 
 // -----------------------------------------------------------------------------
 //
+// diskOptionsRefused - an option of the disk given to a store in RAM only (no --dbDir): each one named, true
+//
+// Refused, not ignored, as ramDB refuses --dbDir - an option it does not have: without a disk they mean
+// nothing, and a --dbSync request taken in silence would promise a durability there is none of. Given is
+// any source - the command line, the configuration file, the environment; a default is not given.
+//
+static bool diskOptionsRefused(void)
+{
+  static const char* diskOptionV[] = { "--dbSync", "--dbSyncInterval", "--dbSnapshotEvery", "--dbCompress", NULL };
+  bool               refused       = false;
+
+  for (int ix = 0; (corArgInfoV != NULL) && (corArgInfoV[ix].type != CorArgEnd); ix++)
+  {
+    if ((corArgInfoV[ix].longName == NULL) || (corArgInfoV[ix].from == CorArgFromDefaultValue))
+      continue;
+
+    for (int dIx = 0; diskOptionV[dIx] != NULL; dIx++)
+    {
+      if (strcmp(corArgInfoV[ix].longName, diskOptionV[dIx]) == 0)
+      {
+        COR_E("corDB: %s without --dbDir - the store is in RAM only, there is no disk for it to act on", diskOptionV[dIx]);
+        refused = true;
+      }
+    }
+  }
+
+  return refused;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbPersistInit -
 //
 bool corDbPersistInit(void)
 {
   if ((corDbDir == NULL) || (corDbDir[0] == 0))
-    return true;
+    return diskOptionsRefused() == false;
 
   if      (strcmp(corDbSync, "interval") == 0) syncMode = SyncInterval;
   else if (strcmp(corDbSync, "request")  == 0) syncMode = SyncRequest;
