@@ -155,7 +155,9 @@ extern CorDbStore* corDbStoreOf(Tenant* tenantP);
 // these exist because __attribute__((cleanup)) needs a function to call.
 //
 // corDbStoreUnlock is also where a write with --dbSync request waits for its records to be on the
-// disk - after the lock is released, so no other writer waits for the disk with it.
+// disk - after the lock is released, so no other writer waits for the disk with it - and where a write
+// that could not be kept (its record not logged, or with --dbSync request not synced) has the request
+// answered 503 (corRestProblemLate).
 //
 extern CorDbStore* corDbStoreRead(Tenant* tenantP);
 extern CorDbStore* corDbStoreWrite(Tenant* tenantP);
