@@ -300,8 +300,9 @@ With any value, a log that cannot be written **pauses** the store: a segment tha
 ahead (a full disk, a file-size limit), a record that cannot be put in the log, a failed `fdatasync`.
 The flusher keeps 8 MiB of the log allocated ahead of its records, so a full disk is found before a write
 needs the room - unless more than 8 MiB is written between two of its runs. While paused, every write is
-refused before it touches the store: 503 `PersistenceUnavailable`, detail `writes are refused until the
-broker can write its log again (corDB --dbDir): <why>`; reads are served. A write already applied when the
+refused before it is parsed: 503 `PersistenceUnavailable`, `Retry-After: 5`, detail `writes are refused
+until the broker can write its log again (paused for <N> s): <why>`; reads are served
+([A store that cannot write its log](https://github.com/SEAMWARE/coraine/blob/main/doc/installation.md#a-store-that-cannot-write-its-log)). A write already applied when the
 log failed is answered 503 as well: `the write is in the broker's memory but not in its log ...` or `a sync
 of the log to the disk failed, for this write's record or one before it ...` - with `request`, also the
 writes whose records that sync was for; with `interval` those were answered before the sync, and the
