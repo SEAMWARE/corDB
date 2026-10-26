@@ -104,8 +104,9 @@ static pthread_t        snapTid;
 // What this thread appended under the write lock it holds - for corDbPersistSyncWait, called by the
 // lock's release. Set and read with no yield between: a coroutine cannot yield holding a pthread lock.
 //
-static __thread CorDbPersist* pendingP   = NULL;
-static __thread uint64_t      pendingSeq = 0;
+static __thread CorDbPersist* pendingP      = NULL;
+static __thread uint64_t      pendingSeq    = 0;
+static __thread bool          pendingFailed = false;   // a record of it could not be put in a log
 
 
 
@@ -811,6 +812,8 @@ static void flushLocked(CorDbPersist* pP)
     ok = finished && ok;
   }
 
+  bool retiredOk = ok;                                 // a retired segment is of the log or of the history
+
   if (sync && (histFd >= 0) && (fdatasync(histFd) != 0))
   {
     COR_E("corDB: fdatasync of the history log '%s': %s - what was appended may NOT be on the disk", pP->hist.path, strerror(errno));
@@ -843,7 +846,19 @@ static void flushLocked(CorDbPersist* pP)
   if (ok && histOk)
     __atomic_store_n(&pP->syncedSeq, last, __ATOMIC_RELEASE);
   else
+  {
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+
+    //
+    // What this round should have synced, from the first record not synced before it, may not be on
+    // the disk - nor, for a load that stops at the first bad record, anything after it. Set once.
+    //
+    if ((ok == false) && (__atomic_load_n(&pP->failedFromSeq, __ATOMIC_ACQUIRE) == 0))
+      __atomic_store_n(&pP->failedFromSeq, __atomic_load_n(&pP->syncedSeq, __ATOMIC_ACQUIRE) + 1, __ATOMIC_RELEASE);
+
+    if (((histOk == false) || (retiredOk == false)) && (__atomic_load_n(&pP->failedFromHistSeq, __ATOMIC_ACQUIRE) == 0))
+      __atomic_store_n(&pP->failedFromHistSeq, __atomic_load_n(&pP->syncedHistSeq, __ATOMIC_ACQUIRE) + 1, __ATOMIC_RELEASE);
+  }
 }
 
 
@@ -2416,10 +2431,14 @@ void corDbPersistAppend(CorDbPersist* pP, CorDbLogOp op, CorNode* bodyP)
   {
     COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+    pendingFailed = true;
     seq = pP->seq;
   }
   else if (logPut(pP) == false)
+  {
+    pendingFailed = true;
     seq = pP->seq;
+  }
   else
     pP->seq = seq;
 
@@ -2607,11 +2626,15 @@ void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
   {
     COR_E("corDB: out of memory for the history log of '%s' - a history record is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+    pendingFailed = true;
   }
   else if (segAppend(pP, &pP->hist, "hist", pP->histBuf.buf, pP->histBuf.len) == true)
     ++pP->histSeq;
   else
+  {
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+    pendingFailed = true;
+  }
 
   pthread_mutex_unlock(&pP->mutex);
 }
@@ -2690,10 +2713,14 @@ void corDbPersistAppendPre(CorDbPersist* pP, CorDbLogOp op, CorDbPre* preP, int 
   {
     COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
+    pendingFailed = true;
     seq = pP->seq;
   }
   else if (logPut(pP) == false)
+  {
+    pendingFailed = true;
     seq = pP->seq;
+  }
   else
     pP->seq = seq;
 
@@ -2728,13 +2755,18 @@ typedef struct SyncWait
   CorDbPersist*  pP;
   uint64_t       seq;
   uint64_t       histSeq;                              // the history appended by then: a write's history is drained after its lock,
-} SyncWait;                                            // maybe after the flush that synced its own record
+                                                       // maybe after the flush that synced its own record
+  bool           synced;                               // out: on the disk - false: a failed sync may have lost it
+} SyncWait;
 
 
 
 // -----------------------------------------------------------------------------
 //
-// syncWait - kick the flusher, wait for its round to have synced 'seq' (or failed)
+// syncWait - kick the flusher, wait for its round to have synced 'seq' (or failed to)
+//
+// The failure is the round's that should have synced the record: a later round that syncs does not
+// bring back what a failed fdatasync dropped. A stop ends the wait - the close syncs what is left.
 //
 static void syncWait(void* arg)
 {
@@ -2742,10 +2774,29 @@ static void syncWait(void* arg)
 
   pthread_mutex_lock(&flushMutex);
 
-  while (((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) < wP->seq) || (__atomic_load_n(&wP->pP->syncedHistSeq, __ATOMIC_ACQUIRE) < wP->histSeq)) &&
-         (__atomic_load_n(&wP->pP->failed, __ATOMIC_ACQUIRE) == false) &&
-         (stopping == false))
+  while (true)
   {
+    uint64_t fromSeq     = __atomic_load_n(&wP->pP->failedFromSeq,     __ATOMIC_ACQUIRE);
+    uint64_t fromHistSeq = __atomic_load_n(&wP->pP->failedFromHistSeq, __ATOMIC_ACQUIRE);
+
+    if (((fromSeq != 0) && (wP->seq >= fromSeq)) || ((fromHistSeq != 0) && (wP->histSeq >= fromHistSeq)))
+    {
+      wP->synced = false;
+      break;
+    }
+
+    if ((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) >= wP->seq) && (__atomic_load_n(&wP->pP->syncedHistSeq, __ATOMIC_ACQUIRE) >= wP->histSeq))
+    {
+      wP->synced = true;
+      break;
+    }
+
+    if (stopping == true)
+    {
+      wP->synced = true;
+      break;
+    }
+
     kicked = true;
     pthread_cond_signal(&kickCond);
     pthread_cond_wait(&syncedCond, &flushMutex);
@@ -2763,15 +2814,32 @@ static void syncWait(void* arg)
 // In a coroutine the wait runs on a thread of its own and the loop serves the rest (corCoBlocking);
 // on a worker thread it is a plain wait. Either way, after the tenant's lock is released.
 //
-void corDbPersistSyncWait(void)
+CorDbKeep corDbPersistSyncWait(void)
 {
-  CorDbPersist* pP  = pendingP;
-  SyncWait      w   = { pP, pendingSeq, 0 };
+  CorDbPersist* pP     = pendingP;
+  SyncWait      w      = { pP, pendingSeq, 0, false };
+  bool          failed = pendingFailed;
 
-  pendingP = NULL;
+  pendingP      = NULL;
+  pendingFailed = false;
 
-  if ((pP == NULL) || (syncMode != SyncRequest))
-    return;
+  if (failed == true)
+    return CorDbNotLogged;
+
+  if (pP == NULL)
+    return CorDbKept;
+
+  //
+  // With any --dbSync: a record at or after the first one a failed sync may have lost is not kept,
+  // whether its own sync is still to come or not - a load stops before it
+  //
+  uint64_t fromSeq = __atomic_load_n(&pP->failedFromSeq, __ATOMIC_ACQUIRE);
+
+  if ((fromSeq != 0) && (w.seq >= fromSeq))
+    return CorDbNotSynced;
+
+  if (syncMode != SyncRequest)
+    return CorDbKept;
 
   pthread_mutex_lock(&pP->mutex);
   w.histSeq = pP->histSeq;                             // drained before this (corDbStoreUnlock): it covers this write's history
@@ -2781,6 +2849,8 @@ void corDbPersistSyncWait(void)
 
   corCoBlocking(syncWait, &w);
   corRestP = savedP;
+
+  return (w.synced == true) ? CorDbKept : CorDbNotSynced;
 }
 
 

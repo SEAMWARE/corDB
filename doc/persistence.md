@@ -159,8 +159,15 @@ The pages are the kernel's page cache: once the copy is done, the record outlive
   that arrived during one sync shares the next (the coroutines yield on it; a worker waits on a
   condition). Per-request durability, paid for by whoever asks
 - `--dbSync none`: no fsync at all (tests, benchmarks, a RAM disk) - the log is still written
-- a write error (disk full) is not silent: logged, a metric, and with `--dbSync request` the request
-  fails 503 - a broker that acknowledges what it cannot keep is worse than one that refuses
+- a write error is not silent: logged, and the request answered 503 - a broker that acknowledges what it
+  cannot keep is worse than one that refuses. A record that cannot be put in the log (its segment
+  cannot be allocated further, a full disk) - with any `--dbSync`: the write is in the store's memory,
+  not in the log, until a restart. A failed `fdatasync` - with any `--dbSync`: every later write of
+  the tenant, as a load stops at the first record it cannot read; with `--dbSync request` also the
+  writes whose records it was for (with `interval` they were answered before the sync - the broker's
+  log only). The wait happens as the write lock is released, after the operation has returned:
+  `corDbStoreUnlock` raises the 503 as corRest's late problem (`corRestProblemLate`), which replaces
+  the operation's answer
 
 ## 5a. A clean stop loses nothing
 
@@ -359,9 +366,8 @@ current. Not in the snapshot: rebuilt from the data, so it can never disagree wi
 ## 11. Open
 
 - Snapshot trigger: log bytes only, or also a time?
-- With `--dbSync request`, a failed write or sync is logged, and the request still answers its
-  success: the wait happens as the write lock is released, after the operation has returned. The
-  503 of § 5 needs the outcome carried back to the operation.
+- A write answered 503 is still in the store's memory: reads see it until a restart. Not undone.
+- No metric counts the writes that could not be kept - the broker's log only.
 - **Size.** Without `--dbCompress` nothing is compressed: on perfRun's fixture (2026-10-05) the current
   state takes 744 bytes an entity - MongoDB's documents 1 072, its files 113 (WiredTiger compresses).
   A record decodes on its own, so each carries its attributes' expanded IRIs again. Not done yet: a

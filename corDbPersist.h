@@ -66,6 +66,9 @@ typedef struct CorDbPersist
   uint64_t              seq;                           // the last sequence number given out
   uint64_t              syncedSeq;                     // the last one on the disk (atomic)
   bool                  failed;                        // a write or a sync failed: what is buffered is not on the disk
+  uint64_t              failedFromSeq;                 // the first record a failed sync may have lost - it and every later
+                                                       // one are not reliably on the disk (a load stops at a bad record);
+                                                       // 0: no sync of the log failed (atomic)
 
   pthread_mutex_t       ioMutex;                       // the syncs: a flush, a snapshot's switch of segment
   CorDbSeg              log;                           // the open log segment, log-<n>.cor
@@ -94,6 +97,7 @@ typedef struct CorDbPersist
   CorBinBuffer          histBuf;
   uint64_t              histSeq;
   uint64_t              syncedHistSeq;                 // the last history record on the disk (atomic)
+  uint64_t              failedFromHistSeq;             // as failedFromSeq, for the history log (atomic)
   CorDbSeg              hist;                          // hist.fd -1: no history
 
   //
@@ -220,13 +224,24 @@ extern void corDbPersistPreFree(CorDbPre* preP);
 
 // -----------------------------------------------------------------------------
 //
-// corDbPersistSyncWait - with --dbSync request: wait for this thread's last record to be on the disk
+// corDbPersistSyncWait - is what this thread just wrote kept; with --dbSync request, once it is on the disk
 //
 // For corDbStoreUnlock: with --dbSync request, the write lock released, the request waits for its
-// last record's fdatasync (corDbPersistSyncWait) - with the lock held, every other writer of the
-// tenant would wait for the disk too.
+// last record's fdatasync - with the lock held, every other writer of the tenant would wait for the
+// disk too.
 //
-extern void corDbPersistSyncWait(void);
+// Returns CorDbKept; CorDbNotLogged when a record of the write could not be put in the log (any
+// --dbSync: known before the answer); CorDbNotSynced when its record is at or after the first one a
+// failed sync may have lost (any --dbSync), or, with --dbSync request, when the sync of its record failed.
+//
+typedef enum CorDbKeep
+{
+  CorDbKept,
+  CorDbNotLogged,
+  CorDbNotSynced
+} CorDbKeep;
+
+extern CorDbKeep corDbPersistSyncWait(void);
 
 
 

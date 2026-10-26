@@ -17,6 +17,8 @@
 #include "corTree/corTreeLookup.h"                   // corTreeLookup
 #include "corHash/corHash.h"                         // corHashRelease
 
+#include "corRest/corRestProblem.h"                 // corRestProblemLate, COR_REST_ERROR_INTERNAL
+
 #include "db/Tenant.h"                               // Tenant
 
 #include "corDB/corDbHistory.h"                      // CorDbHistory, corDbHistoryOn, corDbHistoryFree
@@ -321,7 +323,19 @@ void corDbStoreUnlock(CorDbStore** storePP)
     if (__atomic_load_n(&(*storePP)->histQHead, __ATOMIC_ACQUIRE) != NULL)
       corDbHistoryDrain(*storePP);                   // the history this write enqueued - before the answer, so a read sees it
 
-    corDbPersistSyncWait();                          // --dbSync request only, and only after a write
+    //
+    // A write the store took but could not keep is not answered as a success: the operation has
+    // returned by now, so the answer is replaced (corRestProblemLate) - outside a request (a load, a
+    // flush of subscription counters) the error is logged and that is all
+    //
+    CorDbKeep keep = corDbPersistSyncWait();           // the wait: --dbSync request only, and only after a write
+
+    if (keep == CorDbNotLogged)
+      corRestProblemLate(503, COR_REST_ERROR_INTERNAL, "Service Unavailable",
+                         "the write is in the broker's memory but not in its log (corDB --dbDir) - a restart loses it; the broker's log says why");
+    else if (keep == CorDbNotSynced)
+      corRestProblemLate(503, COR_REST_ERROR_INTERNAL, "Service Unavailable",
+                         "a sync of the log to the disk failed, for this write's record or one before it (corDB --dbDir) - a restart may lose it; the broker's log says why");
   }
 }
 
