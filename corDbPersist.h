@@ -231,8 +231,8 @@ extern void corDbPersistPreFree(CorDbPre* preP);
 // disk too.
 //
 // Returns CorDbKept; CorDbNotLogged when a record of the write could not be put in the log (any
-// --dbSync: known before the answer); CorDbNotSynced, with --dbSync request, when the sync of its
-// record failed.
+// --dbSync: known before the answer); CorDbNotSynced when its record is at or after the first one a
+// failed sync may have lost (any --dbSync), or, with --dbSync request, when the sync of its record failed.
 //
 typedef enum CorDbKeep
 {

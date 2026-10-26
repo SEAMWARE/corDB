@@ -335,7 +335,7 @@ void corDbStoreUnlock(CorDbStore** storePP)
                          "the write is in the broker's memory but not in its log (corDB --dbDir) - a restart loses it; the broker's log says why");
     else if (keep == CorDbNotSynced)
       corRestProblemLate(503, COR_REST_ERROR_INTERNAL, "Service Unavailable",
-                         "the write's log record could not be synced to the disk (corDB --dbSync request) - a restart may lose it; the broker's log says why");
+                         "a sync of the log to the disk failed, for this write's record or one before it (corDB --dbDir) - a restart may lose it; the broker's log says why");
   }
 }
 

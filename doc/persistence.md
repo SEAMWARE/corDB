@@ -162,9 +162,10 @@ The pages are the kernel's page cache: once the copy is done, the record outlive
 - a write error is not silent: logged, and the request answered 503 - a broker that acknowledges what it
   cannot keep is worse than one that refuses. A record that cannot be put in the log (its segment
   cannot be allocated further, a full disk) - with any `--dbSync`: the write is in the store's memory,
-  not in the log, until a restart. A failed `fdatasync` - with `--dbSync request`: the write whose
-  record it was for and every later one of the tenant, as a load stops at the first record it cannot
-  read. The wait happens as the write lock is released, after the operation has returned:
+  not in the log, until a restart. A failed `fdatasync` - with any `--dbSync`: every later write of
+  the tenant, as a load stops at the first record it cannot read; with `--dbSync request` also the
+  writes whose records it was for (with `interval` they were answered before the sync - the broker's
+  log only). The wait happens as the write lock is released, after the operation has returned:
   `corDbStoreUnlock` raises the 503 as corRest's late problem (`corRestProblemLate`), which replaces
   the operation's answer
 

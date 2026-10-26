@@ -2826,7 +2826,19 @@ CorDbKeep corDbPersistSyncWait(void)
   if (failed == true)
     return CorDbNotLogged;
 
-  if ((pP == NULL) || (syncMode != SyncRequest))
+  if (pP == NULL)
+    return CorDbKept;
+
+  //
+  // With any --dbSync: a record at or after the first one a failed sync may have lost is not kept,
+  // whether its own sync is still to come or not - a load stops before it
+  //
+  uint64_t fromSeq = __atomic_load_n(&pP->failedFromSeq, __ATOMIC_ACQUIRE);
+
+  if ((fromSeq != 0) && (w.seq >= fromSeq))
+    return CorDbNotSynced;
+
+  if (syncMode != SyncRequest)
     return CorDbKept;
 
   pthread_mutex_lock(&pP->mutex);
