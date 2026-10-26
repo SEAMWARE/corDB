@@ -331,12 +331,38 @@ void corDbStoreUnlock(CorDbStore** storePP)
     CorDbKeep keep = corDbPersistSyncWait();           // the wait: --dbSync request only, and only after a write
 
     if (keep == CorDbNotLogged)
-      corRestProblemLate(503, COR_REST_ERROR_INTERNAL, "Service Unavailable",
-                         "the write is in the broker's memory but not in its log (corDB --dbDir) - a restart loses it; the broker's log says why");
+      corRestProblemLate(503, "https://coraine.readthedocs.io/errors/PersistenceUnavailable", "Persistence Unavailable",
+                         "the write is in the broker's memory but not in its log (corDB --dbDir) - writes are paused until the log can be written again, and the write is kept if it can; the broker's log says why");
     else if (keep == CorDbNotSynced)
-      corRestProblemLate(503, COR_REST_ERROR_INTERNAL, "Service Unavailable",
-                         "a sync of the log to the disk failed, for this write's record or one before it (corDB --dbDir) - a restart may lose it; the broker's log says why");
+      corRestProblemLate(503, "https://coraine.readthedocs.io/errors/PersistenceUnavailable", "Persistence Unavailable",
+                         "a sync of the log to the disk failed, for this write's record or one before it (corDB --dbDir) - the write is in the broker's memory, kept if the broker repairs its log; the broker's log says why");
   }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbStoreWriteRefused -
+//
+bool corDbStoreWriteRefused(Tenant* tenantP)
+{
+  if (corDbPersistPaused(NULL, 0, NULL) == false)
+    return false;
+
+  CorDbStore* storeP = corDbStoreOf(tenantP);
+
+  if ((storeP == NULL) || (storeP->persistP == NULL))  // no log (a Snapshot's store): nothing to lose
+    return false;
+
+  char why[200];
+
+  if (corDbPersistPaused(why, sizeof(why), NULL) == false)
+    return false;
+
+  corRestProblemLate(503, "https://coraine.readthedocs.io/errors/PersistenceUnavailable", "Persistence Unavailable",
+                     "writes are refused until the broker can write its log again (corDB --dbDir): %s", why);
+  return true;
 }
 
 

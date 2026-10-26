@@ -137,6 +137,9 @@ static void logDelete(CorDbPersist* persistP, const char* collection, const char
 //
 int corDbDocCreate(Tenant* tenantP, const char* collection, const char* docId, CorNode* docP)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   COR_DB_WRITE(tenantP);
 
   CorNode* collP = corDbStoreDocs(corDbLockedStore, collection, true);
@@ -231,6 +234,9 @@ int corDbDocQueryIn(Tenant* tenantP, const char* collection, CorAlloc* allocP, C
 //
 int corDbDocReplace(Tenant* tenantP, const char* collection, const char* docId, CorNode* docP)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   COR_DB_WRITE(tenantP);
 
   CorNode* collP = corDbStoreDocs(corDbLockedStore, collection, false);
@@ -262,6 +268,9 @@ int corDbDocReplace(Tenant* tenantP, const char* collection, const char* docId, 
 //
 int corDbDocDelete(Tenant* tenantP, const char* collection, const char* docId)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   COR_DB_WRITE(tenantP);
 
   CorNode* collP = corDbStoreDocs(corDbLockedStore, collection, false);
@@ -286,6 +295,9 @@ int corDbDocDelete(Tenant* tenantP, const char* collection, const char* docId)
 //
 int corDbDocMerge(Tenant* tenantP, const char* collection, const char* docId, CorNode* fragmentP)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   COR_DB_WRITE(tenantP);
 
   CorNode* collP = corDbStoreDocs(corDbLockedStore, collection, false);

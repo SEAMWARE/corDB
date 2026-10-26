@@ -40,6 +40,9 @@
 int corDbEntityBulkDelete(Tenant* tenantP, const char** idV, int N,
                           int* resultsV, CorNode** snapshotsV)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   //
   // Under the write lock only what must be: find each entity - through the id index, one hash, where
   // this used to walk the whole store per id - and unlink it, O(1) through the same index. The

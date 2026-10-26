@@ -34,6 +34,9 @@
 //
 int corDbEntityReplace(Tenant* tenantP, const char* entityId, CorNode* newEntityP, CorNode** oldEntityPP)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   //
   // Only the swap needs the write lock. The clone of the new entity reads nothing but the
   // request, so it is made BEFORE the lock; the old entity, once swapped out and dropped from

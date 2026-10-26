@@ -25,6 +25,7 @@
 #include <errno.h>                                     // errno
 #include <fcntl.h>                                     // open, O_*
 #include <pthread.h>                                   // pthread_*
+#include <stdarg.h>                                    // va_list
 #include <stdbool.h>                                   // bool
 #include <stdint.h>                                    // uint64_t
 #include <stdio.h>                                     // snprintf
@@ -120,6 +121,126 @@ static uint64_t nowNs(void)
 
   clock_gettime(CLOCK_REALTIME, &ts);
   return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// monoMs - CLOCK_MONOTONIC in ms, for the repair's schedule
+//
+static int64_t monoMs(void)
+{
+  struct timespec ts;
+
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// The pause - broker-wide, as the disk the logs are on usually is
+//
+// The first log of any tenant that cannot take a record, be synced or be allocated ahead pauses the
+// broker (pauseSet). While paused, a write to a store with a log is refused before it touches anything
+// (corDbStoreWriteRefused) - the store in memory never gets ahead of the disk by more than the writes
+// that were under way. The snapshotter repairs (repair): a tenant whose log failed is written anew from
+// memory (a snapshot - it holds every write the failed log left out), every log is allocated ahead
+// again, and the pause ends. A failure while a repair runs is a new pause ('pauseGen'): that repair does
+// not end it.
+//
+// A history log cannot be repaired so: the history is not in a snapshot. After a failed history log
+// the broker stays paused until it is restarted ('histBroken').
+//
+static bool             paused        = false;         // atomic
+static uint64_t         pauseGen      = 0;             // atomic - one more at every failure
+static bool             histBroken    = false;         // atomic
+static uint64_t         pausedAtNs    = 0;             // pauseMutex
+static char             pauseReason[200];             // pauseMutex
+static pthread_mutex_t  pauseMutex    = PTHREAD_MUTEX_INITIALIZER;
+static int              repairDelayMs = 1000;          // the next try after a failed one: doubled up to 16 s (flushMutex)
+static int64_t          repairAtMs    = 0;             // monoMs of the next try (flushMutex)
+
+
+
+// -----------------------------------------------------------------------------
+//
+// tenantText - "the default tenant" or "tenant 'name'", for the pause's reason
+//
+static __thread char tenantTextBuf[96];
+
+static const char* tenantText(CorDbPersist* pP)
+{
+  if (pP->tenant[0] == 0)
+    return "the default tenant";
+
+  snprintf(tenantTextBuf, sizeof(tenantTextBuf), "tenant '%s'", pP->tenant);
+  return tenantTextBuf;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// pauseSet - a log failed: the broker pauses (said once), and the repair starts over
+//
+static void pauseSet(bool history, const char* fmt, ...)
+{
+  char    why[sizeof(pauseReason)];
+  va_list ap;
+
+  va_start(ap, fmt);
+  vsnprintf(why, sizeof(why), fmt, ap);
+  va_end(ap);
+
+  __atomic_add_fetch(&pauseGen, 1, __ATOMIC_ACQ_REL);
+
+  if (history)
+    __atomic_store_n(&histBroken, true, __ATOMIC_RELEASE);
+
+  pthread_mutex_lock(&pauseMutex);
+
+  bool first = (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == false);
+
+  if (first)
+  {
+    snprintf(pauseReason, sizeof(pauseReason), "%s", why);
+    pausedAtNs = nowNs();
+    __atomic_store_n(&paused, true, __ATOMIC_RELEASE);
+  }
+
+  pthread_mutex_unlock(&pauseMutex);
+
+  if (history)
+    COR_E("corDB: PAUSED - %s: every write is refused (503) until the broker is restarted - a history log is not repaired from memory", why);
+  else if (first)
+    COR_E("corDB: PAUSED - %s: every write is refused (503) until the logs can be written again - the broker tries every few seconds", why);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corDbPersistPaused -
+//
+bool corDbPersistPaused(char* reason, int reasonLen, uint64_t* sinceNsP)
+{
+  if (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == false)
+    return false;
+
+  if ((reason != NULL) || (sinceNsP != NULL))
+  {
+    pthread_mutex_lock(&pauseMutex);
+    if (reason != NULL)
+      snprintf(reason, reasonLen, "%s", pauseReason);
+    if (sinceNsP != NULL)
+      *sinceNsP = pausedAtNs;
+    pthread_mutex_unlock(&pauseMutex);
+  }
+
+  return true;
 }
 
 
@@ -447,6 +568,7 @@ static char* zstdUnpack(const char* buf, long long len, long long* lenP, const c
 #define SEG_ROLL      (1024ULL * 1024 * 1024)          // the reader's offsets are ints: no file may reach 2 GiB
 #define SEG_HEADROOM  (256ULL * 1024 * 1024)           // address space past the roll, for the record that crosses it
 #define SEG_STEP      (4ULL * 1024 * 1024)
+#define SEG_RESERVE   (8ULL * 1024 * 1024)           // allocated ahead of the records by the flusher (segTopUp)
 
 
 
@@ -556,6 +678,47 @@ static bool segRoll(CorDbPersist* pP, CorDbSeg* sP, const char* kind, unsigned l
   pP->retired[pP->retiredN++] = *sP;
   *sP = next;
 
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// segTopUp - the segment allocated SEG_RESERVE ahead of its records - rolled first when that would cross
+// the roll. Under 'mutex'; the flusher's, every round
+//
+// So a write's record goes into space that was allocated before the write: a full disk is found here,
+// while what is left still holds the writes under way - not by a write that has changed the store
+// already. A burst that outruns it (more than SEG_RESERVE in one round) still grows it in segAppend.
+//
+static bool segTopUp(CorDbPersist* pP, CorDbSeg* sP, const char* kind)
+{
+  if (sP->fd < 0)
+    return true;
+
+  unsigned long long rollAt = corDbCompress ? (64ULL * 1024 * 1024) : SEG_ROLL;
+
+  if ((sP->len + SEG_RESERVE > rollAt) && (segRoll(pP, sP, kind, 0) == false))
+    return false;
+
+  unsigned long long want = sP->len + SEG_RESERVE;
+
+  if (want > sP->mapLen)
+    want = sP->mapLen;
+
+  if (sP->alloc >= want)
+    return true;
+
+  int e = posix_fallocate(sP->fd, (off_t) sP->alloc, (off_t) (want - sP->alloc));
+
+  if (e != 0)
+  {
+    COR_E("corDB: allocating log segment '%s' ahead, to %llu bytes: %s", sP->path, want, strerror(e));
+    return false;
+  }
+
+  sP->alloc = want;
   return true;
 }
 
@@ -856,9 +1019,23 @@ static void flushLocked(CorDbPersist* pP)
     if ((ok == false) && (__atomic_load_n(&pP->failedFromSeq, __ATOMIC_ACQUIRE) == 0))
       __atomic_store_n(&pP->failedFromSeq, __atomic_load_n(&pP->syncedSeq, __ATOMIC_ACQUIRE) + 1, __ATOMIC_RELEASE);
 
-    if (((histOk == false) || (retiredOk == false)) && (__atomic_load_n(&pP->failedFromHistSeq, __ATOMIC_ACQUIRE) == 0))
+    bool hist = ((histOk == false) || ((retiredOk == false) && (histFd >= 0)));
+
+    if (hist && (__atomic_load_n(&pP->failedFromHistSeq, __ATOMIC_ACQUIRE) == 0))
       __atomic_store_n(&pP->failedFromHistSeq, __atomic_load_n(&pP->syncedHistSeq, __ATOMIC_ACQUIRE) + 1, __ATOMIC_RELEASE);
+
+    pauseSet(hist, "a sync of the %s of %s failed", hist ? "history log" : "log", tenantText(pP));
   }
+
+  //
+  // The next round's records: allocated now, ahead of the writes
+  //
+  pthread_mutex_lock(&pP->mutex);
+  bool topped = segTopUp(pP, &pP->log, "log") && segTopUp(pP, &pP->hist, "hist");
+  pthread_mutex_unlock(&pP->mutex);
+
+  if (topped == false)
+    pauseSet(false, "the log of %s cannot be allocated ahead", tenantText(pP));
 }
 
 
@@ -1085,6 +1262,8 @@ enum { SNAPSHOT_SLICE = 1000 };
 //
 // snapshot - the tenant's store as snap-N+1, the log continued in log-N+1, the older files deleted
 //
+// True: written - *seqP (if given) is the last record it holds; every one up to it is on the disk.
+//
 // Under the write lock only the start: what is buffered goes to log-N, the segment switches, the
 // cursor is set on the first entity. Then the store is encoded in slices of SNAPSHOT_SLICE entities,
 // each under the READ lock - readers run beside it, writers between the slices.
@@ -1101,7 +1280,7 @@ enum { SNAPSHOT_SLICE = 1000 };
 // A snapshot that fails leaves snap-N and every log after it - recovery replays the longer way,
 // nothing is lost.
 //
-static void snapshot(CorDbPersist* pP)
+static bool snapshot(CorDbPersist* pP, uint64_t* seqP)
 {
   CorDbStore*     storeP = pP->storeP;
   Chunks          snap   = { NULL, 0, 0 };
@@ -1131,7 +1310,7 @@ static void snapshot(CorDbPersist* pP)
   if (passedBy(pP))
   {
     pthread_mutex_unlock(&pP->ioMutex);
-    return;
+    return false;
   }
 
   pP->snapshotting = true;
@@ -1251,7 +1430,7 @@ static void snapshot(CorDbPersist* pP)
     pthread_mutex_lock(&pP->ioMutex);
     pP->snapshotting = false;
     pthread_mutex_unlock(&pP->ioMutex);
-    return;
+    return false;
   }
 
   if (ok == false)
@@ -1262,7 +1441,7 @@ static void snapshot(CorDbPersist* pP)
     pthread_mutex_lock(&pP->ioMutex);
     pP->snapshotting = false;
     pthread_mutex_unlock(&pP->ioMutex);
-    return;
+    return false;
   }
 
   char               tmpPath[600];
@@ -1301,6 +1480,11 @@ static void snapshot(CorDbPersist* pP)
     pthread_mutex_unlock(&pP->ioMutex);
 
     COR_I("corDB: snapshot of '%s': %llu bytes as '%s' (writers held at most %ld ms at a time)", pP->tenant, bytes, snapPath, lockedMs);
+
+    if (seqP != NULL)
+      *seqP = seq;
+
+    return true;
   }
   else
   {
@@ -1311,6 +1495,8 @@ static void snapshot(CorDbPersist* pP)
     pP->snapshotting = false;
     pthread_mutex_unlock(&pP->ioMutex);
   }
+
+  return false;
 }
 
 
@@ -1336,7 +1522,9 @@ static void flushAll(void)
   pthread_mutex_lock(&flushMutex);
   CorDbPersist* deadP = walkEnd();
   pthread_cond_broadcast(&syncedCond);
-  if (due || compressDue)
+  bool repairDue = (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == true) && (__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == false) && (monoMs() >= repairAtMs);
+
+  if (due || compressDue || repairDue)
   {
     snapKicked = true;
     pthread_cond_signal(&snapCond);                    // the snapshots are the snapshotter's - a sync never waits behind one
@@ -1344,6 +1532,101 @@ static void flushAll(void)
   pthread_mutex_unlock(&flushMutex);
 
   reapFree(deadP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// repair - the broker paused: every tenant whose log failed written anew from memory, every log allocated
+// ahead again. True: the logs can be written - the pause may end
+//
+static bool repair(void)
+{
+  pthread_mutex_lock(&flushMutex);
+  CorDbPersist* headP = walkBegin();
+  pthread_mutex_unlock(&flushMutex);
+
+  bool ok = true;
+
+  for (CorDbPersist* pP = headP; (pP != NULL) && ok; pP = walkNext(pP))
+  {
+    if (passedBy(pP))
+      continue;
+
+    if (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true)
+    {
+      uint64_t gen = __atomic_load_n(&pauseGen, __ATOMIC_ACQUIRE);
+      uint64_t seq = 0;
+
+      ok = snapshot(pP, &seq);
+
+      if (ok && (gen == __atomic_load_n(&pauseGen, __ATOMIC_ACQUIRE)))   // no failure since: what failed is in it
+      {
+        pthread_mutex_lock(&pP->ioMutex);
+        if (__atomic_load_n(&pP->syncedSeq, __ATOMIC_ACQUIRE) < seq)
+          __atomic_store_n(&pP->syncedSeq, seq, __ATOMIC_RELEASE);
+        __atomic_store_n(&pP->failedFromSeq, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&pP->failed, false, __ATOMIC_RELEASE);
+        pthread_mutex_unlock(&pP->ioMutex);
+
+        COR_I("corDB: the log of '%s' written anew from memory - every write it had failed to keep is on the disk", pP->tenant);
+      }
+    }
+
+    if (ok)
+    {
+      pthread_mutex_lock(&pP->ioMutex);
+      pthread_mutex_lock(&pP->mutex);
+      ok = segTopUp(pP, &pP->log, "log") && segTopUp(pP, &pP->hist, "hist");
+      pthread_mutex_unlock(&pP->mutex);
+      pthread_mutex_unlock(&pP->ioMutex);
+    }
+  }
+
+  pthread_mutex_lock(&flushMutex);
+  CorDbPersist* deadP = walkEnd();
+  pthread_mutex_unlock(&flushMutex);
+
+  reapFree(deadP);
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// repairTry - one try, on the snapshotter: the pause ended if it repaired, else the next try later
+//
+static void repairTry(void)
+{
+  uint64_t gen = __atomic_load_n(&pauseGen, __ATOMIC_ACQUIRE);
+  bool     ok  = repair();
+
+  pthread_mutex_lock(&pauseMutex);
+
+  if (ok && (gen == __atomic_load_n(&pauseGen, __ATOMIC_ACQUIRE)) && (__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == false))
+  {
+    long secs = (long) ((nowNs() - pausedAtNs) / 1000000000ULL);
+
+    __atomic_store_n(&paused, false, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&pauseMutex);
+
+    COR_I("corDB: RESUMED - the logs can be written again, writes are taken again (paused %ld s)", secs);
+    ok = true;
+  }
+  else
+  {
+    pthread_mutex_unlock(&pauseMutex);
+    ok = false;
+  }
+
+  pthread_mutex_lock(&flushMutex);
+  repairDelayMs = ok ? 1000 : ((repairDelayMs >= 8000) ? 16000 : 2 * repairDelayMs);
+  repairAtMs    = monoMs() + repairDelayMs;
+  pthread_cond_broadcast(&syncedCond);                 // a --dbSync request writer waits for the repair
+  pthread_mutex_unlock(&flushMutex);
 }
 
 
@@ -1370,13 +1653,17 @@ static void* snapshotter(void* unused)
     if (stopping)
       break;
 
-    CorDbPersist* headP = walkBegin();
+    CorDbPersist* headP     = walkBegin();
+    bool          repairDue = (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == true) && (__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == false) && (monoMs() >= repairAtMs);
     pthread_mutex_unlock(&flushMutex);
+
+    if (repairDue)
+      repairTry();
 
     for (CorDbPersist* pP = headP; pP != NULL; pP = walkNext(pP))
     {
       if ((pP->snapshotDue) && (passedBy(pP) == false))
-        snapshot(pP);                                  // claims it, or passes it by - see snapshot()
+        snapshot(pP, NULL);                            // claims it, or passes it by - see snapshot()
     }
 
     pthread_mutex_lock(&flushMutex);
@@ -2432,11 +2719,13 @@ void corDbPersistAppend(CorDbPersist* pP, CorDbLogOp op, CorNode* bodyP)
     COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
+    pauseSet(false, "out of memory for the log of %s", tenantText(pP));
     seq = pP->seq;
   }
   else if (logPut(pP) == false)
   {
     pendingFailed = true;
+    pauseSet(false, "the log of %s could not take a record", tenantText(pP));
     seq = pP->seq;
   }
   else
@@ -2627,6 +2916,7 @@ void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
     COR_E("corDB: out of memory for the history log of '%s' - a history record is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
+    pauseSet(true, "out of memory for the history log of %s", tenantText(pP));
   }
   else if (segAppend(pP, &pP->hist, "hist", pP->histBuf.buf, pP->histBuf.len) == true)
     ++pP->histSeq;
@@ -2634,6 +2924,7 @@ void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
   {
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
+    pauseSet(true, "the history log of %s could not take a record", tenantText(pP));
   }
 
   pthread_mutex_unlock(&pP->mutex);
@@ -2714,11 +3005,13 @@ void corDbPersistAppendPre(CorDbPersist* pP, CorDbLogOp op, CorDbPre* preP, int 
     COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
+    pauseSet(false, "out of memory for the log of %s", tenantText(pP));
     seq = pP->seq;
   }
   else if (logPut(pP) == false)
   {
     pendingFailed = true;
+    pauseSet(false, "the log of %s could not take a record", tenantText(pP));
     seq = pP->seq;
   }
   else
@@ -2766,11 +3059,14 @@ typedef struct SyncWait
 // syncWait - kick the flusher, wait for its round to have synced 'seq' (or failed to)
 //
 // The failure is the round's that should have synced the record: a later round that syncs does not
-// bring back what a failed fdatasync dropped. A stop ends the wait - the close syncs what is left.
+// bring back what a failed fdatasync dropped - the repair (a snapshot from memory) does. A stop ends the
+// wait - the close syncs what is left.
 //
 static void syncWait(void* arg)
 {
-  SyncWait* wP = (SyncWait*) arg;
+  SyncWait*       wP      = (SyncWait*) arg;
+  struct timespec until;
+  bool            waiting = false;                      // for the repair
 
   pthread_mutex_lock(&flushMutex);
 
@@ -2778,11 +3074,34 @@ static void syncWait(void* arg)
   {
     uint64_t fromSeq     = __atomic_load_n(&wP->pP->failedFromSeq,     __ATOMIC_ACQUIRE);
     uint64_t fromHistSeq = __atomic_load_n(&wP->pP->failedFromHistSeq, __ATOMIC_ACQUIRE);
+    bool     covered     = ((fromSeq != 0) && (wP->seq >= fromSeq)) || ((fromHistSeq != 0) && (wP->histSeq >= fromHistSeq));
 
-    if (((fromSeq != 0) && (wP->seq >= fromSeq)) || ((fromHistSeq != 0) && (wP->histSeq >= fromHistSeq)))
+    if (covered)
     {
-      wP->synced = false;
-      break;
+      //
+      // Its record may be lost - unless the repair writes the store anew from memory, which holds it. It
+      // waits for that, 10 s at most
+      //
+      if ((__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == true) || stopping)
+      {
+        wP->synced = false;
+        break;
+      }
+
+      if (waiting == false)
+      {
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += 10;
+        waiting       = true;
+      }
+
+      if (pthread_cond_timedwait(&syncedCond, &flushMutex, &until) == ETIMEDOUT)
+      {
+        wP->synced = false;
+        break;
+      }
+
+      continue;
     }
 
     if ((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) >= wP->seq) && (__atomic_load_n(&wP->pP->syncedHistSeq, __ATOMIC_ACQUIRE) >= wP->histSeq))
@@ -2969,7 +3288,7 @@ void corDbPersistClose(void)
   for (CorDbPersist* pP = persistList; pP != NULL; pP = pP->next)
   {
     if ((pP->sinceSnapBytes != 0) && (passedBy(pP) == false))   // written since the last snapshot
-      snapshot(pP);
+      snapshot(pP, NULL);
   }
 
   CorDbPersist* nextP;

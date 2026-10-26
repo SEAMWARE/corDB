@@ -160,14 +160,27 @@ The pages are the kernel's page cache: once the copy is done, the record outlive
   condition). Per-request durability, paid for by whoever asks
 - `--dbSync none`: no fsync at all (tests, benchmarks, a RAM disk) - the log is still written
 - a write error is not silent: logged, and the request answered 503 - a broker that acknowledges what it
-  cannot keep is worse than one that refuses. A record that cannot be put in the log (its segment
-  cannot be allocated further, a full disk) - with any `--dbSync`: the write is in the store's memory,
-  not in the log, until a restart. A failed `fdatasync` - with any `--dbSync`: every later write of
-  the tenant, as a load stops at the first record it cannot read; with `--dbSync request` also the
-  writes whose records it was for (with `interval` they were answered before the sync - the broker's
-  log only). The wait happens as the write lock is released, after the operation has returned:
-  `corDbStoreUnlock` raises the 503 as corRest's late problem (`corRestProblemLate`), which replaces
-  the operation's answer
+  cannot keep is worse than one that refuses. A log that cannot be written **pauses** the store - with
+  any `--dbSync`: a segment that cannot be allocated ahead, a record that cannot be put in the log, a
+  failed `fdatasync`. The pause is broker-wide (`corDbPersistPaused`, the driver's `paused`) and a
+  write checks it first, one atomic load: while paused, every write is refused before it touches the
+  store (`corDbStoreWriteRefused`, 503 `PersistenceUnavailable`), and coraine refuses every request
+  but the reads before it is parsed. A write already applied when the log failed is answered 503 too:
+  its record not in the log, or (a failed sync) every write after it - a load stops at the first record
+  it cannot read - and with `--dbSync request` the writes whose records the sync was for (with
+  `interval` they were answered before the sync - the broker's log only). That answer is raised as the
+  write lock is released, after the operation has returned: `corDbStoreUnlock` raises it as corRest's
+  late problem (`corRestProblemLate`), which replaces the operation's answer
+- **the reserve**: the flusher keeps 8 MiB of the open segment allocated ahead of its records
+  (`posix_fallocate`, off the write path; a segment that would pass its roll size with it rolls
+  early), so a full disk pauses the store before a write needs the room - unless more than 8 MiB is
+  written between two of its runs
+- **the repair**: the snapshotter thread writes a snapshot of each tenant whose log failed, from
+  memory (§ 6), once a second, backing off to once every 16 s; the snapshot rolls the log and drops the
+  files before it. When it has succeeded for every such tenant, the pause ends. The writes answered 503
+  after they were applied are in that snapshot: kept. `--dbSync request` waiters whose sync failed wait
+  up to 10 s for the repair. A failure of the history log is not repaired (the history is not in a
+  snapshot): paused until a restart
 
 ## 5a. A clean stop loses nothing
 
@@ -366,8 +379,8 @@ current. Not in the snapshot: rebuilt from the data, so it can never disagree wi
 ## 11. Open
 
 - Snapshot trigger: log bytes only, or also a time?
-- A write answered 503 is still in the store's memory: reads see it until a restart. Not undone.
-- No metric counts the writes that could not be kept - the broker's log only.
+- A write answered 503 after it was applied is in the store's memory: reads see it while paused, and the repair keeps it. Not undone.
+- A history log that failed is not repaired: the history would have to be written again from memory.
 - **Size.** Without `--dbCompress` nothing is compressed: on perfRun's fixture (2026-10-05) the current
   state takes 744 bytes an entity - MongoDB's documents 1 072, its files 113 (WiredTiger compresses).
   A record decodes on its own, so each carries its attributes' expanded IRIs again. Not done yet: a

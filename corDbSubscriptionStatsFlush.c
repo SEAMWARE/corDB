@@ -53,6 +53,9 @@ static CorNode* intMember(CorNode* objectP, const char* name)
 //
 int corDbSubscriptionStatsFlush(Tenant* tenantP, const char* subId, int deltaSent, int deltaFailed, uint64_t lastNotification, uint64_t lastSuccess, uint64_t lastFailure)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   if ((deltaSent == 0) && (deltaFailed == 0) && (lastNotification == 0) && (lastSuccess == 0) && (lastFailure == 0))
     return DB_OK;
 

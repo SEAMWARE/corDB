@@ -167,6 +167,22 @@ extern void        corDbStoreUnlock(CorDbStore** storePP);
 
 // -----------------------------------------------------------------------------
 //
+// corDbStoreWriteRefused - is a write to the tenant's store refused: the broker is paused (corDbPersistPaused)
+//
+// The first thing every write does - before it allocates or locks anything:
+//
+//   if (corDbStoreWriteRefused(tenantP) == true)
+//     return DB_ERR;
+//
+// True: refused, and the request answered 503 PersistenceUnavailable (corRestProblemLate). A store
+// with no log (a Snapshot's) is never refused. Not paused: one atomic load.
+//
+extern bool        corDbStoreWriteRefused(Tenant* tenantP);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // COR_DB_READ / COR_DB_WRITE - lock for the rest of this scope
 //
 // One line at the top of a function, and the unlock happens on EVERY exit path,

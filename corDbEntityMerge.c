@@ -336,6 +336,9 @@ static void applyPrepared(CorNode* live, CorNode* prepP, LdMergeReport* reportP)
 //
 static int changesApply(Tenant* tenantP, const char* entityId, CorNode* mergedEntity, LdMergeReport* reportP, CorNode* prepP)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   COR_DB_WRITE(tenantP);
 
   // Re-validate the GeoProperty values of the COMPLETE merged entity before it
