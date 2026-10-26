@@ -247,6 +247,18 @@ extern CorDbKeep corDbPersistSyncWait(void);
 
 // -----------------------------------------------------------------------------
 //
+// corDbPersistPaused - is the broker paused: a log could not be written, synced or allocated ahead
+//
+// While paused every write to a store with a log is refused (corDbStoreWriteRefused) and the broker
+// tries to repair the logs (corDbPersist.c, "The pause"). reason (reasonLen bytes) and *sinceNsP (the
+// pause's start, ns since the epoch) are filled when given; NULL - an atomic load only.
+//
+extern bool corDbPersistPaused(char* reason, int reasonLen, uint64_t* sinceNsP);
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbPersistClose - the flusher stopped, every buffer written and synced, a snapshot per tenant
 //
 // After the last request, with the stores still there: what is acknowledged is on the disk when

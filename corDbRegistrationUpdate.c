@@ -34,6 +34,9 @@
 //
 int corDbRegistrationUpdate(Tenant* tenantP, const char* regId, CorNode* regP)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   COR_DB_WRITE(tenantP);
 
   CorNode* registrations = corDbRegistrations(tenantP);

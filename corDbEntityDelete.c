@@ -31,6 +31,9 @@
 //
 int corDbEntityDelete(Tenant* tenantP, const char* entityId)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   //
   // Unlinked under the write lock - O(1) through the index - and freed AFTER it: the free is a
   // whole entity's worth of free()s, and every other writer of the tenant waited them out.

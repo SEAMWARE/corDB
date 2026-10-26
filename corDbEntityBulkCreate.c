@@ -42,6 +42,9 @@
 //
 int corDbEntityBulkCreate(Tenant* tenantP, CorNode* entitiesArr, int* resultsV)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   if (entitiesArr == NULL || entitiesArr->type != CorArray)
     return DB_ERR;
 

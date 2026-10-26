@@ -35,6 +35,9 @@
 //
 int corDbEntityCreate(Tenant* tenantP, const char* entityId, CorNode* entityP)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   //
   // The deep clone reads nothing but the request's entity, so it is done BEFORE the write lock -
   // under it, it was most of the time the lock was held, and every other writer of the tenant

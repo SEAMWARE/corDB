@@ -21,6 +21,7 @@
 #include "corDB/corDbTenantDrop.h"                   // corDbTenantDrop
 #include "corDB/corDbTenantRelease.h"                // corDbTenantRelease
 #include "corDB/corDbGlobals.h"        // corDbArgV
+#include "corDB/corDbPersist.h"        // corDbPersistPaused
 #include "corDB/corDbInit.h"           // corDbInit
 #include "corDB/corDbClose.h"          // corDbClose
 #include "corDB/corDbStore.h"          // corDbTenantStore
@@ -125,6 +126,7 @@ void dbRegister(DbDriver* driverP)
   driverP->entityAttrsSet  = corDbEntityAttrsSet;
   driverP->typeList        = corDbTypeList;
   driverP->attrList        = corDbAttrList;
+  driverP->paused          = corDbPersistPaused;    // a log that cannot be written pauses the store (corDbPersist.c)
 #if COR_FEATURE_DB_INDEXES
   driverP->indexList       = corDbIndexList;
   driverP->indexAdd        = corDbIndexAdd;

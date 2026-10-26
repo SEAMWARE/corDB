@@ -143,6 +143,9 @@ int corDbEntityBulkChangesApply(Tenant* tenantP, CorNode* fragmentsArr,
                                 CorNode** mergedTargetsV, LdMergeReport* reportsV,
                                 int* resultsV)
 {
+  if (corDbStoreWriteRefused(tenantP) == true)          // the broker is paused: nothing is touched
+    return DB_ERR;
+
   if (fragmentsArr == NULL || fragmentsArr->type != CorArray)
     return DB_ERR;
 
