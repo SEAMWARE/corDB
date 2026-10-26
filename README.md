@@ -252,6 +252,144 @@ start - each one is named. As `ramDB` refuses `--dbDir`, an option it does not h
 where current state changes; on disk with `--dbDir` (`hist-N.cor`). [The design](doc/troe.md),
 [how it got here](doc/history/troe.md).
 
+## Options
+
+`corDB.so`'s options - added to `coraine -u` with `--database corDB`. The same entries are in coraine's
+[Command-line options](https://github.com/SEAMWARE/coraine/blob/main/doc/options.md#plugin-cordb-loaded-by-database-cordb),
+where they are changed: this copy is written from there by coraine's `tools/pluginOptions.sh`.
+
+<!-- options of the corDB plugin: copied from doc/options.md by tools/pluginOptions.sh - edit them there -->
+
+### `--dbDir`
+
+`-dbDir` · `CORAINE_DBDIR` · String · no default - the store is in RAM only, and a restart starts empty
+· values: a directory path · plugin: corDB
+
+The directory the store is kept in, created (with its parents) if missing. Inside: `_storageFormat` (the
+[storage format](https://github.com/SEAMWARE/coraine/blob/main/doc/installation.md#storage-format), a number as text) and one directory per tenant, `_` for
+the default one, each with its log segments (`log-<N>.cor`) and its latest snapshot (`snap-<N>.cor`). At
+start every tenant directory is loaded - the snapshot, then the log after it. A store written by a newer
+release (a storage format above this build's) stops the start and is left as it is. A directory that cannot
+be created stops the start: `corDB: --dbDir '<dir>': <reason>`. With `--troe corDB` the history is kept here
+too. `--dbSync`, `--dbSyncInterval`, `--dbSnapshotEvery` and `--dbCompress` act only with it.
+
+    coraine --database corDB --dbDir /var/lib/coraine
+    # a POST, a stop, a start on the same directory: the Entity is back
+    $ ls /var/lib/coraine /var/lib/coraine/_
+    /var/lib/coraine:
+    _  _storageFormat
+
+    /var/lib/coraine/_:
+    log-000001.cor  snap-000001.cor
+
+### `--dbSync`
+
+`-dbSync` · `CORAINE_DBSYNC` · String · default: `interval`
+· values: `interval`, `request`, `none` · plugin: corDB
+
+When a write reaches the disk. A write copies its record into the memory-mapped log - the kernel's page
+cache - before its response; this option decides when that is `fdatasync`ed.
+
+- `interval` - a flusher thread syncs every tenant's log every `--dbSyncInterval` ms. The response does not
+  wait. A broker that dies loses nothing it acknowledged; a machine that dies, at most the last interval.
+- `request` - the response waits for its record's sync. The writers that arrive during one sync share the
+  next (group commit). A write that cannot be logged (a full disk) is answered 503.
+- `none` - the log is written, never synced: for tests, benchmarks, a RAM disk.
+
+Given without `--dbDir` it stops the start: `corDB: --dbSync without --dbDir - the store is in RAM only, there is no disk for it to act on`.
+
+An unknown value stops the start - with `--dbDir` only, as without it the option is not read:
+`corDB: --dbSync 'sometimes': interval, request or none`.
+
+    coraine --database corDB --dbDir /var/lib/coraine --dbSync request
+
+### `--dbSyncInterval`
+
+`-dbSyncInterval` · `CORAINE_DBSYNCINTERVAL` · Int · default: `100`
+· values: 1-60000 (milliseconds) · plugin: corDB
+
+The time between two rounds of the flusher, which writes and syncs every tenant's log. With
+`--dbSync interval` it bounds what a machine that dies can lose; with `--dbSync request` a waiting write
+starts a round at once, and the interval is the longest the log goes unsynced without one. A value out of
+range stops the start: `coraine: value 0 for option '--dbSyncInterval' is inferior to its lower limit.
+Allowed range: 1-60000`. Given without `--dbDir` it stops the start: `corDB: --dbSyncInterval without --dbDir - the store is in RAM only, there is no disk for it to act on`.
+
+### `--dbSnapshotEvery`
+
+`-dbSnapshotEvery` · `CORAINE_DBSNAPSHOTEVERY` · Int · default: `64`
+· values: 1-65536 (MiB) · plugin: corDB
+
+How much log a tenant writes before it is snapshotted: once it has written this many MiB of log **and** at
+least as much log as its last snapshot was big, so that the snapshots of a growing store cost in proportion
+to what is written. A snapshot is written on a thread of its own, in slices under the read lock; the log
+before it is then deleted, and a start replays only the log after it. Every tenant is also snapshotted at a
+clean stop (SIGTERM, SIGINT). Smaller: faster starts, more snapshot work while running.
+Given without `--dbDir` it stops the start: `corDB: --dbSnapshotEvery without --dbDir - the store is in RAM only, there is no disk for it to act on`.
+
+### `--dbCompress`
+
+`-dbCompress` · `CORAINE_DBCOMPRESS` · Bool · default: `false`
+· values: a flag · plugin: corDB
+
+Compresses the snapshots and the finished log and history segments with zstd (level 3), on the snapshot
+thread; the open segment, which writes append to, never. With it a segment rolls at 64 MiB instead of
+1 GiB, so a history - which no snapshot drops - is mostly compressed segments. A start reads a compressed
+store with the option or without it, and a start with it compresses the finished segments a run without it
+left. libzstd (`libzstd.so.1`) is loaded only then; missing, the start is refused: `corDB: --dbCompress needs
+libzstd.so.1 (zstd) - not found`. Given without `--dbDir` it stops the start: `corDB: --dbCompress without --dbDir - the store is in RAM only, there is no disk for it to act on`. On disk, 100 000 Entities: 74 MB plain, 1.4 MB
+compressed ([persistence § 6a](https://github.com/SEAMWARE/corDB/blob/main/doc/persistence.md#6a---dbcompress)).
+
+    coraine --database corDB --dbDir /var/lib/coraine --dbCompress
+
+### `--dbLockPrefer`
+
+`-dbLockPrefer` · `CORAINE_DBLOCKPREFER` · String · default: `reads`
+· values: `reads`, `writes` · plugin: corDB (and ramDB)
+
+Whom a tenant's store lock lets in first when readers and writers both wait. `reads` is glibc's default
+read-write lock; `writes` makes it writer-preferring. Measured: writers first, a bare `PATCH` +2-4 %, a
+`PATCH` that notifies -3-4 % (the match and the notification read the Entity)
+([Performance](https://github.com/SEAMWARE/coraine/blob/main/doc/performance.md#writes-that-notify-and-which-writer-the-lock-lets-in-first)). Another value
+stops the start: `corDB: --dbLockPrefer 'both': reads or writes`.
+
+    coraine --database corDB --dbLockPrefer writes
+
+### `--dbValueIndexes`
+
+`-dbValueIndexes` · `CORAINE_DBVALUEINDEXES` · String · no default - no declared indexes (the admin API can add some)
+· values: attribute IRIs, comma-separated, or a JSON array of `{ "attribute", "type"?, "tenant"? }`; at most 64 · plugin: corDB (and ramDB)
+
+The attributes whose `q` value terms an index serves, declared at start. Each declaration is a value index
+in the store of every tenant it covers - the attribute's values, each with its Entity, in order - serving
+`==`, a range, a list, `<`, `<=`, `>` and `>=`. Not on disk: built by the first query that can use it, again
+after every start; a change of the declarations (the admin API) builds every index again. The format, the
+expanded names, and the start refused for a short name (`corDB: --dbValueIndexes: 'speed' is not an IRI -
+...`) are as for mongoc's option of the same name. Needs a build with `COR_FEATURE_DB_INDEXES` (on by
+default). [Declared indexes](https://github.com/SEAMWARE/coraine/blob/main/doc/installation.md#declared-indexes),
+[corDB's README](https://github.com/SEAMWARE/corDB#queries-by-value---declared-indexes).
+
+    coraine --database corDB --dbValueIndexes https://example.org/speed
+
+### `--troeInstanceCap`
+
+`-troeCap` · `CORAINE_TROEINSTANCECAP` · Int · default: `1000000`
+· values: 1-1000000 · plugin: corDB, with `--troe corDB`
+
+The most instances per Attribute a temporal retrieve or query returns when it has no `lastN` or `firstN`
+(§ 6.4.7.3), oldest first. More there: the response is a `200` with the first page and a
+`Link: <...?offsetN=<cap>>; rel="intervalafter"` header for the next. The default is a safety bound, not a
+page size. Present only with `--troe corDB` (timescale has an option of the same name).
+
+    $ coraine --database corDB --troe corDB --troeInstanceCap 2
+    # an Entity created with speed 1, then PATCHed to 2, 3, 4
+    $ curl -i localhost:1026/ngsi-ld/v1/temporal/entities/urn:ngsi-ld:T:capx1
+    HTTP/1.1 200 OK
+    Link: </ngsi-ld/v1/temporal/entities/urn:ngsi-ld:T:capx1?offsetN=2>;rel="intervalafter";type="application/json"
+
+    {"id":"urn:ngsi-ld:T:capx1","type":"T","speed":[{"type":"Property","value":1,...},{"type":"Property","value":2,...}]}
+
+<!-- end of the options of the corDB plugin -->
+
 ## Next
 
 corsh, the maintenance tool ([the design](doc/persistence.md) § 10), and a PATCH that logs only the
