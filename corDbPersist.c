@@ -151,12 +151,11 @@ static int64_t monoMs(void)
 // again, and the pause ends. A failure while a repair runs is a new pause ('pauseGen'): that repair does
 // not end it.
 //
-// A history log cannot be repaired so: the history is not in a snapshot. After a failed history log
-// the broker stays paused until it is restarted ('histBroken').
+// A history is not in a snapshot: a tenant whose history log failed has its history written anew from
+// memory instead (histRewrite), as segments of their own that replace every older one.
 //
 static bool             paused        = false;         // atomic
 static uint64_t         pauseGen      = 0;             // atomic - one more at every failure
-static bool             histBroken    = false;         // atomic
 static uint64_t         pausedAtNs    = 0;             // pauseMutex
 static char             pauseReason[200];             // pauseMutex
 static pthread_mutex_t  pauseMutex    = PTHREAD_MUTEX_INITIALIZER;
@@ -186,7 +185,7 @@ static const char* tenantText(CorDbPersist* pP)
 //
 // pauseSet - a log failed: the broker pauses (said once), and the repair starts over
 //
-static void pauseSet(bool history, const char* fmt, ...)
+static void pauseSet(const char* fmt, ...)
 {
   char    why[sizeof(pauseReason)];
   va_list ap;
@@ -196,9 +195,6 @@ static void pauseSet(bool history, const char* fmt, ...)
   va_end(ap);
 
   __atomic_add_fetch(&pauseGen, 1, __ATOMIC_ACQ_REL);
-
-  if (history)
-    __atomic_store_n(&histBroken, true, __ATOMIC_RELEASE);
 
   pthread_mutex_lock(&pauseMutex);
 
@@ -213,9 +209,7 @@ static void pauseSet(bool history, const char* fmt, ...)
 
   pthread_mutex_unlock(&pauseMutex);
 
-  if (history)
-    COR_E("corDB: PAUSED - %s: every write is refused (503) until the broker is restarted - a history log is not repaired from memory", why);
-  else if (first)
+  if (first)
     COR_E("corDB: PAUSED - %s: every write is refused (503) until the logs can be written again - the broker tries every few seconds", why);
 }
 
@@ -1024,7 +1018,10 @@ static void flushLocked(CorDbPersist* pP)
     if (hist && (__atomic_load_n(&pP->failedFromHistSeq, __ATOMIC_ACQUIRE) == 0))
       __atomic_store_n(&pP->failedFromHistSeq, __atomic_load_n(&pP->syncedHistSeq, __ATOMIC_ACQUIRE) + 1, __ATOMIC_RELEASE);
 
-    pauseSet(hist, "a sync of the %s of %s failed", hist ? "history log" : "log", tenantText(pP));
+    if (hist)
+      __atomic_store_n(&pP->histFailed, true, __ATOMIC_RELEASE);
+
+    pauseSet("a sync of the %s of %s failed", hist ? "history log" : "log", tenantText(pP));
   }
 
   //
@@ -1035,7 +1032,7 @@ static void flushLocked(CorDbPersist* pP)
   pthread_mutex_unlock(&pP->mutex);
 
   if (topped == false)
-    pauseSet(false, "the log of %s cannot be allocated ahead", tenantText(pP));
+    pauseSet("the log of %s cannot be allocated ahead", tenantText(pP));
 }
 
 
@@ -1522,7 +1519,7 @@ static void flushAll(void)
   pthread_mutex_lock(&flushMutex);
   CorDbPersist* deadP = walkEnd();
   pthread_cond_broadcast(&syncedCond);
-  bool repairDue = (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == true) && (__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == false) && (monoMs() >= repairAtMs);
+  bool repairDue = (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == true) && (monoMs() >= repairAtMs);
 
   if (due || compressDue || repairDue)
   {
@@ -1538,8 +1535,378 @@ static void flushAll(void)
 
 // -----------------------------------------------------------------------------
 //
-// repair - the broker paused: every tenant whose log failed written anew from memory, every log allocated
-// ahead again. True: the logs can be written - the pause may end
+// HistOut - the history being written anew: hist-<first>.tmp, hist-<first+1>.tmp ... each up to the
+// roll, through one buffer
+//
+typedef struct HistOut
+{
+  CorDbPersist*       pP;
+  unsigned int        first;                           // the number of its first segment
+  unsigned int        n;                               // the one being written
+  int                 fd;
+  unsigned long long  fileLen;
+  unsigned long long  rollAt;
+  uint64_t            seq;                             // the last record's
+  uint64_t            t;
+  CorBinBuffer        buf;
+} HistOut;
+
+
+
+// -----------------------------------------------------------------------------
+//
+// histOutFlush - the buffer into the open file
+//
+static bool histOutFlush(HistOut* oP)
+{
+  if (oP->buf.len == 0)
+    return true;
+
+  bool ok = writeAll(oP->fd, oP->buf.buf, oP->buf.len);
+
+  oP->fileLen += (unsigned long long) oP->buf.len;
+  oP->buf.len  = 0;
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// histOutOpen - the next .tmp segment
+//
+static bool histOutOpen(HistOut* oP, unsigned int n)
+{
+  char path[600];
+
+  filePath(oP->pP, "hist", n, "tmp", path, sizeof(path));
+
+  oP->fd      = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  oP->n       = n;
+  oP->fileLen = 0;
+
+  if (oP->fd < 0)
+  {
+    COR_E("corDB: the history of '%s' written anew: '%s': %s", oP->pP->tenant, path, strerror(errno));
+    return false;
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// histOutClose - the open file's buffer written and synced, the file closed
+//
+static bool histOutClose(HistOut* oP)
+{
+  if (oP->fd < 0)
+    return true;
+
+  bool ok = histOutFlush(oP) && (fdatasync(oP->fd) == 0);
+
+  if (ok == false)
+    COR_E("corDB: the history of '%s' written anew: segment %u: %s", oP->pP->tenant, oP->n, strerror(errno));
+
+  close(oP->fd);
+  oP->fd = -1;
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// histOutRecord - one record, numbered; a new segment first when it would cross the roll
+//
+static bool histOutRecord(HistOut* oP, const char* body, int bodyLen)
+{
+  unsigned long long recLen = COR_DB_LOG_HEADER_LEN + (unsigned long long) bodyLen;
+
+  if ((oP->fileLen + oP->buf.len > 0) && (oP->fileLen + oP->buf.len + recLen > oP->rollAt))
+  {
+    if ((histOutClose(oP) == false) || (histOutOpen(oP, oP->n + 1) == false))
+      return false;
+  }
+
+  if (corDbLogAppendEncoded(&oP->buf, CorDbLogHistInstance, oP->seq + 1, oP->t, body, bodyLen, corCrc32c(0, body, bodyLen)) == false)
+  {
+    COR_E("corDB: the history of '%s' written anew: out of memory", oP->pP->tenant);
+    return false;
+  }
+
+  ++oP->seq;
+
+  return (oP->buf.len < 4 * 1024 * 1024) || histOutFlush(oP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// histOutEntity - an entity's history as records: its instances, attribute by attribute in the order
+// they were written, then its lifecycle events
+//
+// Replayed (histReplay), they make the same entity: the same attributes in the same order, the same
+// instances, the same lifecycle (lifeV, createdAtNs, deletedAtNs). The events come last and carry the
+// entity's types as they are now: a 'created' or 'replaced' sets them exactly, after the instances'
+// records added theirs - the types an instance was written with may be ones a replace took away since.
+// An entity with no event has the types its instances add, in the order this walk meets them.
+//
+static bool histOutEntity(HistOut* oP, CorDbHistEntity* eP, CorAlloc* kaP)
+{
+  for (CorDbHistAttr* aP = eP->attrs; aP != NULL; aP = aP->next)
+  {
+    for (int i = 0; i < aP->instances; i++)
+    {
+      if (histOutRecord(oP, aP->instanceV[i].body, aP->instanceV[i].bodyLen) == false)
+        return false;
+    }
+  }
+
+  const char* types = corDbHistoryEntityTypesJoined(eP, kaP);
+
+  for (int i = 0; i < eP->lifeN; i++)
+  {
+    const char*  op = (eP->lifeV[i].op == 'd') ? "deleted" : ((eP->lifeV[i].op == 'r') ? "replaced" : "created");
+    CorBinBuffer event;
+
+    if (corDbHistoryEntityEventEncode(eP->id, types, op, eP->lifeV[i].atNs, kaP, &event) == false)
+    {
+      COR_E("corDB: the history of '%s' written anew: out of memory", oP->pP->tenant);
+      free(event.buf);
+      return false;
+    }
+
+    bool ok = histOutRecord(oP, event.buf, event.len);
+
+    free(event.buf);
+    if (ok == false)
+      return false;
+  }
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// histDropBefore - the history segments before n deleted (finished ones compressed, too)
+//
+static void histDropBefore(CorDbPersist* pP, unsigned int n)
+{
+  DIR* dirP = opendir(pP->dir);
+
+  if (dirP == NULL)
+    return;
+
+  struct dirent* entryP;
+
+  while ((entryP = readdir(dirP)) != NULL)
+  {
+    unsigned int k;
+
+    if (nameNumber(entryP->d_name, "hist", "cor", &k) && (k < n))
+    {
+      char path[1024];
+
+      snprintf(path, sizeof(path), "%s/%s", pP->dir, entryP->d_name);
+      if (unlink(path) != 0)
+        COR_W("corDB: deleting '%s': %s", path, strerror(errno));
+    }
+  }
+
+  closedir(dirP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// histRewrite - a tenant's history written anew from memory, replacing every history segment
+//
+// The history in memory holds every record the failed log lost: a write applies its history there
+// before it appends it to the log. Written as new segments, hist-K.tmp, hist-K+1.tmp ... (K after the
+// open segment), their records numbered from 1 - each one synced, then renamed to .cor from the LAST
+// to the first, the directory synced, and only then the older segments deleted. The appends go on in
+// the last new segment.
+//
+// Recovery takes a segment whose first record is number 1, after others, as the start of the history:
+// the ones before it are what it replaced (loadFile, LoadRestart). A death before hist-K is renamed
+// leaves hist-K+1 ... after the old segments - a gap, set aside: the history is the old segments, as
+// it was before the repair.
+//
+// Under ioMutex (no flush of the tenant meanwhile) and the history mutex (no drain, no temporal write,
+// no temporal read): the history does not change while it is written, and every append after it goes
+// to the new segments. True: written - the history log can be appended to again.
+//
+static bool histRewrite(CorDbPersist* pP)
+{
+  CorDbStore* storeP = pP->storeP;
+  bool        ok     = true;
+
+  pthread_mutex_lock(&pP->ioMutex);
+
+  if (passedBy(pP) || (pP->hist.fd < 0))
+  {
+    pthread_mutex_unlock(&pP->ioMutex);
+    return true;
+  }
+
+  pthread_mutex_lock(&storeP->histMutex);
+
+  if (storeP->historyP == NULL)                        // dropped meanwhile
+  {
+    pthread_mutex_unlock(&storeP->histMutex);
+    pthread_mutex_unlock(&pP->ioMutex);
+    return true;
+  }
+
+  enum { ARENA_INIT = 64 * 1024 };
+  char*    arenaBuf = (char*) malloc(ARENA_INIT);
+  CorAlloc arena;
+  HistOut  out;
+
+  memset(&out, 0, sizeof(out));
+  out.pP     = pP;
+  out.first  = pP->hist.n + 1;
+  out.fd     = -1;
+  out.rollAt = corDbCompress ? (64ULL * 1024 * 1024) : SEG_ROLL;
+  out.t      = nowNs();
+
+  ok = (arenaBuf != NULL) && histOutOpen(&out, out.first);
+
+  if (arenaBuf != NULL)
+    corAllocBufferInit(&arena, arenaBuf, ARENA_INIT, 1024 * 1024, NULL, "corDB history rewrite");
+
+  int entities = 0;
+
+  for (CorDbHistEntity* eP = storeP->historyP->first; ok && (eP != NULL); eP = eP->next)
+  {
+    ok = histOutEntity(&out, eP, &arena);
+
+    if ((++entities % 1000) == 0)
+      corAllocBufferReset(&arena, true);
+  }
+
+  ok = histOutClose(&out) && ok;
+
+  if (arenaBuf != NULL)
+  {
+    corAllocBufferReset(&arena, false);
+    free(arenaBuf);
+  }
+  free(out.buf.buf);
+
+  unsigned int last = out.n;
+  char         tmpPath[600];
+  char         corPath[600];
+
+  //
+  // Renamed from the last to the first: hist-K, which makes them the history, comes last
+  //
+  for (unsigned int n = last + 1; ok && (n > out.first); n--)
+  {
+    filePath(pP, "hist", n - 1, "tmp", tmpPath, sizeof(tmpPath));
+    filePath(pP, "hist", n - 1, "cor", corPath, sizeof(corPath));
+
+    if (rename(tmpPath, corPath) != 0)
+    {
+      COR_E("corDB: the history of '%s' written anew: renaming '%s': %s", pP->tenant, tmpPath, strerror(errno));
+      ok = false;
+    }
+  }
+
+  if (ok == false)
+  {
+    for (unsigned int n = out.first; n <= last; n++)   // a later try writes them again
+    {
+      filePath(pP, "hist", n, "tmp", tmpPath, sizeof(tmpPath));
+      unlink(tmpPath);
+    }
+
+    pthread_mutex_unlock(&storeP->histMutex);
+    pthread_mutex_unlock(&pP->ioMutex);
+    return false;
+  }
+
+  syncDir(pP->dir);
+
+  //
+  // The appends go on in the last new segment; the old ones - open, retired - closed unsynced, deleted
+  //
+  CorDbSeg seg;
+
+  pthread_mutex_lock(&pP->mutex);
+
+  ok = segOpen(pP, "hist", last, &seg, 0);
+
+  if (ok)
+  {
+    int kept = 0;
+
+    for (int ix = 0; ix < pP->retiredN; ix++)
+    {
+      unsigned int k;
+      const char*  base = strrchr(pP->retired[ix].path, '/');
+
+      if (nameNumber((base != NULL) ? &base[1] : pP->retired[ix].path, "hist", "cor", &k))
+        segFinish(&pP->retired[ix], false);
+      else
+        pP->retired[kept++] = pP->retired[ix];
+    }
+    pP->retiredN = kept;
+
+    segFinish(&pP->hist, false);
+    pP->hist    = seg;
+    pP->histSeq = out.seq;
+
+    __atomic_store_n(&pP->syncedHistSeq,     out.seq, __ATOMIC_RELEASE);
+    __atomic_store_n(&pP->failedFromHistSeq, 0,       __ATOMIC_RELEASE);
+    __atomic_store_n(&pP->histFailed,        false,   __ATOMIC_RELEASE);
+    __atomic_add_fetch(&pP->histRewrites, 1, __ATOMIC_ACQ_REL);
+  }
+
+  pthread_mutex_unlock(&pP->mutex);
+  pthread_mutex_unlock(&storeP->histMutex);
+
+  if (ok)
+  {
+    histDropBefore(pP, out.first);
+    syncDir(pP->dir);
+
+    if (corDbCompress)                                 // the new segments but the open one are finished
+    {
+      for (unsigned int n = out.first; n < last; n++)
+      {
+        filePath(pP, "hist", n, "cor", corPath, sizeof(corPath));
+        compressQueue(corPath, pP->dir);
+      }
+    }
+
+    COR_I("corDB: the history of '%s' written anew from memory - %llu records in %u segments (hist-%u to hist-%u)",
+          pP->tenant, (unsigned long long) out.seq, last - out.first + 1, out.first, last);
+  }
+  else
+    COR_E("corDB: the history of '%s' written anew, but its last segment does not open - the next try writes it again", pP->tenant);
+
+  pthread_mutex_unlock(&pP->ioMutex);
+
+  return ok;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// repair - the broker paused: every tenant whose log failed written anew from memory - its history too,
+// if its history log failed - every log allocated ahead again. True: the logs can be written - the pause
+// may end
 //
 static bool repair(void)
 {
@@ -1554,7 +1921,10 @@ static bool repair(void)
     if (passedBy(pP))
       continue;
 
-    if (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true)
+    if (__atomic_load_n(&pP->histFailed, __ATOMIC_ACQUIRE) == true)
+      ok = histRewrite(pP);
+
+    if (ok && (__atomic_load_n(&pP->failed, __ATOMIC_ACQUIRE) == true))
     {
       uint64_t gen = __atomic_load_n(&pauseGen, __ATOMIC_ACQUIRE);
       uint64_t seq = 0;
@@ -1606,7 +1976,7 @@ static void repairTry(void)
 
   pthread_mutex_lock(&pauseMutex);
 
-  if (ok && (gen == __atomic_load_n(&pauseGen, __ATOMIC_ACQUIRE)) && (__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == false))
+  if (ok && (gen == __atomic_load_n(&pauseGen, __ATOMIC_ACQUIRE)))
   {
     long secs = (long) ((nowNs() - pausedAtNs) / 1000000000ULL);
 
@@ -1654,7 +2024,7 @@ static void* snapshotter(void* unused)
       break;
 
     CorDbPersist* headP     = walkBegin();
-    bool          repairDue = (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == true) && (__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == false) && (monoMs() >= repairAtMs);
+    bool          repairDue = (__atomic_load_n(&paused, __ATOMIC_ACQUIRE) == true) && (monoMs() >= repairAtMs);
     pthread_mutex_unlock(&flushMutex);
 
     if (repairDue)
@@ -2160,6 +2530,7 @@ typedef enum LoadResult
 {
   LoadOk,                                              // read to its end (a tail of zeros or a torn record cut)
   LoadGap,                                             // the sequence jumped: the log ends there, and so do the segments after it
+  LoadRestart,                                         // a history segment whose first record is number 1: the history written anew (histRewrite) - nothing applied
   LoadFail
 } LoadResult;
 
@@ -2263,8 +2634,16 @@ static LoadResult loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* pat
   // gap - pages the machine wrote out of order before it died, past the last sync - and the log ends
   // before it: replaying past a gap would build a store no write ever made.
   //
+  bool restart = false;
+
   while ((recOff = off, status = corDbLogNext(buf, len, &off, &arena, &rec)) == CorDbLogOk)
   {
+    if (history && (expectP != NULL) && (*expectP != 0) && (recOff == 0) && (rec.seq == 1))
+    {
+      restart = true;                                  // the history starts again here - the segments before it are replaced
+      break;
+    }
+
     if (expectP != NULL)
     {
       if ((*expectP != 0) && (rec.seq != *expectP))
@@ -2306,6 +2685,9 @@ static LoadResult loadFile(CorDbPersist* pP, CorDbStore* storeP, const char* pat
   corAllocBufferReset(&arena, false);
   free(arenaBuf);
   free(buf);
+
+  if (restart)
+    return LoadRestart;
 
   if (failed != 0)
     COR_W("corDB: '%s': %d records did not apply - see above", path, failed);
@@ -2421,12 +2803,12 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
       snprintf(path, sizeof(path), "%s/%s", pP->dir, entryP->d_name);
       unlink(path);                                    // an interrupted compression: the segment is as it was
     }
-    else if (nameNumber(entryP->d_name, "snap", "tmp", &k))
+    else if (nameNumber(entryP->d_name, "snap", "tmp", &k) || nameNumber(entryP->d_name, "hist", "tmp", &k))
     {
       char path[1024];
 
       snprintf(path, sizeof(path), "%s/%s", pP->dir, entryP->d_name);
-      unlink(path);                                    // an interrupted snapshot
+      unlink(path);                                    // an interrupted snapshot, or history written anew (histRewrite)
     }
     else if (nameNumber(entryP->d_name, "snap", "cor", &k))
     {
@@ -2544,6 +2926,32 @@ static bool recover(CorDbPersist* pP, CorDbStore* storeP)
     }
 
     LoadResult r = loadFile(pP, storeP, path, (i == hists - 1), &records, true, &expect);
+
+    if (r == LoadRestart)
+    {
+      //
+      // The history written anew from memory (histRewrite) - a death came before the segments it
+      // replaced were deleted. They go now, and the history is read again from this one
+      //
+      COR_W("corDB: '%s' starts the history of %s written anew - the older segments it replaced (%d) are deleted", path, tenantText(pP), i);
+
+      corDbHistoryFree(storeP->historyP);
+      memset(storeP->historyP, 0, sizeof(CorDbHistory));
+      pP->histSeq = 0;
+      expect      = 0;
+
+      for (int j = 0; j < i; j++)
+      {
+        char oldPath[600];
+
+        filePath(pP, "hist", histV[j], "cor", oldPath, sizeof(oldPath));
+        if (unlink(oldPath) != 0)
+          COR_W("corDB: deleting '%s': %s", oldPath, strerror(errno));
+      }
+
+      --i;                                             // this segment again, as the first
+      continue;
+    }
 
     ok         = (r != LoadFail);
     gap        = (r == LoadGap);
@@ -2719,13 +3127,13 @@ void corDbPersistAppend(CorDbPersist* pP, CorDbLogOp op, CorNode* bodyP)
     COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
-    pauseSet(false, "out of memory for the log of %s", tenantText(pP));
+    pauseSet("out of memory for the log of %s", tenantText(pP));
     seq = pP->seq;
   }
   else if (logPut(pP) == false)
   {
     pendingFailed = true;
-    pauseSet(false, "the log of %s could not take a record", tenantText(pP));
+    pauseSet("the log of %s could not take a record", tenantText(pP));
     seq = pP->seq;
   }
   else
@@ -2916,7 +3324,8 @@ void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
     COR_E("corDB: out of memory for the history log of '%s' - a history record is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
-    pauseSet(true, "out of memory for the history log of %s", tenantText(pP));
+    __atomic_store_n(&pP->histFailed, true, __ATOMIC_RELEASE);
+    pauseSet("out of memory for the history log of %s", tenantText(pP));
   }
   else if (segAppend(pP, &pP->hist, "hist", pP->histBuf.buf, pP->histBuf.len) == true)
     ++pP->histSeq;
@@ -2924,7 +3333,8 @@ void corDbPersistHistAppend(CorDbPersist* pP, const char* body, int bodyLen)
   {
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
-    pauseSet(true, "the history log of %s could not take a record", tenantText(pP));
+    __atomic_store_n(&pP->histFailed, true, __ATOMIC_RELEASE);
+    pauseSet("the history log of %s could not take a record", tenantText(pP));
   }
 
   pthread_mutex_unlock(&pP->mutex);
@@ -3005,13 +3415,13 @@ void corDbPersistAppendPre(CorDbPersist* pP, CorDbLogOp op, CorDbPre* preP, int 
     COR_E("corDB: out of memory for the log of '%s' - a write is NOT persistent", pP->tenant);
     __atomic_store_n(&pP->failed, true, __ATOMIC_RELEASE);
     pendingFailed = true;
-    pauseSet(false, "out of memory for the log of %s", tenantText(pP));
+    pauseSet("out of memory for the log of %s", tenantText(pP));
     seq = pP->seq;
   }
   else if (logPut(pP) == false)
   {
     pendingFailed = true;
-    pauseSet(false, "the log of %s could not take a record", tenantText(pP));
+    pauseSet("the log of %s could not take a record", tenantText(pP));
     seq = pP->seq;
   }
   else
@@ -3049,6 +3459,7 @@ typedef struct SyncWait
   uint64_t       seq;
   uint64_t       histSeq;                              // the history appended by then: a write's history is drained after its lock,
                                                        // maybe after the flush that synced its own record
+  uint64_t       histRewrites;                         // pP->histRewrites then: once it moved, that history is on the disk
   bool           synced;                               // out: on the disk - false: a failed sync may have lost it
 } SyncWait;
 
@@ -3059,8 +3470,10 @@ typedef struct SyncWait
 // syncWait - kick the flusher, wait for its round to have synced 'seq' (or failed to)
 //
 // The failure is the round's that should have synced the record: a later round that syncs does not
-// bring back what a failed fdatasync dropped - the repair (a snapshot from memory) does. A stop ends the
-// wait - the close syncs what is left.
+// bring back what a failed fdatasync dropped - the repair (a snapshot from memory, the history written
+// anew) does. A rewritten history numbers its records from 1 again: the history a write waits for is on
+// the disk once a rewrite came after it, whatever the numbers. A stop ends the wait - the close syncs
+// what is left.
 //
 static void syncWait(void* arg)
 {
@@ -3074,7 +3487,8 @@ static void syncWait(void* arg)
   {
     uint64_t fromSeq     = __atomic_load_n(&wP->pP->failedFromSeq,     __ATOMIC_ACQUIRE);
     uint64_t fromHistSeq = __atomic_load_n(&wP->pP->failedFromHistSeq, __ATOMIC_ACQUIRE);
-    bool     covered     = ((fromSeq != 0) && (wP->seq >= fromSeq)) || ((fromHistSeq != 0) && (wP->histSeq >= fromHistSeq));
+    bool     rewritten   = (__atomic_load_n(&wP->pP->histRewrites, __ATOMIC_ACQUIRE) != wP->histRewrites);
+    bool     covered     = ((fromSeq != 0) && (wP->seq >= fromSeq)) || ((rewritten == false) && (fromHistSeq != 0) && (wP->histSeq >= fromHistSeq));
 
     if (covered)
     {
@@ -3082,7 +3496,7 @@ static void syncWait(void* arg)
       // Its record may be lost - unless the repair writes the store anew from memory, which holds it. It
       // waits for that, 10 s at most
       //
-      if ((__atomic_load_n(&histBroken, __ATOMIC_ACQUIRE) == true) || stopping)
+      if (stopping)
       {
         wP->synced = false;
         break;
@@ -3104,7 +3518,7 @@ static void syncWait(void* arg)
       continue;
     }
 
-    if ((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) >= wP->seq) && (__atomic_load_n(&wP->pP->syncedHistSeq, __ATOMIC_ACQUIRE) >= wP->histSeq))
+    if ((__atomic_load_n(&wP->pP->syncedSeq, __ATOMIC_ACQUIRE) >= wP->seq) && (rewritten || (__atomic_load_n(&wP->pP->syncedHistSeq, __ATOMIC_ACQUIRE) >= wP->histSeq)))
     {
       wP->synced = true;
       break;
@@ -3136,7 +3550,7 @@ static void syncWait(void* arg)
 CorDbKeep corDbPersistSyncWait(void)
 {
   CorDbPersist* pP     = pendingP;
-  SyncWait      w      = { pP, pendingSeq, 0, false };
+  SyncWait      w      = { pP, pendingSeq, 0, 0, false };
   bool          failed = pendingFailed;
 
   pendingP      = NULL;
@@ -3161,7 +3575,8 @@ CorDbKeep corDbPersistSyncWait(void)
     return CorDbKept;
 
   pthread_mutex_lock(&pP->mutex);
-  w.histSeq = pP->histSeq;                             // drained before this (corDbStoreUnlock): it covers this write's history
+  w.histSeq      = pP->histSeq;                        // drained before this (corDbStoreUnlock): it covers this write's history
+  w.histRewrites = pP->histRewrites;                   // set with histSeq, under 'mutex'
   pthread_mutex_unlock(&pP->mutex);
 
   CorRestState* savedP = corRestP;                     // corCoBlocking: the thread may be rebound meanwhile

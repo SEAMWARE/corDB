@@ -2,7 +2,7 @@
 
 How it got here - what measuring found, and what changed: [the history](history/persistence.md).
 
-*Draft, 2026-10-02 (moved here from coraine#219 with corDB). The concrete form of coraine's [`ToDo.md`](https://github.com/SEAMWARE/coraine/blob/main/ToDo.md) § 15 steps 1-2 - the record format, and log +
+*Draft, 2026-10-02 (moved here from coraine#219 with corDB). The concrete form of coraine's [`doc/roadmap.md`](https://github.com/SEAMWARE/coraine/blob/main/doc/roadmap.md) § 15 steps 1-2 - the record format, and log +
 snapshot + recovery. History (the selector, retention, the temporal index) builds on it later and is
 only constrained here, not designed.*
 
@@ -98,7 +98,7 @@ is a state the broker could have been in.
 ```
 
 - **The body is the cor:// codec** - one serializer for the wire, the log and the snapshot
-  (coraine's `ToDo.md` § 15: "specifying it once is the difference between one serializer and two that
+  (coraine's `doc/roadmap.md` § 15: "specifying it once is the difference between one serializer and two that
   diverge"). Core terms are 1-byte ids, as on the wire.
 - **Every record decodes on its own**: the codec's preloaded namespace table only, no per-connection
   string table (cor:// builds one as a connection goes; a log record must not depend on the records
@@ -179,8 +179,18 @@ The pages are the kernel's page cache: once the copy is done, the record outlive
   memory (§ 6), once a second, backing off to once every 16 s; the snapshot rolls the log and drops the
   files before it. When it has succeeded for every such tenant, the pause ends. The writes answered 503
   after they were applied are in that snapshot: kept. `--dbSync request` waiters whose sync failed wait
-  up to 10 s for the repair. A failure of the history log is not repaired (the history is not in a
-  snapshot): paused until a restart
+  up to 10 s for the repair
+- **the history's repair** (`--troe corDB`): the history is not in a snapshot. A tenant whose history
+  log lost a record or a sync has its history written anew from memory (`histRewrite`): every
+  entity's instances and lifecycle events, as new segments after the open one, their records numbered
+  from 1 again - each synced, renamed from `.tmp` from the last to the first, the directory synced,
+  and only then the older segments deleted. The appends go on in the last new segment. Recovery takes
+  a history segment whose first record is number 1, after others, as the start of the history: the
+  ones before it are what it replaced, deleted then (a death came before the repair deleted them). A
+  death before the first new segment is renamed leaves the others after a gap - set aside as `.torn`,
+  the history is the old segments. While it is written the history mutex is held: no history is
+  drained, and temporal reads and writes wait. For an entity without a lifecycle event, the order of
+  its type names is the order its instances add them in
 
 ## 5a. A clean stop loses nothing
 
@@ -331,8 +341,10 @@ No `--dbDir`, no change: a corDB without a directory is the in-RAM store of toda
 ## 10. Maintenance - corsh
 
 KZ 2026-10-03: deleting, backing up, adding indexes - a tool for it, **corsh** (the corDB shell). A
-**maintenance tool only**, for now; a general broker shell is for later. **corDB becomes its own
-repository, and corsh is part of it.** Interactive, and scriptable (`corsh -c 'backup /mnt/b'`).
+**maintenance tool only**, for now; a general broker shell is for later. corDB is its own
+repository, and corsh will be part of it. Interactive, and scriptable (`corsh -c 'backup /mnt/b'`).
+
+**Not built.** corDB is its own repository (this one); corsh is not written yet - what follows is its design.
 
 **Two ways in.** The data of a running broker is in that broker's RAM, under its locks: anything done
 to live data goes **through the broker** - corsh speaks cor:// to it, the requests served by the
@@ -358,34 +370,38 @@ no broker running, corsh works on a tenant directory **directly**: what needs no
 in store order, and on replay an `ENTITY_PUT` for an entity that exists replaces it **in place** - it
 does not move to the end. Otherwise every restart would reorder query results.
 
-**Indexes.** corDB has two today: the **entity id** (a hash, to the entity's predecessor in the store
+**Indexes.** Always there: the **entity id** (a hash, to the entity's predecessor in the store
 - lookup and unlink O(1)) and, in effect, **`createdAt`**: the store list itself, in creation order.
+Built as well (each its own `COR_FEATURE_*` switch): the **type index** (`corDbTypeIndex.h`) and the
+declared **value indexes** (`corDbValueIndex.h`).
 The id table grows 8x at 4 entities per slot; the old table's slots move into the new one 32 at a
 time, at every link, unlink and replace - no write holds the lock for a whole rebuild (lookups try
 the new table, then the old). A table built from a loaded store is sized to it.
-A query by type walks every entity of the tenant; so do a `q` and a geo-query. Indexes worth having,
-each measured before it stays:
+Without them a query by type walks every entity of the tenant; a `q` on an attribute with no declared
+index and a geo-query still do. The indexes, each measured before it stayed:
 
-- **type** -> its entities, **in creation order** (KZ 2026-10-03: yes, with persistence). `?type=X`
-  then pages by `createdAt` without walking the other types; a deep `offset` still walks within the
-  type (an array per type would make it O(1) and a delete O(n) - to be measured)
-- **an attribute's value** - equality and range, for `q` on a property that is queried often
-- **geo** - an R-tree over a GeoProperty, for `georel`
+- **type** -> its entities, **in creation order** - built. `?type=X` pages by `createdAt` without
+  walking the other types; a deep `offset` still walks within the type
+- **an attribute's value** - equality and range, for `q` on a property that is queried often - built,
+  for the attributes declared (`--dbValueIndexes`, the admin API's `/admin/indexes`)
+- **geo** - an R-tree over a GeoProperty, for `georel` - not built
 
-An index is a **declaration** kept in the tenant's directory (a record in the log, `INDEX_PUT`), built
-when declared - under the write lock, a full pass - and at every load; the 16 write sites keep it
-current. Not in the snapshot: rebuilt from the data, so it can never disagree with it.
+No index is on the disk - neither in a snapshot nor in the log: each is built from the data, so it can
+never disagree with it. The type index and a value index are built by the first query that can use
+them, under the read lock, and kept by the functions that link, unlink and swap an entity in the store's
+list. A value index's **declaration** is not on the disk either: `--dbValueIndexes` gives them at every
+start, and one declared through the admin API lasts until the broker stops.
 
 ## 11. Open
 
 - Snapshot trigger: log bytes only, or also a time?
 - A write answered 503 after it was applied is in the store's memory: reads see it while paused, and the repair keeps it. Not undone.
-- A history log that failed is not repaired: the history would have to be written again from memory.
 - **Size.** Without `--dbCompress` nothing is compressed: on perfRun's fixture (2026-10-05) the current
   state takes 744 bytes an entity - MongoDB's documents 1 072, its files 113 (WiredTiger compresses).
   A record decodes on its own, so each carries its attributes' expanded IRIs again. Not done yet: a
   table of the IRIs per snapshot or segment, the records naming them by number (a format change).
 
 Decided: the CRC is CRC-32C (corBase's `corCrc32c`, hardware on x86-64 and ARMv8). Hosted
-`@context`s are not corDB's - the plugin implements none of the driver's context functions - so the
-log holds the store tree and nothing else.
+`@context`s are corDB's too: the plugin implements the driver's context functions (`corDbContext.c`)
+and keeps them as documents of the default tenant's store (the collection `jsonldContexts`) - in its
+log and its snapshots with the rest.
