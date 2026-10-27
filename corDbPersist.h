@@ -98,6 +98,8 @@ typedef struct CorDbPersist
   uint64_t              histSeq;
   uint64_t              syncedHistSeq;                 // the last history record on the disk (atomic)
   uint64_t              failedFromHistSeq;             // as failedFromSeq, for the history log (atomic)
+  bool                  histFailed;                    // the history log lost a record or a sync: written anew by the repair (atomic)
+  uint64_t              histRewrites;                  // the history written anew from memory, how many times (atomic; set under 'mutex')
   CorDbSeg              hist;                          // hist.fd -1: no history
 
   //
