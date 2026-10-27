@@ -301,7 +301,8 @@ ahead (a full disk, a file-size limit), a record that cannot be put in the log, 
 The flusher keeps 8 MiB of the log allocated ahead of its records, so a full disk is found before a write
 needs the room - unless more than 8 MiB is written between two of its runs. While paused, every write is
 refused before it is parsed: 503 `PersistenceUnavailable`, `Retry-After: 5`, detail `writes are refused
-until the broker can write its log again (paused for <N> s): <why>`; reads are served
+until the broker can write its log again (paused for <N> s): <why>` - a write that reaches the store as
+the pause begins is answered the same; reads are served
 ([A store that cannot write its log](https://github.com/SEAMWARE/coraine/blob/main/doc/installation.md#a-store-that-cannot-write-its-log)). A write already applied when the
 log failed is answered 503 as well: `the write is in the broker's memory but not in its log ...` or `a sync
 of the log to the disk failed, for this write's record or one before it ...` - with `request`, also the

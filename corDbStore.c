@@ -10,6 +10,7 @@
 
 #include <stddef.h>                                  // NULL
 #include <stdlib.h>                                  // malloc, free
+#include <time.h>                                    // clock_gettime
 
 #include "corTree/CorNode.h"                         // CorNode
 #include "corTree/corTreeBuilder.h"                  // corTreeObject, corTreeArray, corTreeChildAdd
@@ -18,6 +19,7 @@
 #include "corHash/corHash.h"                         // corHashRelease
 
 #include "corRest/corRestProblem.h"                 // corRestProblemLate, COR_REST_ERROR_INTERNAL
+#include "corRest/corRestOutHeader.h"               // corRestOutHeaderAdd
 
 #include "db/Tenant.h"                               // Tenant
 
@@ -345,6 +347,10 @@ void corDbStoreUnlock(CorDbStore** storePP)
 //
 // corDbStoreWriteRefused -
 //
+// The broker refuses a write while paused before it reaches the store (storePause.c in coraine); this is the
+// refusal of a write that got past that check as the pause began. The same 503 as the broker's - the detail,
+// how long the pause has lasted, and Retry-After - so a client sees one answer to one condition.
+//
 bool corDbStoreWriteRefused(Tenant* tenantP)
 {
   if (corDbPersistPaused(NULL, 0, NULL) == false)
@@ -355,13 +361,22 @@ bool corDbStoreWriteRefused(Tenant* tenantP)
   if ((storeP == NULL) || (storeP->persistP == NULL))  // no log (a Snapshot's store): nothing to lose
     return false;
 
-  char why[200];
+  char     why[200];
+  uint64_t sinceNs = 0;
 
-  if (corDbPersistPaused(why, sizeof(why), NULL) == false)
+  if (corDbPersistPaused(why, sizeof(why), &sinceNs) == false)
     return false;
 
+  struct timespec now;
+
+  clock_gettime(CLOCK_REALTIME, &now);
+
+  uint64_t nowNs = (uint64_t) now.tv_sec * 1000000000ULL + (uint64_t) now.tv_nsec;
+  long     secs  = (nowNs > sinceNs) ? (long) ((nowNs - sinceNs) / 1000000000ULL) : 0;
+
   corRestProblemLate(503, "https://coraine.readthedocs.io/errors/PersistenceUnavailable", "Persistence Unavailable",
-                     "writes are refused until the broker can write its log again (corDB --dbDir): %s", why);
+                     "writes are refused until the broker can write its log again (paused for %ld s): %s", secs, why);
+  corRestOutHeaderAdd("Retry-After", "5");
   return true;
 }
 
