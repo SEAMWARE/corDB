@@ -389,8 +389,8 @@ index and a geo-query still do. The indexes, each measured before it stayed:
 No index is on the disk - neither in a snapshot nor in the log: each is built from the data, so it can
 never disagree with it. The type index and a value index are built by the first query that can use
 them, under the read lock, and kept by the functions that link, unlink and swap an entity in the store's
-list. A value index's **declaration** is not on the disk either: `--dbValueIndexes` gives them at every
-start, and one declared through the admin API lasts until the broker stops.
+list. A value index's **declaration** is: `--dbValueIndexes` gives them at every start, and one declared
+through the admin API is a document of the default tenant's collection `dbIndexes`, read back at a start.
 
 ## 11. Open
 
