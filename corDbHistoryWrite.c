@@ -18,6 +18,7 @@
 #include "corTree/CorNode.h"                           // CorNode
 #include "corTree/corTreeNodeCopy.h"                   // corTreeNodeCopy
 #include "corTree/corTreeBuilder.h"                    // corTreeObject, corTreeString, corTreeInteger, corTreeChildAdd
+#include "corTree/corTreeArraySort.h"                  // corTreeNodeCompare
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
 
 #include "corAlloc/corAlloc.h"                        // corAlloc
@@ -652,6 +653,26 @@ static bool sameModifiedAt(CorNode* aP, CorNode* bP)
 
 // -----------------------------------------------------------------------------
 //
+// carriedOver - an instance the replace kept, not wrote: the stored one's modifiedAt - unless that is
+// this write's own time (atNs). A request stamps all its writes alike, and a batch naming the entity more
+// than once writes it once per state (§ 10.3.3.3: each fragment its own): then what the instance holds
+// tells. Any other replace pays the time comparison alone
+//
+static bool carriedOver(CorNode* instP, CorNode* oldInstP, uint64_t atNs)
+{
+  if ((oldInstP == NULL) || (sameModifiedAt(instP, oldInstP) == false))
+    return false;
+
+  if (modifiedAtOf(oldInstP) != atNs)
+    return true;
+
+  return (corTreeNodeCompare(instP, oldInstP) == 0);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // corDbHistoryPrepare - every instance of every attribute of the entity, encoded (no lock)
 //
 void corDbHistoryPrepare(CorDbHistPre* preP, CorNode* entityP, const char* entityOp, CorAlloc* kaP)
@@ -891,7 +912,7 @@ void corDbHistoryReplacedPre(CorDbStore* storeP, CorDbHistPre* preP, CorNode* ne
 
       CorNode* oldInstP = ((oldAttrP != NULL) && (instP->name != NULL)) ? corTreeLookup(oldAttrP, instP->name) : NULL;
 
-      if ((oldInstP != NULL) && (sameModifiedAt(instP, oldInstP) == true))
+      if (carriedOver(instP, oldInstP, atNs) == true)
         continue;                                    // carried over, not written
 
       if (recP != NULL)
@@ -984,7 +1005,7 @@ void corDbHistoryReplaced(CorDbStore* storeP, CorNode* newEntityP, CorNode* oldE
 
       CorNode* oldInstP = ((oldAttrP != NULL) && (instP->name != NULL)) ? corTreeLookup(oldAttrP, instP->name) : NULL;
 
-      if ((oldInstP != NULL) && (sameModifiedAt(instP, oldInstP) == true))
+      if (carriedOver(instP, oldInstP, atNs) == true)
         continue;
 
       instanceAppend(storeP, eP, attrP->name, datasetOf(instP), instP, 0, kaP);
