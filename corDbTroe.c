@@ -21,7 +21,6 @@
 #include "corLog/corLog.h"                            // COR_E
 #include "corArgs/corArgs.h"                          // CorArg, CORARGS_END
 #include "corAlloc/CorAlloc.h"                         // CorAlloc
-#include "corBase/corTimeIso.h"                        // corTimeIso
 #include "corTree/CorNode.h"                           // CorNode
 #include "corTree/corTreeBuilder.h"                    // corTreeObject, corTreeArray, corTreeString, corTreeChildAdd
 #include "corTree/corTreeLookup.h"                     // corTreeLookup
@@ -31,6 +30,7 @@
 #include "corNgsild/ldEntityMatch.h"     // ldEntityMatchQ
 #include "corNgsild/LdQ.h"               // LdQNode, LdQTerm
 #include "corNgsild/ldCheckDateTime.h"                 // ldIsoToNanoseconds
+#include "corNgsild/ldSysTimestamp.h"                  // ldSysTimestampToIso
 #include "corNgsild/ldTermId.h"                        // ldNodeRename
 
 #include "db/DbQueryFilter.h"            // DbQueryFilter
@@ -96,10 +96,11 @@ static const char* valueMember(CorNode* instanceP)
 //
 // isoMember - a timestamp member, ns in the store, ISO text in the answer
 //
-// createdAt, modifiedAt and deletedAt to the microsecond, observedAt to the millisecond, an all-zero
-// fraction left out - as the core API and timescale render them.
+// As the core API renders it (ldSysTimestampToIso): to the microsecond, to the nanosecond with -hp,
+// the fraction's trailing zeros left out - observedAt too, which went to the millisecond with every
+// zero kept ('.290' where /entities said '.29', '.123' for '.123456').
 //
-static void isoMember(CorNode* nodeP, int fracDigits, CorAlloc* kaP)
+static void isoMember(CorNode* nodeP, CorAlloc* kaP)
 {
   if (nodeP->type != CorInt)
     return;
@@ -109,7 +110,7 @@ static void isoMember(CorNode* nodeP, int fracDigits, CorAlloc* kaP)
   if (buf == NULL)
     return;
 
-  corTimeIso((int64_t) nodeP->value.i, fracDigits, false, buf);
+  ldSysTimestampToIso((long long) nodeP->value.i, buf, 32);
   nodeP->type    = CorString;
   nodeP->value.s = buf;
 }
@@ -147,10 +148,8 @@ static void toApi(CorNode* instanceP, CorAlloc* kaP)
       }
       ldNodeRename(nP, member);                        // the name AND its term id - a bare rename leaves the id stale
     }
-    else if ((strcmp(nP->name, "createdAt") == 0) || (strcmp(nP->name, "modifiedAt") == 0) || (strcmp(nP->name, "deletedAt") == 0))
-      isoMember(nP, 6, kaP);
-    else if (strcmp(nP->name, "observedAt") == 0)
-      isoMember(nP, 3, kaP);
+    else if ((strcmp(nP->name, "createdAt") == 0) || (strcmp(nP->name, "modifiedAt") == 0) || (strcmp(nP->name, "deletedAt") == 0) || (strcmp(nP->name, "observedAt") == 0))
+      isoMember(nP, kaP);
   }
 }
 
@@ -340,14 +339,14 @@ static int pickCompare(const void* a, const void* b)
 
 // -----------------------------------------------------------------------------
 //
-// isoString - ns as the API's ISO text, to the microsecond (an all-zero fraction left out)
+// isoString - ns as the API's ISO text, as the core API renders it (ldSysTimestampToIso)
 //
 static const char* isoString(uint64_t ns, CorAlloc* kaP)
 {
   char* buf = (char*) corAlloc(kaP, 32);
 
   if (buf != NULL)
-    corTimeIso((int64_t) ns, 6, false, buf);
+    ldSysTimestampToIso((long long) ns, buf, 32);
 
   return buf;
 }
